@@ -31,6 +31,7 @@
     "test:gateway": "npm test --workspace @mcpshield/gateway",
     "test:contracts": "node --import tsx --test tests/contracts/*.test.ts",
     "test:api": "node --import tsx --test tests/api/*.test.ts",
+    "demo:evm-smoke": "node --import tsx --test tests/integration/evm-smoke.test.ts",
     "demo:reset": "npm run demo:reset --workspace @mcpshield/demo",
     "demo:run": "npm run demo:run --workspace @mcpshield/demo",
     "demo:seed": "npm run demo:seed --workspace @mcpshield/demo",

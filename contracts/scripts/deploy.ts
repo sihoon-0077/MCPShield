@@ -1,4 +1,5 @@
 import { ContractFactory, JsonRpcProvider, Wallet } from "ethers";
+import { writeFile } from "node:fs/promises";
 import { compileReleaseRegistry } from "./compile.js";
 
 export async function deployRegistry(
@@ -29,7 +30,17 @@ async function main() {
     deployerKey,
     validators as [string, string, string],
   );
-  console.log(JSON.stringify({ registryAddress: await contract.getAddress() }));
+  const registryAddress = await contract.getAddress();
+  const deploymentReceipt = await contract.deploymentTransaction()?.wait();
+  if (!deploymentReceipt) throw new Error("Deployment receipt unavailable");
+  const deploymentBlock = deploymentReceipt.blockNumber;
+  const output = { registryAddress, deploymentBlock };
+  if (process.env.DEPLOYMENT_ENV_PATH) {
+    await writeFile(process.env.DEPLOYMENT_ENV_PATH,
+      `REGISTRY_ADDRESS=${registryAddress}\nATTESTATION_CONTRACT=${registryAddress}\nDEPLOYMENT_BLOCK=${deploymentBlock}\n`,
+      "utf8");
+  }
+  console.log(JSON.stringify(output));
 }
 
 if (import.meta.url === `file://${process.argv[1]?.replaceAll("\\", "/")}`) {

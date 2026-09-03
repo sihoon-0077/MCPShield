@@ -1,4 +1,4 @@
-import { JsonRpcProvider, Wallet } from "ethers";
+import { JsonRpcProvider, NonceManager, Wallet } from "ethers";
 import {
   artifactDigestToBytes32,
   chainDecisions,
@@ -80,7 +80,7 @@ export class EvmRegistryClient implements RegistryClient {
     this.reader = createReleaseRegistry(registryAddress, this.provider);
     const signer = new Wallet(relayerPrivateKey, this.provider);
     this.relayerAddress = signer.address;
-    this.relayer = createReleaseRegistry(registryAddress, signer);
+    this.relayer = createReleaseRegistry(registryAddress, new NonceManager(signer));
   }
 
   async validateConnection(expectedChainId?: number, validators: string[] = []) {

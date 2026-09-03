@@ -13,7 +13,7 @@ const scannerToken = process.env.SCANNER_API_TOKEN ?? "dev_scanner_token_32_char
 const chainId = Number(process.env.ATTESTATION_CHAIN_ID ?? 31337);
 const verifyingContract = process.env.ATTESTATION_CONTRACT ?? "0x0000000000000000000000000000000000000001";
 const demoMnemonic = process.env.DEMO_VALIDATOR_MNEMONIC ?? "test test test test test test test test test test test junk";
-const validatorWallets = [0, 1].map((index) => HDNodeWallet.fromPhrase(demoMnemonic, undefined, `m/44'/60'/0'/0/${index}`));
+const validatorWallets = [1, 2].map((index) => HDNodeWallet.fromPhrase(demoMnemonic, undefined, `m/44'/60'/0'/0/${index}`));
 
 const releases = [
   { releaseId: "mail-mcp@1.0.0", fixtureDir: resolve(root, "demo/fixtures/mail-mcp-1.0.0"), decision: "PASS", expectedStatus: "VERIFIED", nonce: 0 },
