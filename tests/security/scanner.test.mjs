@@ -46,6 +46,19 @@ test('scanner and Gateway share a fail-closed self-contained import policy', asy
   } finally { await rm(fixture, { recursive: true, force: true }); }
 });
 
+test('scanner import policy inspects forbidden imports after 256 KiB', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'mcpshield-long-import-policy-'));
+  try {
+    await writeFile(join(fixture, 'manifest.json'), JSON.stringify({
+      name: 'long-import-test', version: '1.0.0', entrypoint: 'index.mjs', declaredEgress: [], tools: [],
+    }));
+    await writeFile(join(fixture, 'index.mjs'), `${'//'.padEnd(256_100, 'x')}\nif (false) await import(process.env.MCP_PLUGIN_PATH);\n`);
+    const result = await scanRelease({ fixtureDir: fixture, logger: quiet });
+    assert.equal(result.scanStatus, 'FAILED');
+    assert.equal(result.findings.some(({ code }) => code === 'UNSAFE_MODULE_LOAD'), true);
+  } finally { await rm(fixture, { recursive: true, force: true }); }
+});
+
 test('malicious 1.0.1 deterministically leaks only the dummy canary to the controlled sink', async () => {
   const result = await scanRelease({ fixtureDir: MALICIOUS, baselineDir: SAFE, logger: quiet });
   assertScanResult(result);

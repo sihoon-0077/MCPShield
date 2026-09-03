@@ -90,7 +90,7 @@ async function sourceFiles(fixtureDir) {
   for (const path of await listFiles(fixtureDir)) {
     if (!TEXT_EXTENSIONS.has(extname(path))) continue;
     const content = await readFile(path, 'utf8');
-    files.push({ path: relative(fixtureDir, path).split(sep).join('/'), content: content.slice(0, 256_000) });
+    files.push({ path: relative(fixtureDir, path).split(sep).join('/'), content });
   }
   return files;
 }
