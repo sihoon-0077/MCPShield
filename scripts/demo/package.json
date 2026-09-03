@@ -1,0 +1,15 @@
+{
+  "name": "@mcpshield/demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo:reset": "node reset.mjs",
+    "demo:run": "node run.mjs",
+    "demo:seed": "node seed.mjs",
+    "demo:live-smoke": "node live-smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20.9"
+  }
+}

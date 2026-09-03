@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "1.0.0",
+  "decisions": {
+    "mail-mcp@1.0.0": {
+      "schemaVersion": "1.0.0",
+      "releaseId": "mail-mcp@1.0.0",
+      "decision": "ALLOW",
+      "releaseStatus": "VERIFIED",
+      "reasonCode": "RELEASE_VERIFIED",
+      "checkedAt": "2026-01-01T00:00:00.000Z",
+      "source": "REPLAY"
+    },
+    "mail-mcp@1.0.1": {
+      "schemaVersion": "1.0.0",
+      "releaseId": "mail-mcp@1.0.1",
+      "decision": "BLOCK",
+      "releaseStatus": "REVOKED",
+      "reasonCode": "RELEASE_REVOKED",
+      "checkedAt": "2026-01-01T00:01:00.000Z",
+      "source": "REPLAY"
+    }
+  },
+  "snapshot": {
+    "schemaVersion": "1.0.0",
+    "source": "REPLAY",
+    "generatedAt": "2026-01-01T00:01:00.000Z",
+    "releases": [
+      {
+        "releaseId": "mail-mcp@1.0.0",
+        "signature": "VALID",
+        "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "toolSurfaceHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "scanStatus": "PASSED",
+        "chainStatus": "VERIFIED",
+        "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "releaseId": "mail-mcp@1.0.1",
+        "signature": "VALID",
+        "artifactDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "toolSurfaceHash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "scanStatus": "FAILED",
+        "chainStatus": "REVOKED",
+        "txHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    ],
+    "pipeline": [
+      { "stage": "STATIC", "status": "PASSED", "detail": "Tool surface delta recorded" },
+      { "stage": "AI", "status": "FLAGGED", "detail": "Declared behavior mismatch" },
+      { "stage": "SANDBOX", "status": "FAILED", "detail": "Dummy canary reached local sink" }
+    ],
+    "sandboxEvents": [
+      { "time": "00:00.180", "type": "SENSITIVE_FILE_READ", "detail": "Fixture read /sandbox/canary.txt", "level": "INFO" },
+      { "time": "00:00.412", "type": "UNDECLARED_EGRESS", "detail": "POST to local exfil sink", "level": "CRITICAL" },
+      { "time": "00:00.419", "type": "CANARY_EXFILTRATION", "detail": "Dummy token matched by the sink", "level": "CRITICAL" }
+    ],
+    "validators": [
+      { "id": "Validator A", "decision": "FAIL", "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      { "id": "Validator B", "decision": "FAIL", "txHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+      { "id": "Validator C", "decision": "ABSTAIN" }
+    ],
+    "admissions": [
+      { "gateway": "Gateway A", "releaseId": "mail-mcp@1.0.0", "decision": "ALLOW", "reasonCode": "RELEASE_VERIFIED" },
+      { "gateway": "Gateway A", "releaseId": "mail-mcp@1.0.1", "decision": "BLOCK", "reasonCode": "RELEASE_REVOKED" },
+      { "gateway": "Gateway B", "releaseId": "mail-mcp@1.0.1", "decision": "BLOCK", "reasonCode": "RELEASE_REVOKED" }
+    ]
+  }
+}

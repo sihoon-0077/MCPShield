@@ -1,0 +1,14 @@
+{
+  "name": "@mcpshield/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.mjs stdio",
+    "serve": "node src/index.mjs serve",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20.9"
+  }
+}

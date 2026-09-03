@@ -1,11 +1,16 @@
 {
-  "name": "mcpshield-blockchain-backend",
+  "name": "mcpshield",
   "version": "0.1.0",
   "private": true,
   "engines": {
     "node": ">=22 <25"
   },
   "type": "module",
+  "workspaces": [
+    "apps/dashboard",
+    "apps/gateway",
+    "scripts/demo"
+  ],
   "scripts": {
     "dev:api": "tsx watch apps/api/src/server.ts",
     "start:api": "tsx apps/api/src/server.ts",
@@ -14,15 +19,27 @@
     "reconcile": "tsx apps/reconciler/src/index.ts",
     "chain:local": "tsx contracts/scripts/local-chain.ts",
     "chain:deploy": "tsx contracts/scripts/deploy.ts",
-    "build": "tsc --noEmit",
+    "build": "npm run build:backend && npm run build:dashboard",
+    "build:backend": "tsc --noEmit",
+    "build:dashboard": "npm run build --workspace @mcpshield/dashboard",
     "scan:safe": "node services/scanner/src/cli.mjs --fixture demo/fixtures/mail-mcp-1.0.0",
     "scan:malicious": "node services/scanner/src/cli.mjs --fixture demo/fixtures/mail-mcp-1.0.1 --baseline demo/fixtures/mail-mcp-1.0.0",
     "benchmark:security": "node benchmarks/evaluate.mjs --runs 10",
-    "test": "npm run test:backend && npm run test:security",
+    "test": "npm run test:backend && npm run test:security && npm run test:gateway && npm run demo:smoke && npm run demo:live-smoke",
     "test:backend": "node --import tsx --test \"tests/**/*.test.ts\"",
     "test:security": "node --import tsx --test tests/security/*.test.mjs",
+    "test:gateway": "npm test --workspace @mcpshield/gateway",
     "test:contracts": "node --import tsx --test tests/contracts/*.test.ts",
-    "test:api": "node --import tsx --test tests/api/*.test.ts"
+    "test:api": "node --import tsx --test tests/api/*.test.ts",
+    "demo:reset": "npm run demo:reset --workspace @mcpshield/demo",
+    "demo:run": "npm run demo:run --workspace @mcpshield/demo",
+    "demo:seed": "npm run demo:seed --workspace @mcpshield/demo",
+    "demo:live-smoke": "npm run demo:live-smoke --workspace @mcpshield/demo",
+    "demo:smoke": "npm run demo:reset && npm run demo:run",
+    "stack:config": "docker compose config --quiet",
+    "stack:up": "docker compose up --build --wait",
+    "stack:down": "docker compose down --remove-orphans",
+    "stack:scan": "docker compose --profile scan run --rm scanner"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
