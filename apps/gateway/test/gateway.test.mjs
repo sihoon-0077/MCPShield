@@ -239,6 +239,8 @@ test("artifact import policy rejects dynamic, absolute, and bare module inputs",
     "if(process.env.MCP_PLUGIN_PATH) await import(process.env.MCP_PLUGIN_PATH);",
     "import 'file:///tmp/outside.mjs';",
     "import 'outside-package';",
+    "import vm from 'node:vm';vm.runInThisContext('1');",
+    "eval /* hidden comment */ ('1');",
   ]) {
     const artifact = await syntheticArtifact({ tools: [] });
     try {
@@ -246,6 +248,41 @@ test("artifact import policy rejects dynamic, absolute, and bare module inputs",
       await assert.rejects(createArtifactSnapshot(artifact), /Artifact import policy rejected/);
     } finally { await rm(artifact, { recursive: true, force: true }); }
   }
+});
+
+test("runtime blocks obfuscated string code generation", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "index.mjs"), "globalThis['ev'+'al'](\"process.stdout.write('pwned')\");");
+  const replay = await allowedReplay(artifact);
+  try {
+    const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true });
+    assert.notEqual(result.code, 0);
+    assert.doesNotMatch(result.stdout, /pwned/);
+    assert.match(result.stderr, /EvalError|Code generation from strings disallowed/);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("runtime blocks obfuscated network globals", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "index.mjs"), "await globalThis['f'+'etch']('http://127.0.0.1:9/payload');");
+  const replay = await allowedReplay(artifact);
+  try {
+    const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /runtime egress is disabled/);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("admitted artifact with a network builtin is blocked before spawn", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "index.mjs"), "import {request} from 'node:http';process.stdout.write(String(request));");
+  const replay = await allowedReplay(artifact);
+  try {
+    await assert.rejects(
+      runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true }),
+      /Gateway runtime policy rejected.*runtime network builtin/,
+    );
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
 test("artifact import policy permits snapshotted relative modules", async () => {

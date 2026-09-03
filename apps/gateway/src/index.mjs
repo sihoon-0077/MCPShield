@@ -2,13 +2,14 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { Transform } from "node:stream";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createArtifactSnapshot, toolSurfaceHash } from "./artifact.mjs";
 
 const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED"]);
 const SOURCES = new Set(["LIVE", "MOCK", "REPLAY"]);
 const REASONS = new Set(["RELEASE_VERIFIED", "RELEASE_UNVERIFIED", "RELEASE_QUARANTINED", "RELEASE_REVOKED", "DIGEST_MISMATCH", "STATUS_UNAVAILABLE"]);
 const DECISION_KEYS = new Set(["schemaVersion", "releaseId", "decision", "releaseStatus", "reasonCode", "checkedAt", "source"]);
+const RUNTIME_GUARD = fileURLToPath(new URL("./runtime-guard.cjs", import.meta.url));
 
 export class AdmissionBlockedError extends Error {
   constructor(decision) {
@@ -85,7 +86,9 @@ function childEnvironment() {
 
 function spawnSnapshot(snapshot) {
   if (!process.allowedNodeEnvironmentFlags.has("--permission")) throw new Error("Node permission model is required");
-  return spawn(process.execPath, ["--permission", `--allow-fs-read=${snapshot.root}`, snapshot.entrypoint],
+  return spawn(process.execPath, ["--permission", `--allow-fs-read=${snapshot.root}`,
+    `--allow-fs-read=${RUNTIME_GUARD}`, "--disallow-code-generation-from-strings",
+    "--require", RUNTIME_GUARD, snapshot.entrypoint],
     { cwd: snapshot.root, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: childEnvironment() });
 }
 
@@ -180,6 +183,7 @@ async function admittedSnapshot(artifactDir, options) {
     const decision = await getAdmission({ identity: snapshot, ...options });
     log("admission", { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash, decision: decision.decision, status: decision.releaseStatus, source: decision.source });
     if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") throw new AdmissionBlockedError(decision);
+    if (snapshot.runtimePolicyIssues.length) throw new Error(`Gateway runtime policy rejected ${snapshot.runtimePolicyIssues[0].path}: ${snapshot.runtimePolicyIssues[0].reason}`);
     return { snapshot, decision };
   } catch (error) {
     await snapshot.cleanup();

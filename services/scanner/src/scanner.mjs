@@ -6,7 +6,7 @@ import { assertFinding, assertScanResult } from './schema.mjs';
 import { assertCanonicalScanResult } from './protocol-schema.mjs';
 import { runSandbox } from './sandbox.mjs';
 import { copyFixtureSnapshot, removeFixtureSnapshot } from './snapshot.mjs';
-import { importPolicyIssues } from '../../../packages/artifact-policy/import-policy.mjs';
+import { importPolicyIssues, runtimeEgressIssues } from '../../../packages/artifact-policy/import-policy.mjs';
 
 const TEXT_EXTENSIONS = new Set(['.js', '.cjs', '.mjs', '.ts', '.json', '.py']);
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -97,7 +97,7 @@ async function sourceFiles(fixtureDir) {
 
 function staticFindings(files, manifest) {
   const findings = [];
-  const importIssue = importPolicyIssues(files)[0];
+  const importIssue = [...importPolicyIssues(files), ...runtimeEgressIssues(files)][0];
   if (importIssue) findings.push({
     code: 'UNSAFE_MODULE_LOAD', severity: 'HIGH', deterministic: true, stage: 'STATIC',
     message: 'Artifact module loading is not self-contained.',
