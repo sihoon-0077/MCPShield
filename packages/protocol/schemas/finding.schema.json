@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcpshield.dev/schemas/finding.schema.json",
+  "title": "MCPShield Finding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "severity", "deterministic", "stage", "message", "evidence"],
+  "properties": {
+    "code": {
+      "enum": [
+        "SENSITIVE_FILE_READ",
+        "UNDECLARED_EGRESS",
+        "CANARY_EXFILTRATION",
+        "TOOL_SURFACE_CHANGED",
+        "SEMANTIC_BEHAVIOR_MISMATCH"
+      ]
+    },
+    "severity": {
+      "enum": ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    },
+    "deterministic": { "type": "boolean" },
+    "stage": { "enum": ["STATIC", "AI", "SANDBOX", "POLICY"] },
+    "message": { "type": "string", "minLength": 1 },
+    "evidence": { "type": "object" }
+  }
+}

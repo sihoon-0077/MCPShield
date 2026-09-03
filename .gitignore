@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+node_modules/
+.turbo/
+dist/
+coverage/
+artifacts/
+cache/
+out/
+tmp/
+.next/
+*.log

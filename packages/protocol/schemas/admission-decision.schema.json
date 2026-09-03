@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcpshield.dev/schemas/admission-decision.schema.json",
+  "title": "MCPShield Admission Decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseId",
+    "decision",
+    "releaseStatus",
+    "reasonCode",
+    "checkedAt",
+    "source"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "releaseId": { "type": "string" },
+    "decision": { "enum": ["ALLOW", "BLOCK"] },
+    "releaseStatus": {
+      "enum": ["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED"]
+    },
+    "reasonCode": {
+      "enum": [
+        "RELEASE_VERIFIED",
+        "RELEASE_UNVERIFIED",
+        "RELEASE_QUARANTINED",
+        "RELEASE_REVOKED",
+        "DIGEST_MISMATCH",
+        "STATUS_UNAVAILABLE"
+      ]
+    },
+    "checkedAt": { "type": "string", "format": "date-time" },
+    "source": { "enum": ["LIVE", "MOCK", "REPLAY"] }
+  }
+}

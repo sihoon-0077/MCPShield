@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcpshield.dev/schemas/scan-result.schema.json",
+  "title": "MCPShield Scan Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "scanId",
+    "releaseId",
+    "artifactDigest",
+    "toolSurfaceHash",
+    "scanStatus",
+    "findings",
+    "evidenceHash",
+    "source"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "scanId": { "type": "string", "format": "uuid" },
+    "releaseId": {
+      "type": "string",
+      "pattern": "^.+@[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"
+    },
+    "artifactDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "toolSurfaceHash": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    },
+    "scanStatus": {
+      "enum": ["QUEUED", "RUNNING", "PASSED", "FAILED", "INCONCLUSIVE"]
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "finding.schema.json" }
+    },
+    "evidenceHash": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    },
+    "source": { "enum": ["LIVE", "MOCK", "REPLAY"] }
+  }
+}
