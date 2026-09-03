@@ -9,6 +9,7 @@ export const mockSnapshot: Snapshot = {
   schemaVersion: "1.0.0",
   source: "MOCK",
   generatedAt: "2026-01-01T00:00:00.000Z",
+  ledgerMode: "OFFLINE",
   releases: [
     { releaseId: "mail-mcp@1.0.0", signature: "VALID", artifactDigest: `sha256:${a}`, toolSurfaceHash: `0x${b}`, scanStatus: "PASSED", chainStatus: "VERIFIED", txHash: `0x${a}` },
     { releaseId: "mail-mcp@1.0.1", signature: "VALID", artifactDigest: `sha256:${c}`, toolSurfaceHash: `0x${d}`, scanStatus: "FAILED", chainStatus: "REVOKED", txHash: `0x${c}` }

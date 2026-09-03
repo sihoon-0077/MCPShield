@@ -4,6 +4,8 @@ export type Snapshot = {
   schemaVersion: "1.0.0";
   source: Source;
   generatedAt: string;
+  ledgerMode?: "EVM" | "LOCAL_DEMO" | "OFFLINE";
+  explorerBaseUrl?: string;
   releases: Array<{
     releaseId: string;
     signature: "VALID" | "UNKNOWN";
@@ -14,7 +16,7 @@ export type Snapshot = {
     txHash?: string;
   }>;
   pipeline: Array<{ stage: "STATIC" | "AI" | "SANDBOX"; status: string; detail: string }>;
-  sandboxEvents: Array<{ time: string; type: string; detail: string; level: "INFO" | "CRITICAL" }>;
+  sandboxEvents: Array<{ time: string; type: string; detail: string; level: "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" }>;
   validators: Array<{ id: string; decision: "PASS" | "FAIL" | "ABSTAIN"; txHash?: string }>;
   admissions: Array<{ gateway: string; releaseId: string; decision: "ALLOW" | "BLOCK"; reasonCode: string }>;
 };
