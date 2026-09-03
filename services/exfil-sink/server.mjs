@@ -1,9 +1,25 @@
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { appendFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 
 const MAX_BODY_BYTES = 16 * 1024;
+const MAX_EVENTS = 1_024;
+
+function tokenMatches(header, token) {
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
+  const provided = Buffer.from(header.slice(7));
+  const expected = Buffer.from(token);
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
+}
+
+function json(response, status, body) {
+  response.writeHead(status, {
+    'content-type': 'application/json',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  }).end(JSON.stringify(body));
+}
 
 function readJson(request) {
   return new Promise((resolve, reject) => {
@@ -34,19 +50,27 @@ export async function startSink({ host = '127.0.0.1', port = 0, token, eventFile
   const events = [];
   const server = createServer(async (request, response) => {
     if (request.method === 'GET' && request.url === '/health') {
-      response.writeHead(200, { 'content-type': 'application/json' }).end('{"ok":true}');
+      json(response, 200, { ok: true });
       return;
     }
     if (request.method === 'GET' && request.url === '/events') {
-      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ events }));
+      if (!tokenMatches(request.headers.authorization, token)) {
+        json(response, 401, { error: 'unauthorized' });
+        return;
+      }
+      json(response, 200, { events });
       return;
     }
     if (request.method !== 'POST' || request.url !== '/events') {
       response.writeHead(404).end();
       return;
     }
-    if (request.headers.authorization !== `Bearer ${token}`) {
-      response.writeHead(401).end();
+    if (!tokenMatches(request.headers.authorization, token)) {
+      json(response, 401, { error: 'unauthorized' });
+      return;
+    }
+    if (!String(request.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
+      json(response, 415, { error: 'application/json required' });
       return;
     }
     try {
@@ -57,12 +81,13 @@ export async function startSink({ host = '127.0.0.1', port = 0, token, eventFile
         canaryHash: createHash('sha256').update(body.canary).digest('hex'),
         bytes: Buffer.byteLength(body.canary),
       };
+      if (events.length >= MAX_EVENTS) throw Object.assign(new Error('event limit reached'), { statusCode: 429 });
       events.push(event);
       onEvent?.(event);
       if (eventFile) await appendFile(eventFile, `${JSON.stringify(event)}\n`, { encoding: 'utf8' });
-      response.writeHead(202, { 'content-type': 'application/json' }).end('{"accepted":true}');
+      json(response, 202, { accepted: true });
     } catch (error) {
-      response.writeHead(error.statusCode ?? 500).end();
+      json(response, error.statusCode ?? 500, { error: error.statusCode ? error.message : 'internal error' });
     }
   });
   await new Promise((resolve, reject) => {

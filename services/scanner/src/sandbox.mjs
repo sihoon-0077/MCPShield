@@ -9,16 +9,64 @@ import { startSink } from '../../exfil-sink/server.mjs';
 export const DEMO_CANARY = 'MCP_SHIELD_DEMO_CANARY_v1';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SINK_DIR = resolve(HERE, '../../exfil-sink');
+const OBSERVER_PATH = resolve(HERE, 'observer-preload.cjs');
+const OBSERVER_DIR = dirname(OBSERVER_PATH);
+const OBSERVATION_PREFIX = 'MCPSHIELD_OBSERVATION ';
+
+function observationsFrom(stderr) {
+  const observations = [];
+  const seen = new Set();
+  for (const line of stderr.split(/\r?\n/)) {
+    if (!line.startsWith(OBSERVATION_PREFIX)) continue;
+    try {
+      const event = JSON.parse(line.slice(OBSERVATION_PREFIX.length));
+      if (event?.version !== 1 || !['FS_READ', 'NETWORK', 'CHILD_PROCESS'].includes(event.type)) continue;
+      const sanitized = event.type === 'FS_READ'
+        ? { type: event.type, target: String(event.target).slice(0, 32), ...(event.basename ? { basename: String(event.basename).slice(0, 128) } : {}) }
+        : event.type === 'NETWORK'
+          ? {
+              type: event.type,
+              protocol: String(event.protocol).slice(0, 16),
+              hostname: String(event.hostname).slice(0, 255),
+              port: String(event.port).slice(0, 8),
+              path: String(event.path).slice(0, 255),
+            }
+          : { type: event.type, command: String(event.command).slice(0, 128), method: String(event.method).slice(0, 32) };
+      const key = JSON.stringify(sanitized);
+      if (!seen.has(key) && observations.length < 256) {
+        seen.add(key);
+        observations.push(sanitized);
+      }
+    } catch {
+      // Fixture stderr is untrusted. Malformed or forged records are ignored.
+    }
+  }
+  return observations;
+}
 
 function run(command, args, { cwd, env, timeoutMs = 5_000 } = {}) {
   return new Promise((resolveResult, reject) => {
-    const child = spawn(command, args, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      windowsHide: true,
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      if (process.platform === 'win32' && child.pid) {
+        const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
+          windowsHide: true,
+          stdio: 'ignore',
+        });
+        killer.unref();
+      } else if (child.pid) {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+      }
     }, timeoutMs);
     child.stdout.on('data', (chunk) => { if (stdout.length < 65_536) stdout += chunk; });
     child.stderr.on('data', (chunk) => { if (stderr.length < 65_536) stderr += chunk; });
@@ -33,7 +81,7 @@ function run(command, args, { cwd, env, timeoutMs = 5_000 } = {}) {
 function fixtureCommand(fixtureDir, entrypoint, exfilUrl, canaryPath, token) {
   return {
     command: process.execPath,
-    args: [resolve(fixtureDir, entrypoint)],
+    args: ['--require', OBSERVER_PATH, resolve(fixtureDir, entrypoint)],
     cwd: fixtureDir,
     env: {
       PATH: process.env.PATH,
@@ -63,6 +111,7 @@ async function runLocal({ fixtureDir, entrypoint, timeoutMs }) {
       error: processResult.code === 0 || processResult.timedOut ? null : 'fixture exited unsuccessfully',
       canaryObserved: sink.events.some((event) => event.canaryHash === canaryHash),
       canaryHash,
+      observations: observationsFrom(processResult.stderr),
     };
   } finally {
     await sink.close();
@@ -124,8 +173,9 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs }) {
       'run', '--name', fixtureName, '--network', networkName, '--read-only', '--cap-drop', 'ALL',
       '--security-opt', 'no-new-privileges', '--memory', '128m', '--cpus', '0.5', '--pids-limit', '64',
       '-v', `${resolve(fixtureDir)}:/fixture:ro`, '-v', `${canaryPath}:/run/secrets/mcpshield_canary:ro`,
+      '-v', `${OBSERVER_DIR}:/observer:ro`,
       '-e', 'MCP_EXFIL_URL=http://exfil-sink:8080/events', '-e', 'MCP_CANARY_PATH=/run/secrets/mcpshield_canary',
-      '-e', `MCP_SINK_TOKEN=${token}`, 'node:22-alpine', 'node', `/fixture/${entrypoint}`,
+      '-e', `MCP_SINK_TOKEN=${token}`, 'node:22-alpine', 'node', '--require', '/observer/observer-preload.cjs', `/fixture/${entrypoint}`,
     ], { timeoutMs });
     let events = '';
     try { events = await readFile(eventsPath, 'utf8'); } catch { /* no exfil event */ }
@@ -134,8 +184,11 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs }) {
       timedOut: fixture.timedOut,
       exitCode: fixture.code,
       error: fixture.code === 0 || fixture.timedOut ? null : 'fixture exited unsuccessfully',
-      canaryObserved: events.split(/\r?\n/).filter(Boolean).some((line) => JSON.parse(line).canaryHash === canaryHash),
+      canaryObserved: events.split(/\r?\n/).filter(Boolean).some((line) => {
+        try { return JSON.parse(line).canaryHash === canaryHash; } catch { return false; }
+      }),
       canaryHash,
+      observations: observationsFrom(fixture.stderr),
     };
   } finally {
     await dockerCleanup([fixtureName, sinkName], networkName);
