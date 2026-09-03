@@ -4,7 +4,6 @@ import type { Snapshot } from "../../../lib/types";
 export const dynamic = "force-dynamic";
 
 const releaseIds = ["mail-mcp@1.0.0", "mail-mcp@1.0.1"] as const;
-const scanIds = () => (process.env.MCPSHIELD_SCAN_IDS ?? "").split(",").map((value) => value.trim()).filter(Boolean);
 
 function explorerBaseUrl() {
   try {
@@ -44,10 +43,11 @@ function pipelineFrom(scan?: BackendScan): Snapshot["pipeline"] {
   return stages.map((stage) => {
     const findings = scan?.findings.filter((finding) => finding.stage === stage) ?? [];
     const serious = findings.some((finding) => ["HIGH", "CRITICAL"].includes(finding.severity));
+    const status = !scan ? "INCONCLUSIVE" : serious ? "FAILED" : findings.length ? "FLAGGED" : ["QUEUED", "RUNNING", "INCONCLUSIVE"].includes(scan.scanStatus) ? scan.scanStatus : "PASSED";
     return {
       stage,
-      status: !scan ? "INCONCLUSIVE" : serious ? "FAILED" : findings.length ? "FLAGGED" : scan.scanStatus === "RUNNING" ? "RUNNING" : "PASSED",
-      detail: !scan ? "Set MCPSHIELD_SCAN_IDS to load scan evidence" : findings.length ? findings.map((finding) => finding.code).join(", ") : "No findings for this stage",
+      status,
+      detail: !scan ? "No submitted scan exists for this release" : findings.length ? findings.map((finding) => finding.code).join(", ") : "No findings for this stage",
     };
   });
 }
@@ -77,9 +77,9 @@ export async function GET() {
       client.health(),
       Promise.all(releaseIds.map((releaseId) => client.getRelease(releaseId))),
       client.listEvents(),
-      Promise.all(scanIds().map((scanId) => client.getScan(scanId))),
+      Promise.all(releaseIds.map((releaseId) => client.getLatestScan(releaseId))),
     ]);
-    const scanByRelease = new Map(scans.map((scan) => [scan.releaseId, scan]));
+    const scanByRelease = new Map(scans.filter((scan): scan is BackendScan => Boolean(scan)).map((scan) => [scan.releaseId, scan]));
     const releaseViews = releases.map((release) => asRelease(release, scanByRelease.get(release.releaseId)));
     const admissions = await Promise.all(releases.map(async (release) => {
       const result = await client.checkAdmission({ schemaVersion: "1.0.0", releaseId: release.releaseId, artifactDigest: release.artifactDigest, toolSurfaceHash: release.toolSurfaceHash });
@@ -91,7 +91,7 @@ export async function GET() {
       source: "LIVE",
       generatedAt: new Date().toISOString(),
       ledgerMode: health.ledgerMode,
-      explorerBaseUrl: explorerBaseUrl(),
+      explorerBaseUrl: health.ledgerMode === "EVM" ? explorerBaseUrl() : undefined,
       releases: releaseViews,
       pipeline: pipelineFrom(maliciousScan),
       sandboxEvents: timelineFrom(maliciousScan?.findings ?? [], events.filter((event) => event.releaseId === "mail-mcp@1.0.1")),
