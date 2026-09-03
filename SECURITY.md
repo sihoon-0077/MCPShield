@@ -46,3 +46,4 @@ Maintainers should acknowledge a report before publishing details, reproduce it 
 8. Gateway children inherit only explicitly allowed non-injection environment variables and cannot read outside the admitted snapshot.
 9. Dynamic, absolute, bare-package, and missing relative module loads are rejected by the shared Scanner/Gateway artifact policy.
 10. Runtime `tools/call` names and `tools/list` surfaces must match the admitted manifest, including batched JSON-RPC traffic.
+11. Gateway MVP execution disables runtime network egress and string code generation; artifacts requiring network access are not admitted for spawn.

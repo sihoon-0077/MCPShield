@@ -12,8 +12,8 @@
 | Suite | Result |
 |---|---|
 | Backend, API, indexer, reconciler, contract | 18/18 passed |
-| Security and AI pipeline | 25/25 passed |
-| Gateway | 20/20 passed |
+| Security and AI pipeline | 27/27 passed |
+| Gateway | 23/23 passed |
 | Clean-reset Replay smoke | 10/10 passed |
 | LIVE non-Docker E2E | passed |
 | EVM indexer-first receipt-race E2E | passed |
@@ -45,7 +45,7 @@ The current harness performs 10 paired runs over one reviewed safe fixture and o
 | False-positive rate | 0.0 |
 | Canary detection | 1.0 |
 
-Observed local latency for the latest 10 paired run was 87 ms average / 124 ms p95 for the safe fixture and 104 ms average / 110 ms p95 for the malicious fixture.
+Observed local latency for the latest 10 paired run was 85 ms average / 122 ms p95 for the safe fixture and 102 ms average / 107 ms p95 for the malicious fixture.
 
 These are 20 repeated observations of two fixtures, not 20 independent real-world packages. They prove deterministic demo behavior and regression resistance, not population-level model quality. Timing is host-dependent and should be regenerated on the presentation machine.
 

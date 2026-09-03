@@ -39,7 +39,7 @@ Untrusted artifact
 | Relayer/API crash or indexer-first receipt | DB-chain split brain or duplicate write | pending operation lease, chain-truth reconciliation, idempotent upsert, WAL busy timeout | SQLite remains a low-throughput demo projection |
 | Indexer downtime/reorg | stale admission state | confirmed-block backfill, checkpoint hash, rewind, dedupe | reorg deeper than configured rewind depth |
 | RPC outage | unsafe allow or indefinite wait | deadline and fail-closed decision | availability loss |
-| Gateway artifact/runtime drift | unreviewed code or hidden tool execution | Gateway-owned snapshot, minimal environment, shared import policy, filesystem permission boundary, JSON-RPC surface guard | host owner can deliberately bypass the wrapper; network containment still requires deployment sandboxing |
+| Gateway artifact/runtime drift | unreviewed code or hidden tool execution | Gateway-owned snapshot, minimal environment, allowlisted imports, filesystem permission boundary, disabled code generation/egress, JSON-RPC surface guard | host owner can deliberately bypass the wrapper |
 | Evidence disclosure | immutable privacy leak | raw evidence off-chain; only hash on-chain | off-chain store access policy remains deployment-specific |
 
 ## Abuse cases

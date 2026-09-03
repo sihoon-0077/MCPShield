@@ -2,7 +2,7 @@
 
 The Gateway accepts an artifact directory, never a caller-provided release ID, digest, tool hash, executable, or arguments. It copies regular files into a private temporary snapshot, computes the scanner-compatible artifact and tool-surface hashes from those exact bytes, validates the manifest entrypoint, checks admission, and starts only that snapshotted entrypoint with the current Node executable.
 
-The child receives only a minimal system environment. Pass an MCP-specific variable intentionally by listing its exact name in `MCPSHIELD_CHILD_ENV_ALLOWLIST`; unrelated parent secrets are not inherited. Runtime injection variables such as `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, and `DYLD_*` are always removed. The artifact must use only `node:` built-ins and relative modules captured inside its snapshot; dynamic, absolute, and package imports are rejected. Node's permission model also prevents runtime reads outside that snapshot.
+The child receives only a minimal system environment. Pass an MCP-specific variable intentionally by listing its exact name in `MCPSHIELD_CHILD_ENV_ALLOWLIST`; unrelated parent secrets are not inherited. Runtime injection variables such as `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, and `DYLD_*` are always removed. The artifact may use only an allowlist of non-network `node:` built-ins and relative modules captured inside its snapshot; dynamic, absolute, package, native, and WebAssembly module loads are rejected. Node's permission model prevents reads outside that snapshot, string code generation is disabled, and runtime network egress is not supported by this MVP.
 
 ```powershell
 npm.cmd run test:gateway

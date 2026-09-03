@@ -66,7 +66,7 @@ Timeout, unavailable chain truth, an unknown response, and either hash mismatch 
 - Validator private keys never enter the API. Signer recovery, validator membership, nonce, deadline, evidence binding, and one-vote-per-release are enforced across API and contract.
 - Raw evidence stays off-chain. Only fixed-size hashes, votes, status, and events are placed on-chain.
 - The Gateway creates its own immutable artifact snapshot, computes both hashes, checks admission, and starts only the manifest entrypoint with `shell: false`.
-- Scanner and Gateway share a self-contained import policy: only `node:` built-ins and relative modules inside the snapshot are accepted. Gateway execution also uses Node's filesystem permission boundary and a minimal child environment.
+- Scanner and Gateway inspect the same bounded artifact bytes with a self-contained import policy: only allowlisted non-network `node:` built-ins and relative modules inside the snapshot are accepted. Gateway execution also uses Node's filesystem permission boundary, disabled string code generation and runtime egress, and a minimal child environment.
 - The stdio proxy inspects every JSON-RPC batch element, allows only manifest-declared `tools/call` names, and blocks duplicate or mismatched `tools/list` responses.
 - API writes after an EVM receipt reconcile from chain truth, so an indexer that projects the same log first is idempotent. SQLite WAL uses a bounded busy timeout for the demo's two writers.
 - Dashboard secrets and Backend tokens remain server-side.

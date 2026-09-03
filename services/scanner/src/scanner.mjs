@@ -100,7 +100,7 @@ function staticFindings(files, manifest) {
   const importIssue = [...importPolicyIssues(files), ...runtimeEgressIssues(files)][0];
   if (importIssue) findings.push({
     code: 'UNSAFE_MODULE_LOAD', severity: 'HIGH', deterministic: true, stage: 'STATIC',
-    message: 'Artifact module loading is not self-contained.',
+    message: 'Artifact module loading or runtime egress is outside the self-contained Gateway profile.',
     evidence: { file: importIssue.path, rule: 'self-contained-imports-v1', reason: importIssue.reason },
   });
   const sensitive = files.find(({ content }) => /(?:readFile|readFileSync)[\s\S]{0,160}(?:MCP_CANARY_PATH|\.ssh|\.env)/.test(content));
