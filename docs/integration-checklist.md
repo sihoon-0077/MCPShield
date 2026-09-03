@@ -9,6 +9,7 @@
 - [x] Security fixture, AI schema, sandbox, redaction, timeout, and submission tests
 - [x] Gateway LIVE/MOCK/REPLAY identity and pre-spawn block tests
 - [x] Offline replay smoke test
+- [x] Clean reset followed by the same Replay demo 10/10 times
 - [x] Ephemeral LIVE Backend end-to-end smoke test
 - [x] Security benchmark with sample size and source labels
 - [x] Production dependency audit

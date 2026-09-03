@@ -14,7 +14,7 @@
 | Backend, API, indexer, reconciler, contract | 18/18 passed |
 | Security and AI pipeline | 25/25 passed |
 | Gateway | 20/20 passed |
-| Replay smoke | passed |
+| Clean-reset Replay smoke | 10/10 passed |
 | LIVE non-Docker E2E | passed |
 | EVM indexer-first receipt-race E2E | passed |
 | Tracked-file secret scan | passed |
