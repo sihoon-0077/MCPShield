@@ -228,6 +228,17 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     return scan ?? reply.code(404).send(errorBody("SCAN_NOT_FOUND", "Scan was not found"));
   });
 
+  app.get("/api/releases/:releaseId/scans/latest", async (request, reply) => {
+    const { releaseId } = request.params as { releaseId: string };
+    if (!patterns.releaseId.test(releaseId)) {
+      return reply.code(400).send(errorBody("INVALID_RELEASE_ID", "Release ID is not canonical"));
+    }
+    const scan = repository.getLatestScan(releaseId);
+    return scan
+      ? { schemaVersion: SCHEMA_VERSION, scan }
+      : reply.code(404).send(errorBody("SCAN_NOT_FOUND", "No scan was found for this release"));
+  });
+
   app.post("/api/validators/vote", async (request, reply) => {
     const body = request.body as Record<string, unknown> | null;
     const decision = body?.decision as ValidatorDecision;

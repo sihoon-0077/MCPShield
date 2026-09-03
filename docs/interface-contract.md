@@ -20,6 +20,7 @@ All JSON payloads use `schemaVersion: "1.0.0"`. Canonical JSON Schemas live in `
 | `POST` | `/api/releases` | admin bearer token | register exact release identity |
 | `POST` | `/api/scans` | scanner bearer token | ingest schema-valid scan; source is forced to `LIVE` |
 | `GET` | `/api/scans/:scanId` | none | retrieve scan and evidence summary |
+| `GET` | `/api/releases/:releaseId/scans/latest` | none | retrieve the latest stored scan for a release |
 | `GET` | `/api/releases/:releaseId` | none | retrieve projected release status and votes |
 | `POST` | `/api/validators/vote` | EIP-712 signature | relay a validator decision |
 | `POST` | `/api/admission/check` | none | decide `ALLOW` or `BLOCK` for exact identity |

@@ -148,6 +148,14 @@ export class Repository {
     };
   }
 
+  getLatestScan(releaseId: string) {
+    const row = this.db.prepare(
+      `SELECT scan_id FROM scans WHERE release_id = ?
+       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).get(releaseId) as { scan_id: string } | undefined;
+    return row ? this.getScan(row.scan_id) : undefined;
+  }
+
   findScanByEvidence(releaseId: string, evidenceHash: string) {
     const row = this.db.prepare(
       `SELECT scan_id FROM scans WHERE release_id = ? AND evidence_hash = ?
