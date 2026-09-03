@@ -240,6 +240,9 @@ test("artifact import policy rejects dynamic, absolute, and bare module inputs",
     "import 'file:///tmp/outside.mjs';",
     "import 'outside-package';",
     "import vm from 'node:vm';vm.runInThisContext('1');",
+    "import {\nrunInThisContext\n} from\n'node:vm';runInThisContext('1');",
+    "import {\nrequest\n} from\n'node:http';request({host:'127.0.0.1'});",
+    "import{request}from'node:http';request({host:'127.0.0.1'});",
     "eval /* hidden comment */ ('1');",
   ]) {
     const artifact = await syntheticArtifact({ tools: [] });

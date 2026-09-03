@@ -15,6 +15,7 @@ const NETWORK_BUILTINS = new Set([
 const STATIC_IMPORT = /\b(?:import|export)\s+(?:[^;\r\n]*?\s+from\s+)?(["'])([^"'\r\n]+)\1/g;
 const REQUIRE = /\brequire\s*\(\s*(["'])([^"'\r\n]+)\1\s*\)/g;
 const DYNAMIC_LOADER = /\bimport(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*\(|\brequire\b|\bcreateRequire\b|\b(?:eval|Function)\s*(?:\/\*[\s\S]*?\*\/\s*)?\(/;
+const NODE_SPECIFIER = /["'](node:[A-Za-z0-9_./-]+)["']/g;
 
 function resolveRelative(from, specifier, paths) {
   if (specifier.includes("?") || specifier.includes("#") || specifier.includes("\\")) return false;
@@ -32,6 +33,18 @@ export function importPolicyIssues(files) {
     if ([".node", ".wasm"].includes(extname(path))) issues.push({ path, reason: "native and WebAssembly modules are not allowed" });
     if (!JAVASCRIPT.has(extname(path))) continue;
     if (DYNAMIC_LOADER.test(file.content)) issues.push({ path, reason: "dynamic code loaders are not allowed" });
+    const importTokens = [...file.content.matchAll(/\bimport\b/g)].map((match) => match.index);
+    STATIC_IMPORT.lastIndex = 0;
+    const recognizedImports = [...file.content.matchAll(STATIC_IMPORT)].map((match) => [match.index, match.index + match[0].length]);
+    if (importTokens.some((index) => !recognizedImports.some(([start, end]) => index >= start && index < end))) {
+      issues.push({ path, reason: "only single-line static import syntax is allowed" });
+    }
+    NODE_SPECIFIER.lastIndex = 0;
+    for (let match; (match = NODE_SPECIFIER.exec(file.content));) {
+      if (!SAFE_BUILTINS.has(match[1]) && !NETWORK_BUILTINS.has(match[1])) {
+        issues.push({ path, reason: `Node builtin is outside the MVP allowlist: ${match[1]}` });
+      }
+    }
     for (const pattern of [STATIC_IMPORT, REQUIRE]) {
       pattern.lastIndex = 0;
       for (let match; (match = pattern.exec(file.content));) {
@@ -57,6 +70,10 @@ export function runtimeEgressIssues(files) {
   for (const file of files) {
     const path = file.path.replaceAll("\\", "/");
     if (!JAVASCRIPT.has(extname(path))) continue;
+    NODE_SPECIFIER.lastIndex = 0;
+    for (let match; (match = NODE_SPECIFIER.exec(file.content));) {
+      if (NETWORK_BUILTINS.has(match[1])) issues.push({ path, reason: `runtime network builtin is not allowed: ${match[1]}` });
+    }
     for (const pattern of [STATIC_IMPORT, REQUIRE]) {
       pattern.lastIndex = 0;
       for (let match; (match = pattern.exec(file.content));) {
