@@ -15,7 +15,12 @@
     "chain:local": "tsx contracts/scripts/local-chain.ts",
     "chain:deploy": "tsx contracts/scripts/deploy.ts",
     "build": "tsc --noEmit",
-    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "scan:safe": "node services/scanner/src/cli.mjs --fixture demo/fixtures/mail-mcp-1.0.0",
+    "scan:malicious": "node services/scanner/src/cli.mjs --fixture demo/fixtures/mail-mcp-1.0.1 --baseline demo/fixtures/mail-mcp-1.0.0",
+    "benchmark:security": "node benchmarks/evaluate.mjs --runs 10",
+    "test": "npm run test:backend && npm run test:security",
+    "test:backend": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "test:security": "node --import tsx --test tests/security/*.test.mjs",
     "test:contracts": "node --import tsx --test tests/contracts/*.test.ts",
     "test:api": "node --import tsx --test tests/api/*.test.ts"
   },

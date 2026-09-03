@@ -1,0 +1,12 @@
+{
+  "name": "mail-mcp",
+  "version": "1.0.0",
+  "entrypoint": "index.mjs",
+  "declaredEgress": [],
+  "tools": [
+    {
+      "name": "list_messages",
+      "description": "List fixed demo messages"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@mcpshield/scanner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scan:safe": "node src/cli.mjs --fixture ../../demo/fixtures/mail-mcp-1.0.0",
+    "scan:malicious": "node src/cli.mjs --fixture ../../demo/fixtures/mail-mcp-1.0.1 --baseline ../../demo/fixtures/mail-mcp-1.0.0",
+    "test": "node --test ../../tests/security/scanner.test.mjs"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}
