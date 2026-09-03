@@ -1,31 +1,58 @@
-# MCPShield MVP Demo Scenario
+# MCPShield Demo Scenario
 
 ## Fixtures
 
 - Safe: `mail-mcp@1.0.0`
-- Malicious: `mail-mcp@1.0.1`
+- Malicious signed update: `mail-mcp@1.0.1`
+- Canary and sink are synthetic and local only.
 
-## Happy Path
+## 3-minute script
 
-1. safe release와 digest를 등록한다.
-2. `PASSED` scan 결과를 제출한다.
-3. Validator A와 B가 `PASS`를 제출한다.
-4. 상태가 `VERIFIED`로 확정된다.
-5. admission API가 `ALLOW`를 반환한다.
+1. Open the dashboard in `LIVE` mode and show the safe `1.0.0` release.
+2. Explain that the exact artifact and tool-surface hashes are bound to the release.
+3. Show the static, AI, and sandbox pipeline for `1.0.1`.
+4. Point out `SEMANTIC_BEHAVIOR_MISMATCH` and `CANARY_EXFILTRATION` evidence.
+5. Show two independent `FAIL` votes and the `REVOKED` status.
+6. Run the safe release through Gateway A: the marker process starts.
+7. Run the malicious release through Gateway A and Gateway B: both return exit code 3 and emit no child marker.
+8. Finish with: `Registry: Available · Signature: Valid · MCPShield: REVOKED · Agent: BLOCKED`.
 
-## Revocation Path
+## Reproducible commands
 
-1. malicious release와 변경된 digest를 등록한다.
-2. `CANARY_EXFILTRATION`이 포함된 `FAILED` scan 결과를 제출한다.
-3. 첫 번째 `FAIL` 이후 상태가 `QUARANTINED`가 된다.
-4. 두 번째 `FAIL` 이후 상태가 `REVOKED`가 된다.
-5. indexer가 상태 이벤트를 projection에 반영한다.
-6. 두 개의 Gateway가 admission API로부터 `BLOCK`을 받아 process spawn을 거부한다.
+```powershell
+npm.cmd ci
+npm.cmd run demo:smoke
+npm.cmd run demo:live-smoke
+npm.cmd run benchmark:security
+```
 
-## Demo Safety
+`demo:smoke` is an offline REPLAY fallback. `demo:live-smoke` starts an ephemeral real Backend and proves the API, signatures, quorum, admission decision, and pre-spawn enforcement without Docker.
 
-- 실제 고객 데이터 대신 고정된 dummy canary만 사용한다.
-- exfil sink는 외부 인터넷이 아닌 로컬 Docker network에만 존재한다.
-- malicious fixture는 공개 package registry에 게시하지 않는다.
-- RPC 또는 AI 장애 시에는 `REPLAY`임을 표시한 고정 evidence를 사용한다.
+For the dashboard and two long-running gateways:
 
+```powershell
+npm.cmd run stack:up
+# Open http://localhost:3000
+npm.cmd run stack:down
+```
+
+## Expected results
+
+| Path | Scan | Votes | Status | Gateway |
+|---|---|---|---|---|
+| `1.0.0` safe | `PASSED` | A/B `PASS` | `VERIFIED` | `ALLOW`, child starts |
+| `1.0.1` malicious | `FAILED` | A/B `FAIL` | `REVOKED` | `BLOCK`, child never starts |
+
+## Failure recovery
+
+- Docker or network failure: run `npm.cmd run demo:smoke` and keep the `REPLAY` badge visible.
+- Backend or chain lookup failure in LIVE mode: Gateway returns a non-zero error and does not spawn.
+- Dashboard LIVE fetch failure: the UI shows a source-labelled error instead of silently substituting replay data.
+- Demo reset: `npm.cmd run demo:reset` restores the committed replay snapshot.
+
+## Safety notes
+
+- Never substitute real customer data or real credentials in the malicious fixture.
+- The fixed mnemonic and tokens in demo/Compose scripts are public localhost-only values.
+- Do not expose demo ports beyond loopback.
+- Stop all services after the presentation.

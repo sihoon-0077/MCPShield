@@ -27,6 +27,6 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
       - name: Reject obvious private keys
         run: |
-          if grep -RIE --exclude='*.lock' --exclude-dir=node_modules 'BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|AKIA[0-9A-Z]{16}' apps/dashboard apps/gateway scripts/demo; then
+          if grep -RIE --exclude='*.lock' --exclude-dir=node_modules --exclude-dir=test --exclude-dir=tests 'BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|AKIA[0-9A-Z]{16}' apps contracts packages services scripts; then
             exit 1
           fi

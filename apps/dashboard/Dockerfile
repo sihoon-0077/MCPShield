@@ -16,11 +16,9 @@ RUN npm run build --workspace @mcpshield/dashboard
 FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 MCPSHIELD_REPLAY_FILE=/app/replay.json
-COPY --from=deps --chown=node:node /app/node_modules ./node_modules
-COPY --from=builder --chown=node:node /app/package.json ./package.json
-COPY --from=builder --chown=node:node /app/apps/dashboard/package.json ./apps/dashboard/package.json
-COPY --from=builder --chown=node:node /app/apps/dashboard/.next ./apps/dashboard/.next
-COPY scripts/demo/replay.json ./replay.json
+COPY --from=builder --chown=node:node /app/apps/dashboard/.next/standalone ./
+COPY --from=builder --chown=node:node /app/apps/dashboard/.next/static ./apps/dashboard/.next/static
+COPY --chown=node:node scripts/demo/replay.json ./replay.json
 USER node
 EXPOSE 3000
-CMD ["npm", "start", "--workspace", "@mcpshield/dashboard"]
+CMD ["node", "apps/dashboard/server.js"]
