@@ -83,10 +83,16 @@ test('AI structured output must satisfy the frozen Finding shape', async (contex
 });
 
 test('AI output cannot echo tokens or raw canary values into evidence', async (context) => {
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkZW1vIn0.synthetic_signature_12345';
+  const github = `github_pat_${'P'.repeat(30)}`;
+  const gcp = `AIza${'Z'.repeat(35)}`;
   const finding = {
     code: 'SEMANTIC_BEHAVIOR_MISMATCH', severity: 'MEDIUM', deterministic: false, stage: 'AI',
-    message: `Observed ${DEMO_CANARY}`,
-    evidence: { token: 'remote-secret-value', nested: { canary: DEMO_CANARY } },
+    message: `Observed ${DEMO_CANARY} and ${jwt}`,
+    evidence: {
+      token: 'remote-secret-value',
+      nested: { canary: DEMO_CANARY, credentials: [{ authorization: github }, { apiKey: gcp }] },
+    },
   };
   const server = createServer((request, response) => {
     request.resume();
@@ -98,8 +104,7 @@ test('AI output cannot echo tokens or raw canary values into evidence', async (c
     url: `http://127.0.0.1:${server.address().port}`, prompt: 'demo', timeoutMs: 500,
   });
   const serialized = JSON.stringify(output);
-  assert.equal(serialized.includes(DEMO_CANARY), false);
-  assert.equal(serialized.includes('remote-secret-value'), false);
+  for (const original of [DEMO_CANARY, 'remote-secret-value', jwt, github, gcp]) assert.equal(serialized.includes(original), false);
   assert.match(serialized, /REDACTED/);
 });
 
@@ -112,6 +117,7 @@ test('AI timeout is logged but deterministic rule and sandbox evidence still ret
     fixtureDir: MALICIOUS,
     baselineDir: SAFE,
     aiUrl: `http://127.0.0.1:${server.address().port}`,
+    allowRemoteAi: true,
     aiTimeoutMs: 30,
     logger: (event) => logs.push(event),
   });
@@ -119,6 +125,27 @@ test('AI timeout is logged but deterministic rule and sandbox evidence still ret
   assert.equal(result.findings.some(({ code }) => code === 'CANARY_EXFILTRATION'), true);
   assert.equal(logs.some(({ event }) => event === 'ai_analysis_failed'), true);
   assert.equal(result.findings.some(({ stage, evidence }) => stage === 'AI' && evidence.analyzer === 'LOCAL_STRUCTURED_FALLBACK_V1'), true);
+});
+
+test('configured remote AI stays disabled until the explicit opt-in is present', async (context) => {
+  let requests = 0;
+  const server = createServer((request, response) => {
+    requests += 1;
+    request.resume();
+    response.writeHead(200, { 'content-type': 'application/json' }).end('{"findings":[]}');
+  });
+  await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+  context.after(() => server.close());
+  const logs = [];
+  const result = await scanRelease({
+    fixtureDir: MALICIOUS,
+    baselineDir: SAFE,
+    aiUrl: `http://127.0.0.1:${server.address().port}`,
+    logger: (event) => logs.push(event),
+  });
+  assert.equal(requests, 0);
+  assert.equal(logs.some(({ event }) => event === 'ai_remote_disabled'), true);
+  assert.equal(result.findings.some(({ evidence }) => evidence.analyzer === 'LOCAL_STRUCTURED_FALLBACK_V1'), true);
 });
 
 test('local semantic fallback always emits schema-valid structured output', async () => {
@@ -150,13 +177,53 @@ test('AI transport rejects insecure remote URLs and oversized responses', async 
 test('AI prompt redacts common secret forms and enforces a bounded excerpt', () => {
   const secret = 'AKIA1234567890ABCDEF';
   const token = 'super-sensitive-token-value';
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkZW1vLXVzZXIifQ.synthetic_signature_12345';
+  const github = `ghp_${'G'.repeat(36)}`;
+  const gcp = `AIza${'A'.repeat(35)}`;
+  const common = `xoxb-${'1'.repeat(12)}-${'B'.repeat(16)}`;
   const prompt = buildAiPrompt({
     releaseId: 'demo-mcp@1.0.0', baselineTools: [], tools: [],
-    files: [{ path: 'index.mjs', content: `const api_key = '${token}'; const cloud = '${secret}';\n${'x'.repeat(100_000)}` }],
+    files: [{
+      path: 'index.mjs',
+      content: `const api_key = '${token}'; const cloud = '${secret}';\n` +
+        JSON.stringify({ nested: { access_token: jwt, github, gcp, common } }) + `\n${'x'.repeat(100_000)}`,
+    }],
   });
-  assert.equal(prompt.includes(secret), false);
-  assert.equal(prompt.includes(token), false);
+  for (const original of [secret, token, jwt, github, gcp, common]) assert.equal(prompt.includes(original), false);
+  assert.match(prompt, /REDACTED/);
   assert(prompt.length < 70_000);
+});
+
+test('AI prompt parses JSON and recursively removes quoted secret values', () => {
+  const github = `github_pat_${'R'.repeat(32)}`;
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJyZWN1cnNpdmUifQ.recursive_signature_123';
+  const privateKey = '-----BEGIN PRIVATE KEY-----\nSYNTHETIC_DEMO_MATERIAL\n-----END PRIVATE KEY-----';
+  const quotedMultiline = `prefix with \\"escaped quote\\" and newline\n${github}`;
+  const json = JSON.stringify({
+    public: 'safe metadata',
+    nested: [{ credentials: { access_token: quotedMultiline, private_key: privateKey } }],
+    headers: { authorization: jwt },
+  });
+  const prompt = buildAiPrompt({
+    releaseId: 'demo-mcp@1.0.0', baselineTools: [], tools: [],
+    files: [{ path: 'config.json', content: json }],
+  });
+  for (const original of [github, jwt, privateKey, quotedMultiline, 'SYNTHETIC_DEMO_MATERIAL']) {
+    assert.equal(prompt.includes(original), false);
+  }
+  assert.match(prompt, /safe metadata/);
+  assert.match(prompt, /REDACTED/);
+});
+
+test('AI prompt omits malformed JSON instead of leaking its raw remainder', () => {
+  const marker = 'MALFORMED_JSON_REMAINDER_MUST_NOT_LEAVE';
+  const malformed = `{"token":"unterminated ${marker}`;
+  const prompt = buildAiPrompt({
+    releaseId: 'demo-mcp@1.0.0', baselineTools: [], tools: [],
+    files: [{ path: 'broken.json', content: malformed }],
+  });
+  assert.equal(prompt.includes(marker), false);
+  assert.match(prompt, /OMITTED_INVALID_JSON/);
 });
 
 test('sandbox timeout returns INCONCLUSIVE instead of a false pass', async () => {
@@ -178,6 +245,42 @@ test('artifact digest is stable and changes with artifact content', async () => 
   const second = await artifactDigest(SAFE);
   assert.equal(first, second);
   assert.notEqual(first, await artifactDigest(MALICIOUS));
+});
+
+test('scan uses one scanner-owned snapshot despite concurrent source mutation', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'mcpshield-snapshot-source-'));
+  const events = [];
+  let markSnapshotReady;
+  const snapshotReady = new Promise((resolveReady) => { markSnapshotReady = resolveReady; });
+  try {
+    const originalManifest = {
+      name: 'snapshot-mcp', version: '1.0.0', entrypoint: 'index.mjs', declaredEgress: [],
+      tools: [{ name: 'safe_tool', description: 'Return a fixed demo value' }],
+    };
+    await writeFile(join(fixture, 'manifest.json'), JSON.stringify(originalManifest));
+    await writeFile(join(fixture, 'index.mjs'), "process.stdout.write('safe\\n');\n");
+    const expectedDigest = await artifactDigest(fixture);
+    const scanPromise = scanRelease({
+      fixtureDir: fixture,
+      logger: (event) => {
+        events.push(event);
+        if (event.event === 'snapshot_created') markSnapshotReady();
+      },
+    });
+    await snapshotReady;
+    await writeFile(join(fixture, 'manifest.json'), JSON.stringify({
+      ...originalManifest, version: '9.9.9', tools: [{ name: 'mutated_tool' }],
+    }));
+    await writeFile(join(fixture, 'index.mjs'), "import { spawnSync } from 'node:child_process'; spawnSync(process.execPath, ['-e', '']);\n");
+    const result = await scanPromise;
+    assert.equal(result.releaseId, 'snapshot-mcp@1.0.0');
+    assert.equal(result.artifactDigest, expectedDigest);
+    assert.equal(result.scanStatus, 'PASSED');
+    assert.notEqual(await artifactDigest(fixture), expectedDigest);
+    assert.equal(events.some(({ event }) => event === 'snapshot_removed'), true);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test('sandbox observes child process creation without exposing its arguments', async () => {
@@ -202,12 +305,14 @@ test('sandbox observes child process creation without exposing its arguments', a
 
 test('manifest traversal, duplicate tools, and invalid source fail closed', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'mcpshield-invalid-test-'));
+  const events = [];
   try {
     await writeFile(join(fixture, 'manifest.json'), JSON.stringify({
       name: 'invalid-mcp', version: '1.0.0', entrypoint: '../outside.mjs', declaredEgress: [],
       tools: [{ name: 'same' }, { name: 'same' }],
     }));
-    await assert.rejects(() => scanRelease({ fixtureDir: fixture, logger: quiet }), /duplicate tool name|escapes fixture/);
+    await assert.rejects(() => scanRelease({ fixtureDir: fixture, logger: (event) => events.push(event) }), /duplicate tool name|escapes fixture/);
+    assert.equal(events.some(({ event }) => event === 'snapshot_removed'), true);
     await assert.rejects(() => scanRelease({ fixtureDir: SAFE, source: 'UNMARKED', logger: quiet }), /unknown scan source/);
   } finally {
     await rm(fixture, { recursive: true, force: true });

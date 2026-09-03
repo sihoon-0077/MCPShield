@@ -17,6 +17,9 @@ Replay a saved result (never submitted as LIVE):
 Optional live submission:
   --submit-url http://127.0.0.1:3001/api/scans
   SCANNER_API_TOKEN must be set in the environment.
+
+Optional remote AI (explicit opt-in):
+  --ai-url https://trusted.example/analyze --allow-remote-ai true
 `;
 
 function parseArgs(args) {
@@ -48,6 +51,8 @@ try {
     process.exit(0);
   }
   const args = parseArgs(process.argv.slice(2));
+  const remoteAiOptIn = args['allow-remote-ai'] ?? process.env.MCP_SHIELD_ENABLE_REMOTE_AI ?? 'false';
+  if (!['true', 'false'].includes(remoteAiOptIn)) throw new TypeError('--allow-remote-ai must be true or false');
   const result = args['replay-file']
     ? await loadReplay(args['replay-file'])
     : await scanRelease({
@@ -58,6 +63,7 @@ try {
         aiUrl: args['ai-url'] ?? process.env.MCP_SHIELD_AI_URL,
         aiToken: process.env.MCP_SHIELD_AI_TOKEN,
         aiTimeoutMs: args['ai-timeout-ms'] ? Number(args['ai-timeout-ms']) : undefined,
+        allowRemoteAi: remoteAiOptIn === 'true',
         source: args.source ?? 'LIVE',
       });
   if (args['submit-url']) {

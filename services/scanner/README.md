@@ -50,9 +50,11 @@ inside a locked-down demo container, local mode stays within that container.
 ```powershell
 $env:MCP_SHIELD_AI_URL='https://trusted-analyzer.example/v1/analyze'
 $env:MCP_SHIELD_AI_TOKEN='<secret-manager-value>'
+$env:MCP_SHIELD_ENABLE_REMOTE_AI='true'
 node services/scanner/src/cli.mjs `
   --fixture demo/fixtures/mail-mcp-1.0.1 `
   --baseline demo/fixtures/mail-mcp-1.0.0 `
+  --allow-remote-ai true `
   --ai-timeout-ms 2000
 ```
 
@@ -60,11 +62,13 @@ The request is `{ "prompt": "..." }`. The response must be
 `{ "findings": [...] }`, and every finding must use
 `SEMANTIC_BEHAVIOR_MISMATCH`, stage `AI`, and `deterministic: false`. Prompt
 excerpts are size-limited and common private-key/token patterns are redacted.
-No remote AI endpoint is needed for the demo.
+No remote AI endpoint is needed for the demo. Merely setting an AI URL is not
+enough to send source excerpts: remote analysis also requires the explicit
+`--allow-remote-ai true` flag or `MCP_SHIELD_ENABLE_REMOTE_AI=true` opt-in.
 
-Disable remote analysis by unsetting `MCP_SHIELD_AI_URL`; the local structured
-fallback remains active. This is the rollback path if the remote analyzer is
-slow or unavailable.
+Disable remote analysis by removing the opt-in (or unsetting the URL); the local
+structured fallback remains active. This is the rollback path if the remote
+analyzer is slow or unavailable.
 
 ## Submit a LIVE result to Backend
 
