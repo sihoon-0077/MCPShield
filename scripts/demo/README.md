@@ -4,6 +4,7 @@
 npm.cmd run demo:reset
 npm.cmd run demo:run
 npm.cmd run demo:live-smoke
+npm.cmd run demo:evm-smoke
 npm.cmd run stack:up
 ```
 
@@ -11,7 +12,9 @@ npm.cmd run stack:up
 
 `demo:live-smoke` starts an ephemeral Backend without Docker, registers both releases, stores scans, produces signed 2-of-3 votes, and proves the LIVE Gateway allows only the verified release. It cleans up the Backend process and writes no database file.
 
-`stack:up` builds the Backend, seeds both synthetic releases and their signed 2-of-3 decisions, then starts the LIVE dashboard and two health-monitored gateways. Open `http://localhost:3000` and select `LIVE`. The local chain is available on loopback port 8545 for contract exploration; the default Backend ledger remains the deterministic `LOCAL_DEMO` projection so the stack does not depend on a dynamically deployed address.
+`demo:evm-smoke` needs no Docker. It starts Ganache, deploys the contract, runs register/scan/two signed votes/admission through the EVM Backend, and verifies the indexer's projected chain events.
+
+`stack:up` deploys the registry on the local chain, passes its address to the EVM Backend and indexer, seeds both synthetic releases and their signed 2-of-3 decisions, then starts the LIVE dashboard and two health-monitored gateways. Open `http://localhost:3000` and select `LIVE`.
 
 After the Security/AI files are present, run `npm run stack:scan` to execute the malicious fixture scanner as a one-shot, read-only Compose job. Its exfiltration sink is created ephemerally inside that isolated container. The optional `standalone-sink` profile exists only for manual inspection and is not published to the host.
 

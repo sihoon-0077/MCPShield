@@ -3,6 +3,7 @@ WORKDIR /app
 ENV NODE_ENV=development
 COPY package.json package-lock.json tsconfig.json ./
 COPY apps/api ./apps/api
+COPY apps/indexer ./apps/indexer
 COPY apps/reconciler ./apps/reconciler
 COPY apps/validator ./apps/validator
 COPY contracts ./contracts

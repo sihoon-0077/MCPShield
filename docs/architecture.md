@@ -76,4 +76,4 @@ Timeout, unavailable chain truth, an unknown response, and either hash mismatch 
 - `LOCAL_DEMO` ledger: Backend mirrors the contract state machine in SQLite.
 - `EVM` ledger: Backend reads and writes a deployed `ReleaseRegistry` through an RPC deadline.
 
-The default Compose demo uses `LOCAL_DEMO` for a stable one-command presentation and also starts a local EVM node for contract exploration. Contract integration itself is covered by Ganache tests and can be enabled in Backend EVM mode with a deployed address.
+The default Compose demo deploys `ReleaseRegistry` to its local EVM, shares the resulting address and deployment block through a small env artifact, and starts both Backend and indexer against that deployment. `npm run demo:evm-smoke` verifies the same deploy-to-index flow without Docker.
