@@ -204,6 +204,25 @@ test("scanner ingestion requires credentials, stamps LIVE, limits rate and body"
   } finally { await boundedApp.close(); }
 });
 
+test("returns the latest scan for a release without a preconfigured scan ID", async (t) => {
+  const app = await buildApp(options); t.after(() => app.close());
+  const releaseId = "mail-mcp@1.2.1";
+  await register(app, releaseId);
+  assert.equal((await app.inject({ method: "GET",
+    url: `/api/releases/${releaseId}/scans/latest` })).statusCode, 404);
+  const first = await scan(app, releaseId);
+  const second = { ...first, scanId: randomUUID(), scanStatus: "PASSED" as const };
+  assert.equal((await app.inject({ method: "POST", url: "/api/scans",
+    headers: { authorization: `Bearer ${scannerToken}` }, payload: second })).statusCode, 201);
+  const latest = await app.inject({ method: "GET",
+    url: `/api/releases/${releaseId}/scans/latest` });
+  assert.equal(latest.statusCode, 200);
+  assert.equal(latest.json().schemaVersion, "1.0.0");
+  assert.equal(latest.json().scan.scanId, second.scanId);
+  assert.equal((await app.inject({ method: "GET",
+    url: "/api/releases/not-a-release/scans/latest" })).statusCode, 400);
+});
+
 test("accepts signed attestations, rejects impersonation/replay/evidence mismatch", async (t) => {
   const app = await buildApp(options); t.after(() => app.close());
   await register(app, "mail-mcp@1.0.1");
