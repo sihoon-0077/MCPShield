@@ -167,6 +167,18 @@ export class BackendClient {
     return scan;
   }
 
+  async getLatestScan(releaseId: string): Promise<BackendScan | undefined> {
+    try {
+      const payload = await this.request(`/api/releases/${encodeURIComponent(releaseId)}/scans/latest`);
+      const scan = parseScan(payload.scan);
+      if (scan.releaseId !== releaseId) throw new Error("Backend returned a latest scan for the wrong release");
+      return scan;
+    } catch (error) {
+      if (error instanceof BackendError && error.status === 404) return undefined;
+      throw error;
+    }
+  }
+
   async submitValidatorVote(input: Json) {
     return this.request("/api/validators/vote", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
   }

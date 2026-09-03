@@ -1,9 +1,9 @@
 import type { Snapshot } from "./types";
 
-const a = "a".repeat(64);
-const b = "b".repeat(64);
-const c = "c".repeat(64);
-const d = "d".repeat(64);
+const a = "832b83fe46e8682d5b8cfd75bae7d193fa9ca7bd8027c333107b0e4869ae0af8";
+const b = "dc62858eaccd6be4610102d4dbd9fc13b3f5dc5ced1ce27befbd1ef8722f1511";
+const c = "186e20e6e68b50c907d48209188d82d5afc0bc9bebdad39efe773da0ee30a336";
+const d = "d0bf6289b1a1c64f2b5099332e51dc2684fb8ac8aa31b48d358f1719adfd1922";
 
 export const mockSnapshot: Snapshot = {
   schemaVersion: "1.0.0",
@@ -35,3 +35,14 @@ export const mockSnapshot: Snapshot = {
     { gateway: "Gateway B", releaseId: "mail-mcp@1.0.1", decision: "BLOCK", reasonCode: "RELEASE_REVOKED" }
   ]
 };
+
+export const unavailableSnapshot = (source: Snapshot["source"]): Snapshot => ({
+  schemaVersion: "1.0.0",
+  source,
+  generatedAt: new Date().toISOString(),
+  releases: [],
+  pipeline: (["STATIC", "AI", "SANDBOX"] as const).map((stage) => ({ stage, status: "INCONCLUSIVE", detail: "No current evidence is available" })),
+  sandboxEvents: [],
+  validators: [],
+  admissions: [],
+});

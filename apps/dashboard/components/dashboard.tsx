@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { mockSnapshot } from "../lib/demo-data";
+import { mockSnapshot, unavailableSnapshot } from "../lib/demo-data";
 import type { Snapshot, Source } from "../lib/types";
 
 const short = (value: string) => `${value.slice(0, 12)}…${value.slice(-6)}`;
@@ -29,13 +29,22 @@ export function Dashboard() {
       setNotice(source === "LIVE" ? "Live mode is connected to the Backend API." : "Replay mode is showing the saved offline evidence bundle.");
     } catch (error) {
       if (source === "LIVE") {
-        const replay = await fetch("/api/replay", { cache: "no-store" });
-        if (replay.ok) setSnapshot(await replay.json());
         const message = `Live API unavailable (${error instanceof Error ? error.message : "unknown error"})`;
-        setError(message);
-        setNotice(`${message}; switched explicitly to REPLAY.`);
+        try {
+          const replay = await fetch("/api/replay", { cache: "no-store" });
+          if (!replay.ok) throw new Error(`HTTP ${replay.status}`);
+          setSnapshot(await replay.json());
+          setError(message);
+          setNotice(`${message}; switched explicitly to REPLAY.`);
+        } catch (replayError) {
+          const combined = `${message}; Replay unavailable (${replayError instanceof Error ? replayError.message : "unknown error"}). Stale evidence was cleared.`;
+          setSnapshot(unavailableSnapshot("LIVE"));
+          setError(combined);
+          setNotice(combined);
+        }
       } else {
         const message = `Replay failed: ${error instanceof Error ? error.message : "unknown error"}`;
+        setSnapshot(unavailableSnapshot("REPLAY"));
         setError(message);
         setNotice(message);
       }
@@ -70,7 +79,7 @@ export function Dashboard() {
       <section className="source-explainer" aria-label="Evidence source details">
         <strong>{snapshot.source}</strong>
         <p>{snapshot.source === "LIVE" ? "Fetched now from the Backend API; admission is checked with both immutable hashes." : snapshot.source === "REPLAY" ? "Saved offline evidence; no live security claim is implied." : "Deterministic product preview; values are synthetic and never presented as live."}</p>
-        <span>{snapshot.ledgerMode ?? (snapshot.source === "LIVE" ? "UNKNOWN LEDGER" : "OFFLINE")}</span>
+        <span>{snapshot.ledgerMode === "LOCAL_DEMO" ? "LOCAL DEMO LEDGER · NOT ON-CHAIN" : snapshot.ledgerMode ?? (snapshot.source === "LIVE" ? "UNKNOWN LEDGER" : "OFFLINE")}</span>
       </section>
 
       <section className="metrics">
@@ -94,13 +103,14 @@ export function Dashboard() {
               </dl>
             </article>
           ))}
-          <div className="change-arrow" aria-hidden="true">→<span>behavior drift</span></div>
+          {snapshot.releases.length === 0 && <p className="empty-state">No current release evidence is available.</p>}
+          {snapshot.releases.length === 2 && <div className="change-arrow" aria-hidden="true">→<span>behavior drift</span></div>}
         </div>
-        <div className="diff-summary" aria-label="Release identity changes">
+        {snapshot.releases.length === 2 && <div className="diff-summary" aria-label="Release identity changes">
           <span className={baseline?.artifactDigest !== malicious?.artifactDigest ? "changed" : "same"}>Artifact digest {baseline?.artifactDigest !== malicious?.artifactDigest ? "changed" : "unchanged"}</span>
           <span className={baseline?.toolSurfaceHash !== malicious?.toolSurfaceHash ? "changed" : "same"}>Tool surface {baseline?.toolSurfaceHash !== malicious?.toolSurfaceHash ? "changed" : "unchanged"}</span>
           <span>Publisher signature {malicious?.signature ?? "UNKNOWN"}</span>
-        </div>
+        </div>}
       </section>
 
       <div className="two-column">
@@ -130,7 +140,7 @@ export function Dashboard() {
             {snapshot.validators.map((validator) => <div key={validator.id}><span className="avatar">{validator.id.slice(-1)}</span><b>{validator.id}</b><strong className={validator.decision === "FAIL" ? "danger" : "muted"}>{validator.decision}</strong></div>)}
             {snapshot.validators.length === 0 && <p className="empty-state">No validator votes are available from this source.</p>}
           </div>
-          <div className="chain-state"><span>On-chain status</span><strong>{malicious?.chainStatus ?? "UNAVAILABLE"}</strong>{malicious?.txHash && explorer ? <a href={`${explorer}/tx/${encodeURIComponent(malicious.txHash)}`} target="_blank" rel="noreferrer" aria-label="View status transaction in a new tab">View transaction ↗</a> : malicious?.txHash ? <code title={malicious.txHash}>{short(malicious.txHash)}</code> : null}</div>
+          <div className="chain-state"><span>{snapshot.ledgerMode === "LOCAL_DEMO" ? "Local demo ledger status" : "On-chain status"}</span><strong>{malicious?.chainStatus ?? "UNAVAILABLE"}</strong>{malicious?.txHash && explorer ? <a href={`${explorer}/tx/${encodeURIComponent(malicious.txHash)}`} target="_blank" rel="noreferrer" aria-label="View status transaction in a new tab">View transaction ↗</a> : malicious?.txHash ? <code title={malicious.txHash}>{short(malicious.txHash)}</code> : null}</div>
         </section>
 
         <section className="card">
@@ -139,6 +149,7 @@ export function Dashboard() {
             {snapshot.admissions.map((item, index) => (
               <article key={`${item.gateway}-${item.releaseId}-${index}`}><div><small>{item.gateway}</small><b>{item.releaseId}</b></div><strong className={item.decision === "BLOCK" ? "block" : "allow"}>{item.decision}</strong><p>{item.reasonCode.replaceAll("_", " ")}</p></article>
             ))}
+            {snapshot.admissions.length === 0 && <p className="empty-state">No current Gateway admission decisions are available.</p>}
           </div>
         </section>
       </div>

@@ -53,11 +53,11 @@ try {
   const seeded = await run(["scripts/demo/seed.mjs"]);
   assert.equal(seeded.code, 0, seeded.stderr || seeded.stdout);
 
-  const safe = await run(["apps/gateway/src/index.mjs", "run", "--release", "mail-mcp@1.0.0", "--digest", `sha256:${"a".repeat(64)}`, "--surface", `0x${"b".repeat(64)}`, "--mode", "live", "--", process.execPath, "-e", "process.stdout.write('LIVE_SAFE_STARTED')"]);
+  const safe = await run(["apps/gateway/src/index.mjs", "run", "--artifact", "demo/fixtures/mail-mcp-1.0.0", "--mode", "live"]);
   assert.equal(safe.code, 0, safe.stderr);
-  assert.equal(safe.stdout, "LIVE_SAFE_STARTED");
+  assert.match(safe.stdout, /"ok":true/);
 
-  const blocked = await run(["apps/gateway/src/index.mjs", "run", "--release", "mail-mcp@1.0.1", "--digest", `sha256:${"c".repeat(64)}`, "--surface", `0x${"d".repeat(64)}`, "--mode", "live", "--", process.execPath, "-e", "process.stdout.write('MUST_NOT_START')"]);
+  const blocked = await run(["apps/gateway/src/index.mjs", "run", "--artifact", "demo/fixtures/mail-mcp-1.0.1", "--mode", "live"]);
   assert.equal(blocked.code, 3, blocked.stderr);
   assert.equal(blocked.stdout, "");
   assert.match(blocked.stderr, /RELEASE_REVOKED/);
@@ -68,7 +68,16 @@ try {
     return (await response.json()).release;
   }));
   assert.deepEqual(summary.map((release) => release.status), ["VERIFIED", "REVOKED"]);
-  console.log(JSON.stringify({ source: "LIVE", safe: "ALLOW", malicious: "BLOCK_BEFORE_SPAWN", statuses: summary.map((release) => release.status), result: "PASS" }, null, 2));
+  const latestScans = await Promise.all(["mail-mcp@1.0.0", "mail-mcp@1.0.1"].map(async (releaseId) => {
+    const response = await fetch(`${apiUrl}/api/releases/${encodeURIComponent(releaseId)}/scans/latest`);
+    assert.equal(response.status, 200);
+    return (await response.json()).scan;
+  }));
+  assert.match(latestScans[0].scanId, /^[0-9a-f-]{36}$/);
+  assert.notEqual(latestScans[0].scanId, latestScans[1].scanId);
+  assert.equal(latestScans[1].scanStatus, "FAILED");
+  assert.ok(latestScans[1].findings.some(({ code }) => code === "CANARY_EXFILTRATION"));
+  console.log(JSON.stringify({ source: "LIVE", safe: "ALLOW", malicious: "BLOCK_BEFORE_SPAWN", statuses: summary.map((release) => release.status), latestScanIds: latestScans.map(({ scanId }) => scanId), result: "PASS" }, null, 2));
 } finally {
   const exited = new Promise((resolvePromise) => backend.once("exit", resolvePromise));
   if (backend.exitCode === null && backend.signalCode === null) backend.kill("SIGTERM");

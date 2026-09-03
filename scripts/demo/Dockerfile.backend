@@ -10,6 +10,9 @@ COPY contracts ./contracts
 COPY database ./database
 COPY packages/contracts-sdk ./packages/contracts-sdk
 COPY packages/protocol ./packages/protocol
+COPY services/scanner ./services/scanner
+COPY services/exfil-sink ./services/exfil-sink
+COPY demo/fixtures ./demo/fixtures
 COPY scripts/demo/package.json ./scripts/demo/package.json
 COPY scripts/demo/seed.mjs ./scripts/demo/seed.mjs
 COPY apps/dashboard/package.json ./apps/dashboard/package.json

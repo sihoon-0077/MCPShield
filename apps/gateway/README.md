@@ -1,14 +1,13 @@
 # MCPShield Gateway
 
-The gateway checks `POST /api/admission/check` before starting any MCP child process. It fails closed on invalid responses, network errors, and timeouts.
+The Gateway accepts an artifact directory, never a caller-provided release ID, digest, tool hash, executable, or arguments. It copies regular files into a private temporary snapshot, computes the scanner-compatible artifact and tool-surface hashes from those exact bytes, validates the manifest entrypoint, checks admission, and starts only that snapshotted entrypoint with the current Node executable.
 
 ```powershell
-npm.cmd install
-npm.cmd test
-node src/index.mjs run --release mail-mcp@1.0.0 --digest sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --surface 0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --mode mock -- node -e "console.log('safe MCP started')"
-node src/index.mjs run --release mail-mcp@1.0.1 --digest sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc --surface 0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd --mode mock -- node -e "console.log('must never run')"
+npm.cmd run test:gateway
+node apps/gateway/src/index.mjs run --artifact demo/fixtures/mail-mcp-1.0.0 --mode replay --replay scripts/demo/replay.json
+node apps/gateway/src/index.mjs run --artifact demo/fixtures/mail-mcp-1.0.1 --mode replay --replay scripts/demo/replay.json
 ```
 
-Use `npm start` as a byte-transparent MCP stdio wrapper. Set `MCPSHIELD_RELEASE_ID`, `MCPSHIELD_ARTIFACT_DIGEST`, `MCPSHIELD_TOOL_SURFACE_HASH`, and a fixed JSON command such as `MCPSHIELD_COMMAND_JSON=["node","server.mjs"]`. The child is created only after the Backend confirms the exact release, artifact digest, and tool-surface hash. JSON-RPC remains on stdout while structured Gateway logs stay on stderr. Parent termination signals are forwarded and pipes/listeners are cleaned up. Production mode is `live`; set `MCPSHIELD_API_URL` and optionally `MCPSHIELD_ADMISSION_TIMEOUT_MS`. `MCPSHIELD_ALLOWED_COMMANDS` is a comma-separated executable allowlist.
+For MCP stdio mode set `MCPSHIELD_ARTIFACT_DIR`, `MCPSHIELD_MODE`, `MCPSHIELD_API_URL`, and optionally `MCPSHIELD_ADMISSION_TIMEOUT_MS` or `MCPSHIELD_REPLAY_FILE`. The Gateway relays newline-delimited JSON-RPC bytes while observing request IDs. A `tools/list` response whose canonical tool surface differs from the admitted manifest is suppressed and the child is terminated fail-closed.
 
-To disable spawning without changing code, set `MCPSHIELD_ALLOWED_COMMANDS` to a non-existent executable name or stop the gateway service. Use `MCPSHIELD_MODE=replay` with `MCPSHIELD_REPLAY_FILE` only for an explicitly labeled offline demo.
+Symlinks, traversal entrypoints, non-JavaScript entrypoints, oversized artifacts, arbitrary commands, command arguments, shells, `npx`, and caller-supplied identity values are not accepted. Stop the Gateway service to disable spawning. REPLAY is demo-only and verifies its saved artifact identity; MOCK is display-only and always returns BLOCK in the Gateway.
