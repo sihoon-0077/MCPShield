@@ -13,12 +13,13 @@ x-backend-env: &backend-env
   ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-dev_admin_token_32_characters}
   SCANNER_API_TOKEN: ${SCANNER_API_TOKEN:-dev_scanner_token_32_characters}
   CORS_ALLOWLIST: http://localhost:3000
-  DATABASE_PATH: /tmp/mcpshield.db
+  DATABASE_PATH: /data/mcpshield.db
   API_HOST: 0.0.0.0
   API_PORT: 3001
-  VALIDATOR_ADDRESSES: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266,0x70997970C51812dc3A010C7d01b50e0d17dc79C8,0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
+  VALIDATOR_ADDRESSES: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8,0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC,0x90F79bf6EB2c4f870365E785982E1f101E93b906
   ATTESTATION_CHAIN_ID: 31337
-  ATTESTATION_CONTRACT: 0x0000000000000000000000000000000000000001
+  RPC_URL: http://local-chain:8545
+  RELAYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
 x-gateway: &gateway
   <<: *security
@@ -45,7 +46,7 @@ services:
     build:
       context: .
       dockerfile: scripts/demo/Dockerfile.backend
-    command: ["npx", "ganache", "--server.host", "0.0.0.0", "--server.port", "8545", "--chain.chainId", "31337", "--wallet.deterministic", "--logging.quiet"]
+    command: ["npx", "ganache", "--server.host", "0.0.0.0", "--server.port", "8545", "--chain.chainId", "31337", "--wallet.mnemonic", "test test test test test test test test test test test junk", "--logging.quiet"]
     ports:
       - "127.0.0.1:8545:8545"
     tmpfs:
@@ -57,20 +58,78 @@ services:
       retries: 20
     restart: unless-stopped
 
+  contract-init:
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    user: "0:0"
+    build:
+      context: .
+      dockerfile: scripts/demo/Dockerfile.backend
+    command: ["sh", "-c", "chown node:node /deployment /data && chmod 0750 /deployment /data && exec su node -s /bin/sh -c 'umask 027 && npm run chain:deploy'"]
+    environment:
+      RPC_URL: http://local-chain:8545
+      DEPLOYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      VALIDATOR_ADDRESSES: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8,0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC,0x90F79bf6EB2c4f870365E785982E1f101E93b906
+      DEPLOYMENT_ENV_PATH: /deployment/registry.env
+    volumes:
+      - deployment:/deployment
+      - projection:/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    depends_on:
+      local-chain:
+        condition: service_healthy
+    restart: "no"
+
   backend:
     <<: *security
     build:
       context: .
       dockerfile: scripts/demo/Dockerfile.backend
     environment: *backend-env
+    command: ["sh", "-c", "set -a && . /deployment/registry.env && set +a && exec npm run start:api"]
     ports:
       - "127.0.0.1:3001:3001"
+    volumes:
+      - deployment:/deployment:ro
+      - projection:/data
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    depends_on:
+      contract-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>r.json()).then(x=>{if(x.ledgerMode!=='EVM')process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 5s
       timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  indexer:
+    <<: *security
+    build:
+      context: .
+      dockerfile: scripts/demo/Dockerfile.backend
+    command: ["sh", "-c", "set -a && . /deployment/registry.env && set +a && exec npm run start:indexer"]
+    environment:
+      RPC_URL: http://local-chain:8545
+      DATABASE_PATH: /data/mcpshield.db
+      CONFIRMATION_DEPTH: 0
+      POLL_INTERVAL_MS: 1000
+      INDEXER_HEALTH_PATH: /tmp/indexer-health
+    volumes:
+      - deployment:/deployment:ro
+      - projection:/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=8m,mode=1777
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /tmp/indexer-health"]
+      interval: 5s
+      timeout: 2s
       retries: 20
     restart: unless-stopped
 
@@ -79,12 +138,14 @@ services:
     build:
       context: .
       dockerfile: scripts/demo/Dockerfile.backend
-    command: ["npm", "run", "demo:seed"]
+    command: ["sh", "-c", "set -a && . /deployment/registry.env && set +a && npm run demo:seed"]
     environment:
       <<: *backend-env
       MCPSHIELD_API_URL: http://backend:3001
+    volumes:
+      - deployment:/deployment:ro
     depends_on:
-      backend:
+      indexer:
         condition: service_healthy
     restart: "no"
 
@@ -96,7 +157,6 @@ services:
     environment:
       MCPSHIELD_API_URL: http://backend:3001
       MCPSHIELD_API_TIMEOUT_MS: 3000
-      MCPSHIELD_SCAN_IDS: 00000000-0000-4000-8000-000000000100,00000000-0000-4000-8000-000000000101
     ports:
       - "127.0.0.1:3000:3000"
     tmpfs:
@@ -159,3 +219,7 @@ services:
       timeout: 2s
       retries: 12
     restart: unless-stopped
+
+volumes:
+  deployment:
+  projection:

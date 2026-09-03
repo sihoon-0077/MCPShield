@@ -51,7 +51,7 @@ npm.cmd run stack:up
 npm.cmd run stack:down
 ```
 
-기본 Compose 스택은 재현성을 위해 Backend를 `LOCAL_DEMO` 원장 모드로 사용하고, 별도의 로컬 EVM 노드를 함께 제공합니다. 실제 컨트랙트 연동은 `RPC_URL`, `REGISTRY_ADDRESS`, `RELAYER_PRIVATE_KEY`를 모두 설정한 EVM 모드에서 활성화됩니다.
+기본 Compose 스택은 로컬 EVM에 `ReleaseRegistry`를 배포한 뒤 배포 주소를 Backend와 indexer에 공유합니다. Backend health는 `EVM` 원장 모드를 확인하며, indexer가 시작 동기화를 완료한 뒤에만 데모 seed와 UI가 시작됩니다.
 
 ## 구성
 

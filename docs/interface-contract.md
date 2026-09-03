@@ -38,6 +38,9 @@ Required fields are `scanId`, full release identity, `scanStatus`, `findings`, `
 
 Stages are `STATIC`, `AI`, `SANDBOX`, or `POLICY`. AI output must conform to the same bounded Finding shape and cannot directly alter chain state.
 
+The latest-scan endpoint returns `{ "schemaVersion": "1.0.0", "scan": <ScanResult> }`.
+It returns `404 SCAN_NOT_FOUND` when that release has no stored scan.
+
 ## Validator attestation
 
 The EIP-712 domain is:
