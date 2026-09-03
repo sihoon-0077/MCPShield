@@ -36,10 +36,10 @@ Untrusted artifact
 | Fake scan submission | evidence pollution | scanner-only credential, body/rate limits, schema validation | scanner credential compromise |
 | Validator impersonation | forged quorum | EIP-712 recovery and contract validator set | real validator key compromise |
 | Signature replay | duplicate/cross-domain vote | nonce, deadline, chain ID, contract domain, one vote/release | validator set rotation is not production-complete |
-| Relayer/API crash | DB-chain split brain | pending operation lease and receipt reconciliation | SQLite multi-process contention |
+| Relayer/API crash or indexer-first receipt | DB-chain split brain or duplicate write | pending operation lease, chain-truth reconciliation, idempotent upsert, WAL busy timeout | SQLite remains a low-throughput demo projection |
 | Indexer downtime/reorg | stale admission state | confirmed-block backfill, checkpoint hash, rewind, dedupe | reorg deeper than configured rewind depth |
 | RPC outage | unsafe allow or indefinite wait | deadline and fail-closed decision | availability loss |
-| Gateway bypass | direct MCP execution | supported-client wrapper and clear deployment boundary | host owner can deliberately bypass the wrapper |
+| Gateway artifact/runtime drift | unreviewed code or hidden tool execution | Gateway-owned snapshot, minimal environment, shared import policy, filesystem permission boundary, JSON-RPC surface guard | host owner can deliberately bypass the wrapper; network containment still requires deployment sandboxing |
 | Evidence disclosure | immutable privacy leak | raw evidence off-chain; only hash on-chain | off-chain store access policy remains deployment-specific |
 
 ## Abuse cases
@@ -59,4 +59,3 @@ Untrusted artifact
 - preventing a machine owner from disabling enforcement;
 - claiming Docker provides a perfect malware containment boundary;
 - production decentralization from three demo validator keys.
-

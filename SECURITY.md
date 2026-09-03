@@ -43,3 +43,6 @@ Maintainers should acknowledge a report before publishing details, reproduce it 
 5. `REVOKED` is terminal for a release ID.
 6. Admission fails closed for unavailable state, mismatched hashes, or non-verified status.
 7. A process is spawned only after admission returns `ALLOW` and `VERIFIED`.
+8. Gateway children inherit only explicitly allowed non-injection environment variables and cannot read outside the admitted snapshot.
+9. Dynamic, absolute, bare-package, and missing relative module loads are rejected by the shared Scanner/Gateway artifact policy.
+10. Runtime `tools/call` names and `tools/list` surfaces must match the admitted manifest, including batched JSON-RPC traffic.
