@@ -46,6 +46,7 @@ export class Repository {
 
   constructor(databasePath: string) {
     this.db = new DatabaseSync(databasePath);
+    this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec("PRAGMA journal_mode = WAL");
     const here = path.dirname(fileURLToPath(import.meta.url));
     const migrationPath = path.resolve(

@@ -37,6 +37,7 @@ export interface AppOptions {
   bodyLimit?: number;
   scanRateLimit?: number;
   operationLeaseMs?: number;
+  repository?: Repository;
 }
 
 function errorBody(code: string, message: string, details?: unknown) {
@@ -62,7 +63,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     },
   });
   await app.register(rateLimit, { global: false });
-  const repository = new Repository(options.databasePath ?? ":memory:");
+  const repository = options.repository ?? new Repository(options.databasePath ?? ":memory:");
   const validators = new Set(
     (options.validatorAddresses ?? defaultValidators).map((address) => address.toLowerCase()),
   );
@@ -166,12 +167,18 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         repository.updatePendingOperation(operationId, "SUBMITTED", tx.hash);
         await tx.wait();
       }
-      const release = repository.createRelease({
-        releaseId: body.releaseId,
-        artifactDigest: body.artifactDigest,
-        toolSurfaceHash: body.toolSurfaceHash,
-        registrationTxHash: tx?.hash,
-      });
+      let release;
+      if (tx && options.registryClient) {
+        const chainRelease = await options.registryClient.getRelease(body.releaseId);
+        repository.upsertReleaseFromChain({ ...chainRelease, registrationTxHash: tx.hash });
+        release = repository.getRelease(body.releaseId)!;
+      } else {
+        release = repository.createRelease({
+          releaseId: body.releaseId,
+          artifactDigest: body.artifactDigest,
+          toolSurfaceHash: body.toolSurfaceHash,
+        });
+      }
       repository.updatePendingOperation(operationId, "COMPLETED", tx?.hash);
       return reply.code(201).send({ schemaVersion: SCHEMA_VERSION, release, txHash: tx?.hash });
     } catch (error) {
@@ -377,12 +384,19 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         repository.updatePendingOperation(operationId, "SUBMITTED", tx.hash);
         await tx.wait();
       }
-      const release = repository.recordVote({
-        ...attestation,
-        scanId: body.scanId,
-        validatorAddress,
-        txHash: tx?.hash,
-      });
+      let release;
+      if (tx && options.registryClient) {
+        const [chainRelease, chainNonce] = await Promise.all([
+          options.registryClient.getRelease(body.releaseId),
+          options.registryClient.getValidatorNonce(validatorAddress),
+        ]);
+        repository.reconcileVoteFromChain({ ...attestation, scanId: body.scanId,
+          validatorAddress, txHash: tx.hash }, chainRelease.status, chainNonce);
+        release = repository.getRelease(body.releaseId)!;
+      } else {
+        release = repository.recordVote({ ...attestation, scanId: body.scanId,
+          validatorAddress });
+      }
       repository.updatePendingOperation(operationId, "COMPLETED", tx?.hash);
       return reply.code(201).send({ schemaVersion: SCHEMA_VERSION, release, validatorAddress, txHash: tx?.hash });
     } catch (error) {

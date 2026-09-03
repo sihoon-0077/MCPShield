@@ -10,7 +10,7 @@ import { deployRegistry } from "../../contracts/scripts/deploy.js";
 import { attestationDomain, attestationTypes, chainDecisions,
   createReleaseRegistry, releaseKey } from "../../packages/contracts-sdk/src/index.js";
 
-test("EVM smoke: deploy, 2-of-3 vote, admission and indexed events", async () => {
+test("EVM smoke survives indexer projection winning the API receipt race", async () => {
   const port = 32_000 + (process.pid % 1_000);
   const rpcUrl = `http://127.0.0.1:${port}`;
   const server = ganache.server({ logging: { quiet: true },
@@ -24,12 +24,35 @@ test("EVM smoke: deploy, 2-of-3 vote, admission and indexed events", async () =>
   const registryAddress = await registry.getAddress();
   const deploymentBlock = (await registry.deploymentTransaction()!.wait())!.blockNumber;
   const client = new EvmRegistryClient(rpcUrl, registryAddress, ownerKey, 10_000);
-  const app = await buildApp({ databasePath: ":memory:", validatorAddresses: validators,
+  const projection = new Repository(":memory:");
+  const indexProvider = new JsonRpcProvider(rpcUrl);
+  const indexer = new ChainIndexer(indexProvider,
+    createReleaseRegistry(registryAddress, indexProvider), projection,
+    registryAddress, deploymentBlock, 0, 2);
+  let preprojectedRegistrations = 0;
+  let preprojectedVotes = 0;
+  const registerRelease = client.registerRelease.bind(client);
+  client.registerRelease = async (...args) => {
+    const tx = await registerRelease(...args);
+    return { hash: tx.hash, wait: async () => {
+      await tx.wait();
+      await indexer.syncOnce();
+      preprojectedRegistrations += 1;
+    } };
+  };
+  const submitAttestation = client.submitAttestation.bind(client);
+  client.submitAttestation = async (attestation) => {
+    const tx = await submitAttestation(attestation);
+    return { hash: tx.hash, wait: async () => {
+      await tx.wait();
+      await indexer.syncOnce();
+      preprojectedVotes += 1;
+    } };
+  };
+  const app = await buildApp({ repository: projection, validatorAddresses: validators,
     adminApiToken: "smoke_admin_token_32_characters", scannerApiToken: "smoke_scanner_token_32_chars",
     corsAllowlist: ["http://localhost:3000"], attestationChainId: 31337,
     attestationContract: registryAddress, registryClient: client });
-  const projection = new Repository(":memory:");
-  const indexProvider = new JsonRpcProvider(rpcUrl);
   try {
     const releaseId = "smoke-mcp@1.0.0";
     const artifactDigest = `sha256:${"a".repeat(64)}`;
@@ -91,10 +114,8 @@ test("EVM smoke: deploy, 2-of-3 vote, admission and indexed events", async () =>
     assert.equal(blocked.json().decision, "BLOCK");
     assert.equal(blocked.json().releaseStatus, "REVOKED");
 
-    const indexer = new ChainIndexer(indexProvider,
-      createReleaseRegistry(registryAddress, indexProvider), projection,
-      registryAddress, deploymentBlock, 0, 2);
-    await indexer.syncOnce();
+    assert.equal(preprojectedRegistrations, 2);
+    assert.equal(preprojectedVotes, 4);
     const events = projection.listEvents(releaseId);
     assert.equal(events.filter((event) => event.eventName === "ReleaseRegistered").length, 1);
     assert.equal(events.filter((event) => event.eventName === "VoteSubmitted").length, 2);
@@ -105,7 +126,6 @@ test("EVM smoke: deploy, 2-of-3 vote, admission and indexed events", async () =>
       event.eventName === "StatusChanged" && event.status === "REVOKED"), true);
   } finally {
     await app.close();
-    projection.close();
     indexProvider.destroy();
     await server.close();
   }
