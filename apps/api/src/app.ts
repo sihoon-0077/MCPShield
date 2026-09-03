@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import { id, verifyTypedData } from "ethers";
 import {
   attestationDomain,
@@ -24,14 +25,17 @@ const defaultValidators = [
 ];
 
 export interface AppOptions {
+  adminApiToken: string;
+  scannerApiToken: string;
   databasePath?: string;
   validatorAddresses?: string[];
   logger?: boolean;
   registryClient?: RegistryClient;
-  adminApiToken?: string;
   corsAllowlist?: string[];
   attestationChainId?: number;
   attestationContract?: string;
+  bodyLimit?: number;
+  scanRateLimit?: number;
 }
 
 function errorBody(code: string, message: string, details?: unknown) {
@@ -45,19 +49,23 @@ function tokenMatches(header: string | undefined, expected: string) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export async function buildApp(options: AppOptions = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: options.logger ?? false });
+export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
+  const app = Fastify({
+    logger: options.logger ?? false,
+    bodyLimit: options.bodyLimit ?? 262_144,
+  });
   const allowlist = new Set(options.corsAllowlist ?? ["http://localhost:3000"]);
   await app.register(cors, {
     origin(origin, callback) {
       callback(null, !origin || allowlist.has(origin));
     },
   });
+  await app.register(rateLimit, { global: false });
   const repository = new Repository(options.databasePath ?? ":memory:");
   const validators = new Set(
     (options.validatorAddresses ?? defaultValidators).map((address) => address.toLowerCase()),
   );
-  const adminToken = options.adminApiToken ?? "local-demo-admin-token";
+  const adminToken = options.adminApiToken;
   const domain = attestationDomain(
     options.attestationChainId ?? 31337,
     options.attestationContract ?? "0x0000000000000000000000000000000000000001",
@@ -105,7 +113,9 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       repository.updatePendingOperation(operationId, "COMPLETED", tx?.hash);
       return reply.code(201).send({ schemaVersion: SCHEMA_VERSION, release, txHash: tx?.hash });
     } catch (error) {
-      repository.updatePendingOperation(operationId, "FAILED", undefined, String(error));
+      if (!String(error).includes("RPC_TIMEOUT:registerReleaseReceipt")) {
+        repository.updatePendingOperation(operationId, "FAILED", undefined, String(error));
+      }
       throw error;
     }
   });
@@ -121,8 +131,17 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       : reply.code(404).send(errorBody("RELEASE_NOT_FOUND", "Release was not found"));
   });
 
-  app.post("/api/scans", async (request, reply) => {
-    const validation = validateScanResult(request.body);
+  app.post("/api/scans", {
+    config: { rateLimit: { max: options.scanRateLimit ?? 30, timeWindow: "1 minute" } },
+  }, async (request, reply) => {
+    if (!tokenMatches(request.headers.authorization, options.scannerApiToken)) {
+      return reply.code(401).send(errorBody("UNAUTHORIZED_SCANNER", "Scanner credential required"));
+    }
+    const trustedInput = {
+      ...(request.body as Record<string, unknown>),
+      source: "LIVE",
+    };
+    const validation = validateScanResult(trustedInput);
     if (!validation.valid || !patterns.releaseId.test((request.body as any)?.releaseId ?? "")) {
       return reply.code(400).send(errorBody(
         "INVALID_SCAN_RESULT", "Scan result failed schema validation",
@@ -195,7 +214,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     }
 
     const operationId = `attestation:${id(body.signature)}`;
-    repository.createPendingOperation(operationId, "SUBMIT_ATTESTATION", body);
+    repository.createPendingOperation(operationId, "SUBMIT_ATTESTATION", {
+      ...body,
+      validatorAddress,
+    });
     try {
       const attestation = {
         releaseId: body.releaseId,
@@ -219,7 +241,9 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       repository.updatePendingOperation(operationId, "COMPLETED", tx?.hash);
       return reply.code(201).send({ schemaVersion: SCHEMA_VERSION, release, validatorAddress, txHash: tx?.hash });
     } catch (error) {
-      repository.updatePendingOperation(operationId, "FAILED", undefined, String(error));
+      if (!String(error).includes("RPC_TIMEOUT:attestationReceipt")) {
+        repository.updatePendingOperation(operationId, "FAILED", undefined, String(error));
+      }
       const code = error instanceof Error ? error.message : "ATTESTATION_FAILED";
       if (["RELEASE_NOT_FOUND", "SCAN_EVIDENCE_MISMATCH"].includes(code)) return reply.code(409).send(errorBody(code, "Attestation does not match a stored release scan"));
       if (code === "INVALID_NONCE") return reply.code(409).send(errorBody(code, "Attestation nonce is stale or skipped"));

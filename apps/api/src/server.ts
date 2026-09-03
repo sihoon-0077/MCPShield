@@ -4,7 +4,7 @@ import { loadConfig } from "./config.js";
 
 const config = loadConfig();
 const registryClient = registryClientFromEnv();
-await registryClient?.validateConnection(config.attestationChainId);
+await registryClient?.validateConnection(config.attestationChainId, config.validatorAddresses);
 
 const app = await buildApp({
   databasePath: config.databasePath,
@@ -12,6 +12,7 @@ const app = await buildApp({
   logger: true,
   registryClient,
   adminApiToken: config.adminApiToken,
+  scannerApiToken: config.scannerApiToken,
   corsAllowlist: config.corsAllowlist,
   attestationChainId: config.attestationChainId,
   attestationContract: config.attestationContract,

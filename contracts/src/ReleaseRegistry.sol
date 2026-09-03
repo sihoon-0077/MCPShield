@@ -57,7 +57,8 @@ contract ReleaseRegistry {
         bytes32 indexed releaseKey,
         address indexed validator,
         Decision decision,
-        bytes32 indexed evidenceHash
+        bytes32 indexed evidenceHash,
+        uint256 nonce
     );
     event StatusChanged(
         bytes32 indexed releaseKey,
@@ -151,7 +152,7 @@ contract ReleaseRegistry {
         hasVoted[key][validator] = true;
         if (decision == Decision.PASS) item.passVotes += 1;
         if (decision == Decision.FAIL) item.failVotes += 1;
-        emit VoteSubmitted(key, validator, decision, evidenceHash);
+        emit VoteSubmitted(key, validator, decision, evidenceHash, nonce);
 
         Status previous = item.status;
         if (decision == Decision.FAIL) {

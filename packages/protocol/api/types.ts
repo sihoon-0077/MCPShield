@@ -57,3 +57,32 @@ export interface AdmissionDecision {
   checkedAt: string;
   source: Source;
 }
+
+export interface RegisterReleaseRequest {
+  schemaVersion: typeof SCHEMA_VERSION;
+  releaseId: string;
+  artifactDigest: string;
+  toolSurfaceHash: string;
+}
+
+export interface SubmitScanRequest extends Omit<ScanResult, "source"> {
+  source?: Source;
+}
+
+export interface SubmitAttestationRequest {
+  schemaVersion: typeof SCHEMA_VERSION;
+  releaseId: string;
+  scanId: string;
+  decision: ValidatorDecision;
+  evidenceHash: string;
+  nonce: number;
+  deadline: number;
+  signature: string;
+}
+
+export interface AdmissionRequest {
+  schemaVersion: typeof SCHEMA_VERSION;
+  releaseId: string;
+  artifactDigest: string;
+  toolSurfaceHash: string;
+}

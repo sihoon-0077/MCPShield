@@ -36,6 +36,8 @@ async function sign(wallet: Wallet, domain: ReturnType<typeof attestationDomain>
 test("contract recovers validator signer and rejects outsider, replay, and expiry", async () => {
   const { ganacheProvider, registry, validators, outsider, key, domain } = await fixture();
   try {
+    assert.equal(await registry.isValidator(validators[0].address), true);
+    assert.equal(await registry.isValidator(outsider.address), false);
     const deadline = Math.floor(Date.now() / 1000) + 300;
     const outsiderSig = await sign(outsider, domain, key, "FAIL", 0, deadline);
     await assert.rejects(registry.submitAttestation(key, 1, evidence, 0, deadline, outsiderSig));

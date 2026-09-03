@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS validator_nonces (
 
 CREATE TABLE IF NOT EXISTS indexer_checkpoints (
   name TEXT PRIMARY KEY,
-  block_number INTEGER NOT NULL
+  block_number INTEGER NOT NULL,
+  block_hash TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS pending_operations (

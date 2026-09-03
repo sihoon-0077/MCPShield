@@ -3,10 +3,15 @@
 Run `npm run start:api`. The default port is `3001`; local state is stored in
 `mcpshield.db`. Set `DATABASE_PATH=:memory:` for ephemeral state and
 `VALIDATOR_ADDRESSES` to three comma-separated validator addresses.
-Copy `.env.example` values into your secret manager or environment and replace
-all placeholders. Startup rejects missing admin, CORS, validator, and EIP-712
+Use `.env.example` as a variable checklist and supply values through your
+secret manager or environment; it intentionally contains no usable values.
+Startup rejects missing or placeholder admin/scanner credentials, CORS, validator, and EIP-712
 domain settings. `POST /api/releases` requires
 `Authorization: Bearer $ADMIN_API_TOKEN`.
+`POST /api/scans` separately requires
+`Authorization: Bearer $SCANNER_API_TOKEN`; the server stamps accepted results
+as `LIVE` instead of trusting the submitted source. Scan ingestion has a
+256-KiB default body limit and a 30 requests/minute default rate limit.
 
 Endpoints:
 
@@ -38,6 +43,12 @@ for the deployment phase, but a PostgreSQL runtime adapter is not part of this
 hackathon build.
 
 `pending_operations` records before-send, submitted tx hash, completion, and
-failure states to expose DB/chain partial failures. A production deployment
-should add a reconciliation worker for operations left in `SUBMITTED`; retries
-are idempotently keyed by release ID or attestation signature.
+failure states to expose DB/chain partial failures. Run `npm run reconcile` to
+check `SUBMITTED` receipts and idempotently rebuild releases, votes, validator
+nonces, and status from chain truth. Pending receipts and RPC timeouts stay
+`SUBMITTED` for the next run; reverted receipts become `FAILED`.
+
+Typed request interfaces for release registration, scan submission, signed
+attestation (including `scanId`, `nonce`, `deadline`, and `signature`), and
+admission (including `toolSurfaceHash`) live in
+`packages/protocol/api/types.ts`.

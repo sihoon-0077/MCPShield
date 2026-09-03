@@ -9,6 +9,7 @@ import { attestationDomain, attestationTypes, chainDecisions, releaseKey } from 
 const wallets = [Wallet.createRandom(), Wallet.createRandom(), Wallet.createRandom()];
 const validators = wallets.map((wallet) => wallet.address);
 const adminToken = "test-admin-token-secure";
+const scannerToken = "test-scanner-token-secure";
 const contract = "0x0000000000000000000000000000000000000042";
 const digestA = `sha256:${"a".repeat(64)}`;
 const toolHash = `0x${"b".repeat(64)}`;
@@ -16,6 +17,7 @@ const evidenceHash = `0x${"c".repeat(64)}`;
 
 const options = {
   databasePath: ":memory:", validatorAddresses: validators, adminApiToken: adminToken,
+  scannerApiToken: scannerToken,
   attestationChainId: 31337, attestationContract: contract,
 };
 
@@ -23,11 +25,16 @@ test("startup configuration fails closed", () => {
   assert.throws(() => loadConfig({}));
   assert.throws(() => loadConfig({
     ADMIN_API_TOKEN: adminToken,
+    SCANNER_API_TOKEN: scannerToken,
     CORS_ALLOWLIST: "http://localhost:3000",
     VALIDATOR_ADDRESSES: validators.join(","),
     ATTESTATION_CHAIN_ID: "31337",
     ATTESTATION_CONTRACT: contract,
     RPC_URL: "http://localhost:8545",
+  }));
+  assert.throws(() => loadConfig({
+    ADMIN_API_TOKEN: "replace-with-admin-secret",
+    SCANNER_API_TOKEN: scannerToken,
   }));
 });
 
@@ -41,7 +48,8 @@ async function scan(app: Awaited<ReturnType<typeof buildApp>>, releaseId: string
   const value = { schemaVersion: "1.0.0", scanId: randomUUID(), releaseId,
     artifactDigest: digestA, toolSurfaceHash: toolHash, scanStatus: "FAILED",
     findings: [], evidenceHash, source: "LIVE" };
-  assert.equal((await app.inject({ method: "POST", url: "/api/scans", payload: value })).statusCode, 201);
+  assert.equal((await app.inject({ method: "POST", url: "/api/scans",
+    headers: { authorization: `Bearer ${scannerToken}` }, payload: value })).statusCode, 201);
   return value;
 }
 
@@ -62,6 +70,37 @@ test("protects release registration and validates canonical inputs", async (t) =
     } });
   assert.equal(malformed.statusCode, 400);
   assert.equal((await register(app, "mail-mcp@1.0.0")).statusCode, 201);
+});
+
+test("scanner ingestion requires credentials, stamps LIVE, limits rate and body", async () => {
+  const unauthorizedApp = await buildApp(options);
+  try {
+    const denied = await unauthorizedApp.inject({ method: "POST", url: "/api/scans", payload: {} });
+    assert.equal(denied.statusCode, 401);
+  } finally { await unauthorizedApp.close(); }
+
+  const limitedApp = await buildApp({ ...options, scanRateLimit: 1 });
+  try {
+    await register(limitedApp, "mail-mcp@1.2.0");
+    const value = { schemaVersion: "1.0.0", scanId: randomUUID(), releaseId: "mail-mcp@1.2.0",
+      artifactDigest: digestA, toolSurfaceHash: toolHash, scanStatus: "PASSED",
+      findings: [], evidenceHash, source: "REPLAY" };
+    const accepted = await limitedApp.inject({ method: "POST", url: "/api/scans",
+      headers: { authorization: `Bearer ${scannerToken}` }, payload: value });
+    assert.equal(accepted.statusCode, 201);
+    assert.equal(accepted.json().source, "LIVE");
+    const throttled = await limitedApp.inject({ method: "POST", url: "/api/scans",
+      headers: { authorization: `Bearer ${scannerToken}` }, payload: { ...value, scanId: randomUUID() } });
+    assert.equal(throttled.statusCode, 429);
+  } finally { await limitedApp.close(); }
+
+  const boundedApp = await buildApp({ ...options, bodyLimit: 128 });
+  try {
+    const oversized = await boundedApp.inject({ method: "POST", url: "/api/scans",
+      headers: { authorization: `Bearer ${scannerToken}`, "content-type": "application/json" },
+      payload: JSON.stringify({ padding: "x".repeat(1000) }) });
+    assert.equal(oversized.statusCode, 413);
+  } finally { await boundedApp.close(); }
 });
 
 test("accepts signed attestations, rejects impersonation/replay/evidence mismatch", async (t) => {

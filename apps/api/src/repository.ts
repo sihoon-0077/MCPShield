@@ -136,6 +136,14 @@ export class Repository {
     };
   }
 
+  findScanByEvidence(releaseId: string, evidenceHash: string) {
+    const row = this.db.prepare(
+      `SELECT scan_id FROM scans WHERE release_id = ? AND evidence_hash = ?
+       ORDER BY created_at DESC LIMIT 1`,
+    ).get(releaseId, evidenceHash) as { scan_id: string } | undefined;
+    return row ? this.getScan(row.scan_id) : undefined;
+  }
+
   recordVote(vote: VoteRecord): ReleaseRecord {
     this.validateVote(vote);
     const release = this.getRelease(vote.releaseId)!;
@@ -226,6 +234,37 @@ export class Repository {
     }
   }
 
+  reconcileVoteFromChain(
+    vote: VoteRecord,
+    status: ReleaseStatus,
+    chainNonce: number,
+  ) {
+    const scan = this.getScan(vote.scanId);
+    if (!scan || scan.releaseId !== vote.releaseId || scan.evidenceHash !== vote.evidenceHash) {
+      throw new Error("SCAN_EVIDENCE_MISMATCH");
+    }
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(
+        `INSERT OR IGNORE INTO validator_votes
+         (release_id, validator_address, decision, evidence_hash, scan_id, nonce,
+          signature, tx_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(vote.releaseId, vote.validatorAddress, vote.decision, vote.evidenceHash,
+        vote.scanId, vote.nonce, vote.signature, vote.txHash ?? null, new Date().toISOString());
+      this.db.prepare(
+        `INSERT INTO validator_nonces (validator_address, next_nonce) VALUES (?, ?)
+         ON CONFLICT(validator_address) DO UPDATE SET next_nonce =
+         MAX(next_nonce, excluded.next_nonce)`,
+      ).run(vote.validatorAddress, chainNonce);
+      this.db.prepare("UPDATE releases SET status = ?, updated_at = ? WHERE release_id = ?")
+        .run(status, new Date().toISOString(), vote.releaseId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   getValidatorNonce(validatorAddress: string) {
     const row = this.db
       .prepare("SELECT next_nonce FROM validator_nonces WHERE validator_address = ?")
@@ -246,19 +285,12 @@ export class Repository {
   setProjectedStatus(
     releaseId: string,
     status: ReleaseStatus,
-    txHash?: string,
-    blockNumber?: number,
   ) {
     const previous = this.getRelease(releaseId);
     if (!previous || previous.status === status) return;
     this.db
       .prepare("UPDATE releases SET status = ?, updated_at = ? WHERE release_id = ?")
       .run(status, new Date().toISOString(), releaseId);
-    this.addEvent(releaseId, "StatusChanged", status, txHash, blockNumber, {
-      previousStatus: previous.status,
-      newStatus: status,
-      indexed: true,
-    });
   }
 
   addEvent(
@@ -288,49 +320,163 @@ export class Repository {
       );
   }
 
-  upsertIndexedRelease(input: Omit<ReleaseRecord, "status" | "createdAt" | "updatedAt">) {
-    if (this.getRelease(input.releaseId)) return;
-    this.createRelease(input);
+  upsertReleaseFromChain(
+    input: Omit<ReleaseRecord, "createdAt" | "updatedAt">,
+  ) {
+    const now = new Date().toISOString();
+    this.db.prepare(
+      `INSERT INTO releases
+       (release_id, artifact_digest, tool_surface_hash, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(release_id) DO UPDATE SET artifact_digest = excluded.artifact_digest,
+       tool_surface_hash = excluded.tool_surface_hash, status = excluded.status,
+       updated_at = excluded.updated_at`,
+    ).run(input.releaseId, input.artifactDigest, input.toolSurfaceHash, input.status, now, now);
   }
 
-  recordIndexedEvent(input: {
+  private hasIndexedLog(txHash: string, logIndex: number) {
+    return Boolean(this.db.prepare(
+      "SELECT 1 FROM chain_events WHERE tx_hash = ? AND log_index = ?",
+    ).get(txHash, logIndex));
+  }
+
+  applyIndexedRelease(input: {
     releaseId: string;
-    eventName: string;
-    status?: ReleaseStatus;
+    artifactDigest: string;
+    toolSurfaceHash: string;
     txHash: string;
     blockNumber: number;
     logIndex: number;
-    payload?: Record<string, unknown>;
   }) {
+    if (this.hasIndexedLog(input.txHash, input.logIndex)) return false;
+    this.db.exec("BEGIN IMMEDIATE");
     try {
+      this.upsertReleaseFromChain({ ...input, status: "UNVERIFIED" });
       this.addEvent(
         input.releaseId,
-        input.eventName,
-        input.status,
+        "ReleaseRegistered",
+        "UNVERIFIED",
         input.txHash,
         input.blockNumber,
-        input.payload,
+        { indexed: true },
         input.logIndex,
       );
+      this.db.exec("COMMIT");
       return true;
     } catch (error) {
-      if (String(error).includes("UNIQUE constraint failed")) return false;
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  applyIndexedStatus(input: {
+    releaseId: string;
+    status: ReleaseStatus;
+    txHash: string;
+    blockNumber: number;
+    logIndex: number;
+  }) {
+    if (this.hasIndexedLog(input.txHash, input.logIndex)) return false;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.addEvent(input.releaseId, "StatusChanged", input.status, input.txHash,
+        input.blockNumber, { indexed: true }, input.logIndex);
+      this.db.prepare("UPDATE releases SET status = ?, updated_at = ? WHERE release_id = ?")
+        .run(input.status, new Date().toISOString(), input.releaseId);
+      this.db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  applyIndexedVote(input: {
+    releaseId: string;
+    validatorAddress: string;
+    decision: ValidatorDecision;
+    evidenceHash: string;
+    nonce: number;
+    chainNonce: number;
+    txHash: string;
+    blockNumber: number;
+    logIndex: number;
+  }) {
+    if (this.hasIndexedLog(input.txHash, input.logIndex)) return false;
+    const scan = this.findScanByEvidence(input.releaseId, input.evidenceHash);
+    if (!scan) throw new Error("INDEXED_VOTE_SCAN_NOT_FOUND");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.addEvent(input.releaseId, "VoteSubmitted", undefined, input.txHash,
+        input.blockNumber, { indexed: true, validatorAddress: input.validatorAddress,
+          decision: input.decision, evidenceHash: input.evidenceHash }, input.logIndex);
+      this.db.prepare(
+        `INSERT OR IGNORE INTO validator_votes
+         (release_id, validator_address, decision, evidence_hash, scan_id, nonce,
+          signature, tx_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, 'CHAIN_RECOVERED', ?, ?)`,
+      ).run(input.releaseId, input.validatorAddress, input.decision, input.evidenceHash,
+        scan.scanId, input.nonce, input.txHash, new Date().toISOString());
+      this.db.prepare(
+        `INSERT INTO validator_nonces (validator_address, next_nonce) VALUES (?, ?)
+         ON CONFLICT(validator_address) DO UPDATE SET next_nonce =
+         MAX(next_nonce, excluded.next_nonce)`,
+      ).run(input.validatorAddress, input.chainNonce);
+      this.db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
       throw error;
     }
   }
 
   getCheckpoint(name: string) {
     const row = this.db.prepare(
-      "SELECT block_number FROM indexer_checkpoints WHERE name = ?",
-    ).get(name) as { block_number: number } | undefined;
-    return row?.block_number;
+      "SELECT block_number, block_hash FROM indexer_checkpoints WHERE name = ?",
+    ).get(name) as { block_number: number; block_hash: string } | undefined;
+    return row ? { blockNumber: row.block_number, blockHash: row.block_hash } : undefined;
   }
 
-  setCheckpoint(name: string, blockNumber: number) {
+  setCheckpoint(name: string, blockNumber: number, blockHash: string) {
     this.db.prepare(
-      `INSERT INTO indexer_checkpoints (name, block_number) VALUES (?, ?)
-       ON CONFLICT(name) DO UPDATE SET block_number = excluded.block_number`,
-    ).run(name, blockNumber);
+      `INSERT INTO indexer_checkpoints (name, block_number, block_hash) VALUES (?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET block_number = excluded.block_number,
+       block_hash = excluded.block_hash`,
+    ).run(name, blockNumber, blockHash);
+  }
+
+  rewindChainProjection(afterBlock: number) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(
+        `DELETE FROM validator_votes WHERE tx_hash IN
+         (SELECT tx_hash FROM chain_events WHERE block_number > ?)`,
+      ).run(afterBlock);
+      this.db.prepare("DELETE FROM chain_events WHERE block_number > ?").run(afterBlock);
+      this.db.prepare("UPDATE releases SET status = 'UNVERIFIED'").run();
+      const statuses = this.db.prepare(
+        `SELECT release_id, status FROM chain_events ce WHERE event_name = 'StatusChanged'
+         AND block_number IS NOT NULL AND id = (
+           SELECT MAX(id) FROM chain_events latest
+           WHERE latest.release_id = ce.release_id AND latest.event_name = 'StatusChanged'
+           AND latest.block_number IS NOT NULL
+         )`,
+      ).all() as Array<{ release_id: string; status: ReleaseStatus }>;
+      for (const row of statuses) this.db.prepare(
+        "UPDATE releases SET status = ?, updated_at = ? WHERE release_id = ?",
+      ).run(row.status, new Date().toISOString(), row.release_id);
+      this.db.prepare("DELETE FROM validator_nonces").run();
+      const nonces = this.db.prepare(
+        `SELECT validator_address, MAX(nonce) + 1 AS next_nonce
+         FROM validator_votes GROUP BY validator_address`,
+      ).all() as Array<{ validator_address: string; next_nonce: number }>;
+      for (const row of nonces) this.db.prepare(
+        "INSERT INTO validator_nonces (validator_address, next_nonce) VALUES (?, ?)",
+      ).run(row.validator_address, row.next_nonce);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   createPendingOperation(
@@ -356,6 +502,34 @@ export class Repository {
       `UPDATE pending_operations SET status = ?, tx_hash = COALESCE(?, tx_hash),
        error = ?, updated_at = ? WHERE operation_id = ?`,
     ).run(status, txHash ?? null, error ?? null, new Date().toISOString(), operationId);
+  }
+
+  listSubmittedOperations() {
+    const rows = this.db.prepare(
+      `SELECT operation_id, operation_type, status, tx_hash, payload_json
+       FROM pending_operations WHERE status = 'SUBMITTED' ORDER BY created_at`,
+    ).all() as Array<Record<string, string>>;
+    return rows.map((row) => ({
+      operationId: row.operation_id,
+      operationType: row.operation_type,
+      status: row.status,
+      txHash: row.tx_hash,
+      payload: JSON.parse(row.payload_json) as Record<string, unknown>,
+    }));
+  }
+
+  getPendingOperation(operationId: string) {
+    const row = this.db.prepare(
+      `SELECT operation_id, operation_type, status, tx_hash, payload_json
+       FROM pending_operations WHERE operation_id = ?`,
+    ).get(operationId) as Record<string, string> | undefined;
+    return row ? {
+      operationId: row.operation_id,
+      operationType: row.operation_type,
+      status: row.status,
+      txHash: row.tx_hash,
+      payload: JSON.parse(row.payload_json) as Record<string, unknown>,
+    } : undefined;
   }
 
   listEvents(releaseId?: string) {

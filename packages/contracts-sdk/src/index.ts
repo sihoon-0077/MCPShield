@@ -12,7 +12,7 @@ export const releaseRegistryAbi = [
   "function submitAttestation(bytes32 key,uint8 decision,bytes32 evidenceHash,uint256 nonce,uint256 deadline,bytes signature)",
   "function getRelease(bytes32 key) view returns ((string releaseId,bytes32 artifactDigest,bytes32 toolSurfaceHash,uint8 status,uint8 passVotes,uint8 failVotes,bool exists))",
   "event ReleaseRegistered(bytes32 indexed releaseKey,string releaseId,bytes32 artifactDigest,bytes32 toolSurfaceHash)",
-  "event VoteSubmitted(bytes32 indexed releaseKey,address indexed validator,uint8 decision,bytes32 indexed evidenceHash)",
+  "event VoteSubmitted(bytes32 indexed releaseKey,address indexed validator,uint8 decision,bytes32 indexed evidenceHash,uint256 nonce)",
   "event StatusChanged(bytes32 indexed releaseKey,uint8 previousStatus,uint8 newStatus)",
 ] as const;
 

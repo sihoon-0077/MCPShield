@@ -65,7 +65,8 @@ CREATE TABLE validator_nonces (
 
 CREATE TABLE indexer_checkpoints (
   name TEXT PRIMARY KEY,
-  block_number BIGINT NOT NULL
+  block_number BIGINT NOT NULL,
+  block_hash TEXT NOT NULL
 );
 
 CREATE TABLE pending_operations (

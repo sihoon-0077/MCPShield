@@ -40,7 +40,9 @@ export interface RegistryClient {
   ): Promise<SubmittedTransaction>;
   submitAttestation(attestation: SignedAttestation): Promise<SubmittedTransaction>;
   getRelease(releaseId: string): Promise<ChainRelease>;
-  validateConnection(expectedChainId?: number): Promise<void>;
+  getValidatorNonce(validatorAddress: string): Promise<number>;
+  getReceipt(txHash: string): Promise<"PENDING" | "SUCCESS" | "REVERTED">;
+  validateConnection(expectedChainId?: number, validators?: string[]): Promise<void>;
 }
 
 function withDeadline<T>(promise: Promise<T>, timeoutMs: number, operation: string) {
@@ -70,7 +72,7 @@ export class EvmRegistryClient implements RegistryClient {
     this.relayer = createReleaseRegistry(registryAddress, signer);
   }
 
-  async validateConnection(expectedChainId?: number) {
+  async validateConnection(expectedChainId?: number, validators: string[] = []) {
     const code = await withDeadline(
       this.provider.getCode(this.registryAddress),
       this.timeoutMs,
@@ -87,6 +89,12 @@ export class EvmRegistryClient implements RegistryClient {
     );
     if (expectedChainId && network.chainId !== BigInt(expectedChainId)) {
       throw new Error("ATTESTATION_CHAIN_ID_MISMATCH");
+    }
+    for (const validator of validators) {
+      const configured = await withDeadline<any>(
+        this.reader.isValidator(validator), this.timeoutMs, "isValidator",
+      );
+      if (!configured) throw new Error(`VALIDATOR_NOT_REGISTERED:${validator}`);
     }
   }
 
@@ -146,6 +154,21 @@ export class EvmRegistryClient implements RegistryClient {
       status: statusFromChain(release.status),
     };
   }
+
+  async getValidatorNonce(validatorAddress: string) {
+    const nonce = await withDeadline<any>(
+      this.reader.nonces(validatorAddress), this.timeoutMs, "validatorNonce",
+    );
+    return Number(nonce);
+  }
+
+  async getReceipt(txHash: string) {
+    const receipt = await withDeadline(
+      this.provider.getTransactionReceipt(txHash), this.timeoutMs, "transactionReceipt",
+    );
+    if (!receipt) return "PENDING" as const;
+    return receipt.status === 1 ? "SUCCESS" as const : "REVERTED" as const;
+  }
 }
 
 export function registryClientFromEnv() {
@@ -162,6 +185,6 @@ export function registryClientFromEnv() {
     rpcUrl,
     address,
     relayerKey,
-    Number(process.env.RPC_TIMEOUT_MS ?? 5_000),
+    Number(process.env.RPC_TIMEOUT_MS || 5_000),
   );
 }

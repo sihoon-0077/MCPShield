@@ -1,10 +1,15 @@
 import { patterns } from "./validation.js";
 
 export function loadConfig(env = process.env) {
-  const adminApiToken = env.ADMIN_API_TOKEN;
-  if (!adminApiToken || adminApiToken.length < 16) {
-    throw new Error("ADMIN_API_TOKEN must contain at least 16 characters");
-  }
+  const unsafeToken = (value: string | undefined) =>
+    !value || value.length < 16 || /replace|change.?me|placeholder|local-demo/i.test(value);
+  const requireToken = (name: string, value: string | undefined) => {
+    if (unsafeToken(value)) throw new Error(`${name} must contain a non-placeholder secret`);
+    return value!;
+  };
+  const adminApiToken = requireToken("ADMIN_API_TOKEN", env.ADMIN_API_TOKEN);
+  const scannerApiToken = requireToken("SCANNER_API_TOKEN", env.SCANNER_API_TOKEN);
+  if (adminApiToken === scannerApiToken) throw new Error("Admin and scanner tokens must differ");
   const corsAllowlist = env.CORS_ALLOWLIST?.split(",").filter(Boolean) ?? [];
   if (corsAllowlist.length === 0) throw new Error("CORS_ALLOWLIST is required");
   for (const origin of corsAllowlist) new URL(origin);
@@ -36,12 +41,13 @@ export function loadConfig(env = process.env) {
 
   return {
     adminApiToken,
+    scannerApiToken,
     corsAllowlist,
     validatorAddresses,
     attestationChainId,
     attestationContract,
-    databasePath: env.DATABASE_PATH ?? "./mcpshield.db",
-    apiPort: Number(env.API_PORT ?? 3001),
-    apiHost: env.API_HOST ?? "127.0.0.1",
+    databasePath: env.DATABASE_PATH || "./mcpshield.db",
+    apiPort: Number(env.API_PORT || 3001),
+    apiHost: env.API_HOST || "127.0.0.1",
   };
 }
