@@ -1,0 +1,37 @@
+{
+  "name": "mcpshield-blockchain-backend",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22 <25"
+  },
+  "type": "module",
+  "scripts": {
+    "dev:api": "tsx watch apps/api/src/server.ts",
+    "start:api": "tsx apps/api/src/server.ts",
+    "start:indexer": "tsx apps/indexer/src/index.ts",
+    "start:validator": "tsx apps/validator/src/index.ts",
+    "reconcile": "tsx apps/reconciler/src/index.ts",
+    "chain:local": "tsx contracts/scripts/local-chain.ts",
+    "chain:deploy": "tsx contracts/scripts/deploy.ts",
+    "build": "tsc --noEmit",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "test:contracts": "node --import tsx --test tests/contracts/*.test.ts",
+    "test:api": "node --import tsx --test tests/api/*.test.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "ethers": "^6.15.0",
+    "fastify": "^5.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "ganache": "^7.9.2",
+    "solc": "^0.8.30",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

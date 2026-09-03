@@ -11,3 +11,6 @@ out/
 tmp/
 .next/
 *.log
+*.db
+*.db-wal
+*.db-shm

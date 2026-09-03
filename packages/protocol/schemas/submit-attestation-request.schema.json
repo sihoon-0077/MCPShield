@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcpshield.dev/schemas/submit-attestation-request.schema.json",
+  "title": "MCPShield Submit Attestation Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseId",
+    "scanId",
+    "decision",
+    "evidenceHash",
+    "nonce",
+    "deadline",
+    "signature"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "releaseId": { "type": "string", "minLength": 5, "maxLength": 214 },
+    "scanId": { "type": "string", "format": "uuid" },
+    "decision": { "enum": ["PASS", "FAIL", "ABSTAIN"] },
+    "evidenceHash": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    },
+    "nonce": { "type": "integer", "minimum": 0 },
+    "deadline": { "type": "integer", "minimum": 1 },
+    "signature": { "type": "string", "pattern": "^0x[0-9a-fA-F]{130}$" }
+  }
+}
+
