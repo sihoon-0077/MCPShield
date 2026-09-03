@@ -1,0 +1,162 @@
+import { constants } from 'node:fs';
+import { chmod, lstat, mkdir, open, readdir, realpath, rm } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+
+export const SNAPSHOT_LIMITS = Object.freeze({ files: 1_024, bytes: 16 * 1024 * 1024 });
+
+async function makeWritable(root) {
+  let stat;
+  try { stat = await lstat(root, { bigint: false }); } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    if (!stat.isSymbolicLink()) await chmod(root, 0o600);
+    return;
+  }
+  await chmod(root, 0o700);
+  for (const entry of await readdir(root)) await makeWritable(join(root, entry));
+}
+
+export async function removeFixtureSnapshot(snapshotRoot) {
+  await makeWritable(snapshotRoot);
+  await rm(snapshotRoot, { recursive: true, force: true });
+}
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function stillSameFile(before, during, after) {
+  return sameIdentity(before, during) && sameIdentity(during, after) &&
+    before.size === during.size && during.size === after.size &&
+    before.mtimeMs === during.mtimeMs && during.mtimeMs === after.mtimeMs &&
+    before.ctimeMs === during.ctimeMs && during.ctimeMs === after.ctimeMs;
+}
+
+function metadata(stat) {
+  return {
+    dev: stat.dev,
+    ino: stat.ino,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+  };
+}
+
+function sameMetadata(left, right) {
+  return left && left.dev === right.dev && left.ino === right.ino && left.size === right.size &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
+
+function entryKey(root, path, kind) {
+  const nested = relative(root, path).split(sep).join('/') || '.';
+  return `${kind}:${nested}`;
+}
+
+function assertWithin(root, candidate) {
+  const nested = relative(root, candidate);
+  if (!nested || isAbsolute(nested) || nested === '..' || nested.startsWith(`..${sep}`)) {
+    throw new Error('snapshot path escapes scanner-owned directory');
+  }
+}
+
+async function copyFileStable(source, target, state) {
+  const before = await lstat(source, { bigint: false });
+  if (before.isSymbolicLink()) throw new Error(`fixture symlinks are not allowed: ${relative(state.sourceRoot, source)}`);
+  if (!before.isFile()) throw new Error(`unsupported fixture entry: ${relative(state.sourceRoot, source)}`);
+  state.files += 1;
+  if (state.files > SNAPSHOT_LIMITS.files) throw new Error(`fixture exceeds ${SNAPSHOT_LIMITS.files} files`);
+
+  const noFollow = constants.O_NOFOLLOW ?? 0;
+  let handle;
+  try {
+    handle = await open(source, constants.O_RDONLY | noFollow);
+  } catch (error) {
+    if (noFollow && ['EINVAL', 'ENOTSUP'].includes(error?.code)) handle = await open(source, constants.O_RDONLY);
+    else throw error;
+  }
+  try {
+    const during = await handle.stat();
+    if (!during.isFile() || !sameIdentity(before, during)) throw new Error('fixture changed while snapshot was created');
+    const content = await handle.readFile();
+    const afterHandle = await handle.stat();
+    const afterPath = await lstat(source, { bigint: false });
+    if (afterPath.isSymbolicLink() || !stillSameFile(before, afterHandle, afterPath)) {
+      throw new Error('fixture changed while snapshot was created');
+    }
+    state.entries.set(entryKey(state.sourceRoot, source, 'F'), metadata(afterPath));
+    state.bytes += content.byteLength;
+    if (state.bytes > SNAPSHOT_LIMITS.bytes) throw new Error(`fixture exceeds ${SNAPSHOT_LIMITS.bytes} bytes`);
+    const output = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o400);
+    try { await output.writeFile(content); } finally { await output.close(); }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function copyDirectoryStable(source, target, state) {
+  const before = await lstat(source, { bigint: false });
+  if (before.isSymbolicLink()) throw new Error(`fixture symlinks are not allowed: ${relative(state.sourceRoot, source)}`);
+  if (!before.isDirectory()) throw new Error(`unsupported fixture entry: ${relative(state.sourceRoot, source)}`);
+  await mkdir(target, { mode: 0o700 });
+  const entries = await readdir(source, { withFileTypes: true });
+  entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+  for (const entry of entries) {
+    if (entry.name === 'node_modules' || entry.name === '.git') continue;
+    const sourcePath = resolve(source, entry.name);
+    const targetPath = resolve(target, entry.name);
+    assertWithin(state.sourceRoot, sourcePath);
+    assertWithin(state.snapshotRoot, targetPath);
+    const entryStat = await lstat(sourcePath, { bigint: false });
+    if (entryStat.isSymbolicLink()) throw new Error(`fixture symlinks are not allowed: ${relative(state.sourceRoot, sourcePath)}`);
+    if (entryStat.isDirectory()) await copyDirectoryStable(sourcePath, targetPath, state);
+    else if (entryStat.isFile()) await copyFileStable(sourcePath, targetPath, state);
+    else throw new Error(`unsupported fixture entry: ${relative(state.sourceRoot, sourcePath)}`);
+  }
+  const after = await lstat(source, { bigint: false });
+  if (after.isSymbolicLink() || !sameIdentity(before, after) || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+    throw new Error('fixture changed while snapshot was created');
+  }
+  state.entries.set(entryKey(state.sourceRoot, source, 'D'), metadata(after));
+  await chmod(target, 0o500);
+}
+
+async function verifySourceTree(source, state, seen = new Set()) {
+  const stat = await lstat(source, { bigint: false });
+  if (stat.isSymbolicLink()) throw new Error('fixture changed while snapshot was verified');
+  const kind = stat.isDirectory() ? 'D' : stat.isFile() ? 'F' : null;
+  if (!kind) throw new Error('fixture contains an unsupported entry');
+  const key = entryKey(state.sourceRoot, source, kind);
+  if (!sameMetadata(state.entries.get(key), metadata(stat))) throw new Error('fixture changed while snapshot was created');
+  seen.add(key);
+  if (kind === 'D') {
+    const entries = await readdir(source, { withFileTypes: true });
+    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue;
+      await verifySourceTree(resolve(source, entry.name), state, seen);
+    }
+  }
+  if (source === state.sourceRoot && seen.size !== state.entries.size) {
+    throw new Error('fixture file set changed while snapshot was created');
+  }
+}
+
+export async function copyFixtureSnapshot(sourceDir, snapshotDir) {
+  const sourceRoot = resolve(sourceDir);
+  const snapshotRoot = resolve(snapshotDir);
+  const rootStat = await lstat(sourceRoot, { bigint: false });
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new TypeError('fixture root must be a real directory');
+  const canonicalRoot = await realpath(sourceRoot);
+  if (resolve(canonicalRoot) !== sourceRoot) throw new TypeError('fixture root symlinks or aliases are not allowed');
+  const state = { sourceRoot, snapshotRoot, files: 0, bytes: 0, entries: new Map() };
+  try {
+    await copyDirectoryStable(sourceRoot, snapshotRoot, state);
+    await verifySourceTree(sourceRoot, state);
+    return Object.freeze({ root: snapshotRoot, files: state.files, bytes: state.bytes });
+  } catch (error) {
+    await removeFixtureSnapshot(snapshotRoot);
+    throw error;
+  }
+}

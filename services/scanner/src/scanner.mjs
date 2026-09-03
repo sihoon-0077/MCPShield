@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, readFile, readdir } from 'node:fs/promises';
-import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { lstat, mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { assertFinding, assertScanResult } from './schema.mjs';
 import { assertCanonicalScanResult } from './protocol-schema.mjs';
 import { runSandbox } from './sandbox.mjs';
+import { copyFixtureSnapshot, removeFixtureSnapshot } from './snapshot.mjs';
 
 const TEXT_EXTENSIONS = new Set(['.js', '.cjs', '.mjs', '.ts', '.json', '.py']);
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -113,13 +115,19 @@ function redactPromptText(content) {
   return content
     .replace(/-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]')
     .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, '[REDACTED_ACCESS_KEY]')
+    .replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, '[REDACTED_GCP_API_KEY]')
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g, '[REDACTED_JWT]')
+    .replace(/\b(?:xox[baprs]-[A-Za-z0-9-]{10,}|sk_(?:live|test)_[A-Za-z0-9]{12,}|npm_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_TOKEN]')
     .replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/-]{12,}/gi, '$1[REDACTED]')
+    .replace(/(["'])(password|passwd|secret|token|access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|private[_-]?key|authorization|credential)\1\s*:\s*(["'])([^\r\n]{4,}?)\3/gi,
+      (_match, keyQuote, key, valueQuote) => `${keyQuote}${key}${keyQuote}:${valueQuote}[REDACTED]${valueQuote}`)
     .replace(/\b(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*(['"])[^'"\r\n]{4,}\2/gi, '$1=$2[REDACTED]$2')
     .replace(/MCP_SHIELD_DEMO_CANARY_v1/g, '[REDACTED_CANARY]');
 }
 
 function sanitizeUntrustedEvidence(value, depth = 0, key = '') {
-  if (/password|passwd|secret|token|api.?key|canary/i.test(key)) return '[REDACTED]';
+  if (/password|passwd|secret|token|api.?key|canary|authorization|credential|private.?key/i.test(key)) return '[REDACTED]';
   if (depth > 4) return '[TRUNCATED]';
   if (typeof value === 'string') return redactPromptText(value).slice(0, 512);
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -134,6 +142,15 @@ function sanitizeUntrustedEvidence(value, depth = 0, key = '') {
     return output;
   }
   return String(value).slice(0, 128);
+}
+
+function promptFileContent(path, content) {
+  if (extname(path).toLowerCase() !== '.json') return redactPromptText(content);
+  try {
+    return canonicalJson(sanitizeUntrustedEvidence(JSON.parse(content)));
+  } catch {
+    return '[OMITTED_INVALID_JSON]';
+  }
 }
 
 export function analyzeSemanticsFallback({ manifest, baselineTools = [], files }) {
@@ -160,7 +177,8 @@ export function buildAiPrompt({ releaseId, baselineTools, tools, files }) {
   const excerpts = [];
   for (const { path, content } of files) {
     if (remaining <= 0) break;
-    const excerpt = redactPromptText(content.slice(0, Math.min(12_000, remaining)));
+    const sanitized = promptFileContent(path, content);
+    const excerpt = sanitized.slice(0, Math.min(12_000, remaining));
     excerpts.push({ path, content: excerpt });
     remaining -= excerpt.length;
   }
@@ -250,7 +268,7 @@ export async function analyzeSemantics({ url, token, prompt, timeoutMs = 2_000 }
   });
 }
 
-export async function scanRelease({
+async function scanSnapshotRelease({
   fixtureDir,
   baselineDir,
   sandbox = 'local',
@@ -258,6 +276,7 @@ export async function scanRelease({
   aiUrl,
   aiToken,
   aiTimeoutMs = 2_000,
+  allowRemoteAi = false,
   source = 'LIVE',
   logger = (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
 } = {}) {
@@ -287,7 +306,10 @@ export async function scanRelease({
   }
 
   const fallbackInput = { manifest, baselineTools, files };
-  const aiPromise = aiUrl
+  if (aiUrl && !allowRemoteAi) logger({
+    event: 'ai_remote_disabled', releaseId, fallback: 'LOCAL_STRUCTURED_FALLBACK_V1',
+  });
+  const aiPromise = aiUrl && allowRemoteAi
     ? analyzeSemantics({ url: aiUrl, token: aiToken, timeoutMs: aiTimeoutMs, prompt: buildAiPrompt({ releaseId, baselineTools, tools: manifest.tools, files }) })
         .catch((error) => {
           logger({ event: 'ai_analysis_failed', releaseId, error: error.message, fallback: 'LOCAL_STRUCTURED_FALLBACK_V1' });
@@ -315,7 +337,17 @@ export async function scanRelease({
     message: 'The fixture sent the injected dummy canary to the controlled local sink.',
     evidence: { canarySha256: sandboxResult.canaryHash, sink: 'CONTROLLED_LOCAL', sandbox: sandboxResult.mode },
   });
-  const sandboxIncomplete = sandboxResult.timedOut || Boolean(sandboxResult.error);
+  let sandboxIncomplete = sandboxResult.timedOut || Boolean(sandboxResult.error);
+  try {
+    const digestAfterExecution = await artifactDigest(fixtureRoot);
+    if (digestAfterExecution !== digest) {
+      sandboxIncomplete = true;
+      logger({ event: 'snapshot_integrity_failed', releaseId, reason: 'content_changed_during_execution' });
+    }
+  } catch {
+    sandboxIncomplete = true;
+    logger({ event: 'snapshot_integrity_failed', releaseId, reason: 'snapshot_unreadable_after_execution' });
+  }
   if (sandboxIncomplete) logger({
     event: sandboxResult.timedOut ? 'sandbox_timeout' : 'sandbox_failed',
     releaseId,
@@ -342,4 +374,30 @@ export async function scanRelease({
   };
   assertScanResult(result);
   return assertCanonicalScanResult(result);
+}
+
+export async function scanRelease(options = {}) {
+  if (!options.fixtureDir) throw new TypeError('fixtureDir is required');
+  const logger = options.logger ?? ((event) => process.stderr.write(`${JSON.stringify(event)}\n`));
+  const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-snapshot-'));
+  try {
+    const fixture = await copyFixtureSnapshot(options.fixtureDir, resolve(workspace, 'fixture'));
+    const baseline = options.baselineDir
+      ? await copyFixtureSnapshot(options.baselineDir, resolve(workspace, 'baseline'))
+      : null;
+    logger({
+      event: 'snapshot_created',
+      fixture: { files: fixture.files, bytes: fixture.bytes },
+      ...(baseline ? { baseline: { files: baseline.files, bytes: baseline.bytes } } : {}),
+    });
+    return await scanSnapshotRelease({
+      ...options,
+      fixtureDir: fixture.root,
+      baselineDir: baseline?.root,
+      logger,
+    });
+  } finally {
+    await removeFixtureSnapshot(workspace);
+    logger({ event: 'snapshot_removed' });
+  }
 }
