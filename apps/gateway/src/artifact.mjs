@@ -8,7 +8,7 @@ const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 const MAX_ARTIFACT_FILES = 1_024;
 const RELEASE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-const ENTRYPOINT_EXTENSIONS = new Set([".js", ".mjs", ".cjs"]);
+const ENTRYPOINT_EXTENSIONS = new Set([".mjs"]);
 
 export const canonicalJson = (value) => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -55,7 +55,7 @@ function validateManifest(value, availablePaths) {
   if (typeof value.entrypoint !== "string" || !value.entrypoint || value.entrypoint.includes("\0") || isAbsolute(value.entrypoint)) throw new TypeError("manifest entrypoint is invalid");
   const normalized = value.entrypoint.replaceAll("\\", "/");
   if (normalized.startsWith("../") || normalized.includes("/../") || normalized === ".." || !availablePaths.has(normalized)) throw new TypeError("manifest entrypoint escapes or is missing from the artifact");
-  if (!ENTRYPOINT_EXTENSIONS.has(extname(normalized))) throw new TypeError("manifest entrypoint must be JavaScript");
+  if (!ENTRYPOINT_EXTENSIONS.has(extname(normalized))) throw new TypeError("manifest entrypoint must be an ESM .mjs file");
   return { ...value, entrypoint: normalized };
 }
 

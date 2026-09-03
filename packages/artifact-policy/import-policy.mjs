@@ -1,6 +1,6 @@
 import { extname, posix } from "node:path";
 
-const JAVASCRIPT = new Set([".js", ".mjs", ".cjs"]);
+const JAVASCRIPT = new Set([".mjs"]);
 const SAFE_BUILTINS = new Set([
   "node:assert", "node:assert/strict", "node:buffer", "node:crypto", "node:events",
   "node:fs", "node:fs/promises", "node:os", "node:path", "node:path/posix",
@@ -15,7 +15,30 @@ const NETWORK_BUILTINS = new Set([
 const STATIC_IMPORT = /\b(?:import|export)\s+(?:[^;\r\n]*?\s+from\s+)?(["'])([^"'\r\n]+)\1/g;
 const REQUIRE = /\brequire\s*\(\s*(["'])([^"'\r\n]+)\1\s*\)/g;
 const DYNAMIC_LOADER = /\bimport(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*\(|\brequire\b|\bcreateRequire\b|\b(?:eval|Function)\s*(?:\/\*[\s\S]*?\*\/\s*)?\(/;
-const NODE_SPECIFIER = /["'](node:[A-Za-z0-9_./-]+)["']/g;
+
+function maskNonCode(source) {
+  const chars = source.split("");
+  let state = "CODE";
+  for (let index = 0; index < chars.length; index += 1) {
+    const current = chars[index];
+    const next = chars[index + 1];
+    if (state === "CODE" && current === "/" && next === "/") { chars[index] = chars[index + 1] = " "; state = "LINE_COMMENT"; index += 1; continue; }
+    if (state === "CODE" && current === "/" && next === "*") { chars[index] = chars[index + 1] = " "; state = "BLOCK_COMMENT"; index += 1; continue; }
+    if (state === "CODE" && ["'", '"', "`"].includes(current)) { state = current; chars[index] = " "; continue; }
+    if (state === "LINE_COMMENT") { if (current === "\n" || current === "\r") state = "CODE"; else chars[index] = " "; continue; }
+    if (state === "BLOCK_COMMENT") {
+      if (current === "*" && next === "/") { chars[index] = chars[index + 1] = " "; state = "CODE"; index += 1; }
+      else if (current !== "\n" && current !== "\r") chars[index] = " ";
+      continue;
+    }
+    if (state !== "CODE") {
+      if (current === "\\") { chars[index] = " "; if (index + 1 < chars.length) { chars[index + 1] = " "; index += 1; } continue; }
+      if (current === state) state = "CODE";
+      if (current !== "\n" && current !== "\r") chars[index] = " ";
+    }
+  }
+  return chars.join("");
+}
 
 function resolveRelative(from, specifier, paths) {
   if (specifier.includes("?") || specifier.includes("#") || specifier.includes("\\")) return false;
@@ -30,24 +53,21 @@ export function importPolicyIssues(files) {
   const issues = [];
   for (const file of files) {
     const path = file.path.replaceAll("\\", "/");
-    if ([".node", ".wasm"].includes(extname(path))) issues.push({ path, reason: "native and WebAssembly modules are not allowed" });
+    if ([".js", ".cjs", ".node", ".wasm"].includes(extname(path))) issues.push({ path, reason: "only .mjs executable modules are allowed" });
     if (!JAVASCRIPT.has(extname(path))) continue;
-    if (DYNAMIC_LOADER.test(file.content)) issues.push({ path, reason: "dynamic code loaders are not allowed" });
-    const importTokens = [...file.content.matchAll(/\bimport\b/g)].map((match) => match.index);
+    const code = maskNonCode(file.content);
+    if (DYNAMIC_LOADER.test(code)) issues.push({ path, reason: "dynamic code loaders are not allowed" });
+    if (/\bexport\b[^;]*\bfrom\b/.test(code)) issues.push({ path, reason: "re-export module loading is not allowed" });
+    const importTokens = [...code.matchAll(/\bimport\b/g)].map((match) => match.index);
     STATIC_IMPORT.lastIndex = 0;
-    const recognizedImports = [...file.content.matchAll(STATIC_IMPORT)].map((match) => [match.index, match.index + match[0].length]);
+    const imports = [...file.content.matchAll(STATIC_IMPORT)].filter((match) => /^(?:import|export)$/.test(code.slice(match.index, match.index + (match[0].startsWith("import") ? 6 : 6))));
+    const recognizedImports = imports.map((match) => [match.index, match.index + match[0].length]);
     if (importTokens.some((index) => !recognizedImports.some(([start, end]) => index >= start && index < end))) {
       issues.push({ path, reason: "only single-line static import syntax is allowed" });
     }
-    NODE_SPECIFIER.lastIndex = 0;
-    for (let match; (match = NODE_SPECIFIER.exec(file.content));) {
-      if (!SAFE_BUILTINS.has(match[1]) && !NETWORK_BUILTINS.has(match[1])) {
-        issues.push({ path, reason: `Node builtin is outside the MVP allowlist: ${match[1]}` });
-      }
-    }
-    for (const pattern of [STATIC_IMPORT, REQUIRE]) {
-      pattern.lastIndex = 0;
-      for (let match; (match = pattern.exec(file.content));) {
+    REQUIRE.lastIndex = 0;
+    for (const matches of [imports, [...file.content.matchAll(REQUIRE)].filter((match) => code.slice(match.index, match.index + 7) === "require")]) {
+      for (const match of matches) {
         const specifier = match[2];
         if (NETWORK_BUILTINS.has(specifier)) continue;
         if (specifier.startsWith("node:")) {
@@ -70,18 +90,18 @@ export function runtimeEgressIssues(files) {
   for (const file of files) {
     const path = file.path.replaceAll("\\", "/");
     if (!JAVASCRIPT.has(extname(path))) continue;
-    NODE_SPECIFIER.lastIndex = 0;
-    for (let match; (match = NODE_SPECIFIER.exec(file.content));) {
-      if (NETWORK_BUILTINS.has(match[1])) issues.push({ path, reason: `runtime network builtin is not allowed: ${match[1]}` });
-    }
-    for (const pattern of [STATIC_IMPORT, REQUIRE]) {
-      pattern.lastIndex = 0;
-      for (let match; (match = pattern.exec(file.content));) {
+    const code = maskNonCode(file.content);
+    STATIC_IMPORT.lastIndex = 0;
+    const imports = [...file.content.matchAll(STATIC_IMPORT)].filter((match) => code.slice(match.index, match.index + 6) === "import" || code.slice(match.index, match.index + 6) === "export");
+    REQUIRE.lastIndex = 0;
+    const requires = [...file.content.matchAll(REQUIRE)].filter((match) => code.slice(match.index, match.index + 7) === "require");
+    for (const matches of [imports, requires]) {
+      for (const match of matches) {
         if (NETWORK_BUILTINS.has(match[2])) issues.push({ path, reason: `runtime network builtin is not allowed: ${match[2]}` });
       }
     }
-    if (/\b(?:fetch|WebSocket|EventSource)\b/.test(file.content)) issues.push({ path, reason: "runtime network globals are not allowed" });
-    if (/\bprocess\s*(?:\.\s*(?:binding|_linkedBinding|getBuiltinModule)|\[)/.test(file.content)) {
+    if (/\b(?:fetch|WebSocket|EventSource)\b/.test(code)) issues.push({ path, reason: "runtime network globals are not allowed" });
+    if (/\bprocess\s*(?:\.\s*(?:binding|_linkedBinding|getBuiltinModule)|\[)/.test(code)) {
       issues.push({ path, reason: "process runtime bindings are not allowed" });
     }
   }

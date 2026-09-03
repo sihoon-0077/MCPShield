@@ -300,6 +300,27 @@ test("artifact import policy permits snapshotted relative modules", async () => 
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
+test("artifact policy ignores import and fetch words in comments and strings", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "index.mjs"), "// import vm from 'node:vm'; fetch('ignored')\nprocess.stdout.write(\"documentation says import and fetch\");");
+  const replay = await allowedReplay(artifact);
+  try {
+    const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /import and fetch/);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("CommonJS source and entrypoints are rejected", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  try {
+    await writeFile(join(artifact, "legacy.cjs"), "module.exports = {};");
+    await assert.rejects(createArtifactSnapshot(artifact), /only \.mjs executable modules/);
+    await writeFile(join(artifact, "manifest.json"), JSON.stringify({ name: "mail-mcp", version: "1.0.0", entrypoint: "legacy.cjs", declaredEgress: [], tools: [] }));
+    await assert.rejects(createArtifactSnapshot(artifact), /ESM \.mjs/);
+  } finally { await rm(artifact, { recursive: true, force: true }); }
+});
+
 test("Node permission boundary blocks reads outside the snapshot", async () => {
   const artifact = await syntheticArtifact({ tools: [] });
   const outsideDirectory = await mkdtemp(join(tmpdir(), "mcpshield-outside-"));

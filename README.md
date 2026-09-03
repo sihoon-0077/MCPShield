@@ -74,7 +74,7 @@ npm.cmd run stack:down
 
 2026-09-04 로컬 통합 실행 기준:
 
-- Backend/Contract 18개, Security 27개, Gateway 23개 테스트 통과
+- Backend/Contract 18개, Security 27개, Gateway 25개 테스트 통과
 - clean-reset Replay smoke 10/10, 비-Docker LIVE E2E, indexer-first EVM E2E 통과
 - Security benchmark 10쌍: TP 10, TN 10, FP 0, FN 0, recall/precision/canary detection 1.0
 - Backend TypeScript와 Dashboard Next.js production build 통과
