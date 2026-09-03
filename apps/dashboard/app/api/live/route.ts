@@ -11,7 +11,7 @@ async function gatewayEvidence(releases: BackendRelease[]): Promise<Snapshot["ad
   const directory = process.env.MCPSHIELD_GATEWAY_EVIDENCE_DIR;
   if (!directory) return undefined;
   const expected = new Map(releases.map((release) => [release.releaseId, release]));
-  return Promise.all([["gateway-a.json", "Gateway A LIVE probe"], ["gateway-b.json", "Gateway B LIVE probe"]].map(async ([file, expectedGateway]) => {
+  return Promise.all([["gateway-a/gateway-a.json", "Gateway A LIVE probe"], ["gateway-b/gateway-b.json", "Gateway B LIVE probe"]].map(async ([file, expectedGateway]) => {
     const evidenceFile = path.join(/* turbopackIgnore: true */ directory, file);
     const evidence = JSON.parse(await readFile(/* turbopackIgnore: true */ evidenceFile, "utf8")) as Record<string, unknown>;
     const releaseId = typeof evidence.releaseId === "string" ? evidence.releaseId : "";

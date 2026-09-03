@@ -57,6 +57,8 @@ export function Dashboard() {
   const baseline = snapshot.releases.find((release) => release.releaseId.endsWith("1.0.0"));
   const failVotes = snapshot.validators.filter((validator) => validator.decision === "FAIL").length;
   const explorer = snapshot.explorerBaseUrl?.replace(/\/$/, "");
+  const hasLiveGatewayProof = snapshot.admissions.length > 0 && snapshot.admissions.every((item) => item.source === "LIVE" && item.spawnAttempted === false);
+  const admissionMetric = hasLiveGatewayProof ? ["Gateway enforcement", "before process spawn"] : snapshot.source === "LIVE" ? ["Backend admission preview", "no spawn proof"] : ["Admission preview", "no live spawn proof"];
 
   return (
     <main>
@@ -85,7 +87,7 @@ export function Dashboard() {
       <section className="metrics">
         <article><span>Release status</span><strong className="danger">{malicious?.chainStatus ?? "UNAVAILABLE"}</strong><small>mail-mcp@1.0.1</small></article>
         <article><span>Validator quorum</span><strong>{failVotes} / 3</strong><small>{failVotes >= 2 ? "Threshold reached" : "Awaiting votes"}</small><progress max="3" value={failVotes} aria-label={`${failVotes} of 3 validator failure votes`} /></article>
-        <article><span>Gateway enforcement</span><strong className="danger">{snapshot.admissions.filter((item) => item.decision === "BLOCK").length} BLOCK</strong><small>before process spawn</small></article>
+        <article><span>{admissionMetric[0]}</span><strong className="danger">{snapshot.admissions.filter((item) => item.decision === "BLOCK").length} BLOCK</strong><small>{admissionMetric[1]}</small></article>
       </section>
 
       <section className="card wide">
