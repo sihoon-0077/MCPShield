@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcpshield.dev/schemas/register-release-request.schema.json",
+  "title": "MCPShield Register Release Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "releaseId", "artifactDigest", "toolSurfaceHash"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "releaseId": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 214,
+      "pattern": "^.+@[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"
+    },
+    "artifactDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "toolSurfaceHash": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    }
+  }
+}
+
