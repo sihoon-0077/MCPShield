@@ -14,6 +14,10 @@ test("Compose wires a deployed registry into EVM backend and indexer", () => {
   assert.match(compose, /contract-init:\s*\n\s*<<: \*security\s*\n\s*cap_add:\s*\n\s*- CHOWN\s*\n\s*- SETGID\s*\n\s*- SETUID/);
   assert.match(compose, /gateway-a:[\s\S]*gateway-a\.json/);
   assert.match(compose, /gateway-b:[\s\S]*gateway-b\.json/);
+  assert.match(compose, /gateway-a:[\s\S]*gateway-evidence-a:\/evidence/);
+  assert.match(compose, /gateway-b:[\s\S]*gateway-evidence-b:\/evidence/);
+  assert.match(compose, /dashboard:[\s\S]*gateway-evidence-a:\/evidence\/gateway-a:ro[\s\S]*gateway-evidence-b:\/evidence\/gateway-b:ro/);
+  assert.doesNotMatch(compose, /gateway-evidence:\/evidence/);
   assert.match(compose, /x-gateway: &gateway[\s\S]*\/tmp:rw,noexec,nosuid/);
   assert.match(compose, /dashboard:[\s\S]*MCPSHIELD_GATEWAY_EVIDENCE_DIR: \/evidence/);
   assert.doesNotMatch(compose, /chmod 0777|MCPSHIELD_SCAN_IDS/);
