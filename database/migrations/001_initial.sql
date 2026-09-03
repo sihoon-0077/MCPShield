@@ -1,0 +1,53 @@
+CREATE TYPE release_status AS ENUM (
+  'UNVERIFIED', 'VERIFIED', 'QUARANTINED', 'REVOKED'
+);
+CREATE TYPE scan_status AS ENUM (
+  'QUEUED', 'RUNNING', 'PASSED', 'FAILED', 'INCONCLUSIVE'
+);
+CREATE TYPE validator_decision AS ENUM ('PASS', 'FAIL', 'ABSTAIN');
+
+CREATE TABLE releases (
+  release_id TEXT PRIMARY KEY,
+  artifact_digest TEXT NOT NULL CHECK (artifact_digest ~ '^sha256:[0-9a-f]{64}$'),
+  tool_surface_hash TEXT NOT NULL CHECK (tool_surface_hash ~ '^0x[0-9a-f]{64}$'),
+  status release_status NOT NULL DEFAULT 'UNVERIFIED',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE scans (
+  scan_id UUID PRIMARY KEY,
+  release_id TEXT NOT NULL REFERENCES releases(release_id),
+  schema_version TEXT NOT NULL CHECK (schema_version = '1.0.0'),
+  artifact_digest TEXT NOT NULL,
+  tool_surface_hash TEXT NOT NULL,
+  scan_status scan_status NOT NULL,
+  findings JSONB NOT NULL,
+  evidence_hash TEXT NOT NULL CHECK (evidence_hash ~ '^0x[0-9a-f]{64}$'),
+  source TEXT NOT NULL CHECK (source IN ('LIVE', 'MOCK', 'REPLAY')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE validator_votes (
+  release_id TEXT NOT NULL REFERENCES releases(release_id),
+  validator_address TEXT NOT NULL,
+  decision validator_decision NOT NULL,
+  evidence_hash TEXT NOT NULL,
+  tx_hash TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (release_id, validator_address)
+);
+
+CREATE TABLE chain_events (
+  id BIGSERIAL PRIMARY KEY,
+  release_id TEXT NOT NULL REFERENCES releases(release_id),
+  event_name TEXT NOT NULL,
+  status release_status,
+  tx_hash TEXT,
+  block_number BIGINT,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX scans_release_id_idx ON scans(release_id);
+CREATE INDEX chain_events_release_id_idx ON chain_events(release_id, id);
