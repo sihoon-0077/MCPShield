@@ -1,0 +1,41 @@
+name: mcpshield
+
+x-gateway: &gateway
+  build:
+    context: .
+    dockerfile: apps/gateway/Dockerfile
+  environment:
+    MCPSHIELD_MODE: ${MCPSHIELD_MODE:-replay}
+    MCPSHIELD_API_URL: ${MCPSHIELD_API_URL:-http://host.docker.internal:3001}
+    MCPSHIELD_ADMISSION_TIMEOUT_MS: ${MCPSHIELD_ADMISSION_TIMEOUT_MS:-3000}
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  healthcheck:
+    test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)})"]
+    interval: 5s
+    timeout: 2s
+    retries: 6
+
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    environment:
+      MCPSHIELD_API_URL: ${MCPSHIELD_API_URL:-http://host.docker.internal:3001}
+    ports:
+      - "3000:3000"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  gateway-a:
+    <<: *gateway
+
+  gateway-b:
+    <<: *gateway
