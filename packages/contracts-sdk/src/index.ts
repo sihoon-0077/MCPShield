@@ -6,6 +6,7 @@ export const releaseRegistryAbi = [
   "function owner() view returns (address)",
   "function isValidator(address) view returns (bool)",
   "function hasVoted(bytes32,address) view returns (bool)",
+  "function getValidatorVote(bytes32,address) view returns ((bytes32 releaseKey,address signer,uint8 decision,bytes32 evidenceHash,uint256 nonce,bool exists))",
   "function nonces(address) view returns (uint256)",
   "function releaseKey(string) pure returns (bytes32)",
   "function registerRelease(string releaseId,bytes32 artifactDigest,bytes32 toolSurfaceHash) returns (bytes32)",

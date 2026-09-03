@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS pending_operations (
   tx_hash TEXT,
   payload_json TEXT NOT NULL,
   error TEXT,
+  claimed_at TEXT NOT NULL,
+  lease_expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

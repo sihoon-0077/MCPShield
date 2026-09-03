@@ -277,6 +277,38 @@ export class Repository {
     }
   }
 
+  reconcileObservedVoteFromChain(
+    vote: Omit<VoteRecord, "scanId" | "signature">,
+    status: ReleaseStatus,
+    chainNonce: number,
+  ) {
+    const scan = this.findScanByEvidence(vote.releaseId, vote.evidenceHash);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(
+        `INSERT INTO validator_votes
+         (release_id, validator_address, decision, evidence_hash, scan_id, nonce,
+          signature, tx_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, 'CHAIN_RECOVERED', ?, ?)
+         ON CONFLICT(release_id, validator_address) DO UPDATE SET
+          decision = excluded.decision, evidence_hash = excluded.evidence_hash,
+          scan_id = excluded.scan_id, nonce = excluded.nonce,
+          signature = excluded.signature, tx_hash = COALESCE(excluded.tx_hash, validator_votes.tx_hash)`,
+      ).run(vote.releaseId, vote.validatorAddress, vote.decision, vote.evidenceHash,
+        scan?.scanId ?? null, vote.nonce, vote.txHash ?? null, new Date().toISOString());
+      this.db.prepare(
+        `INSERT INTO validator_nonces (validator_address, next_nonce) VALUES (?, ?)
+         ON CONFLICT(validator_address) DO UPDATE SET next_nonce =
+         MAX(next_nonce, excluded.next_nonce)`,
+      ).run(vote.validatorAddress, chainNonce);
+      this.db.prepare("UPDATE releases SET status = ?, updated_at = ? WHERE release_id = ?")
+        .run(status, new Date().toISOString(), vote.releaseId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   getValidatorNonce(validatorAddress: string) {
     const row = this.db
       .prepare("SELECT next_nonce FROM validator_nonces WHERE validator_address = ?")
@@ -513,13 +545,16 @@ export class Repository {
     operationId: string,
     operationType: string,
     payload: Record<string, unknown>,
+    leaseMs = 30_000,
   ) {
     const now = new Date().toISOString();
+    const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
     const result = this.db.prepare(
       `INSERT OR IGNORE INTO pending_operations
-       (operation_id, operation_type, status, payload_json, created_at, updated_at)
-       VALUES (?, ?, 'PENDING', ?, ?, ?)`,
-    ).run(operationId, operationType, JSON.stringify(payload), now, now);
+       (operation_id, operation_type, status, payload_json, claimed_at, lease_expires_at,
+        created_at, updated_at)
+       VALUES (?, ?, 'PENDING', ?, ?, ?, ?, ?)`,
+    ).run(operationId, operationType, JSON.stringify(payload), now, leaseExpiresAt, now, now);
     return { claimed: result.changes === 1, operation: this.getPendingOperation(operationId)! };
   }
 
@@ -531,12 +566,30 @@ export class Repository {
     return this.claimOperation(operationId, operationType, payload);
   }
 
-  retryFailedOperation(operationId: string) {
+  retryFailedOperation(operationId: string, leaseMs = 30_000) {
+    const now = new Date().toISOString();
     const result = this.db.prepare(
       `UPDATE pending_operations SET status = 'PENDING', tx_hash = NULL, error = NULL,
-       updated_at = ? WHERE operation_id = ? AND status = 'FAILED'`,
-    ).run(new Date().toISOString(), operationId);
+       claimed_at = ?, lease_expires_at = ?, updated_at = ?
+       WHERE operation_id = ? AND status = 'FAILED'`,
+    ).run(now, new Date(Date.now() + leaseMs).toISOString(), now, operationId);
     return result.changes === 1;
+  }
+
+  reclaimStalePending(operationId: string, leaseMs = 30_000) {
+    const now = new Date().toISOString();
+    return this.db.prepare(
+      `UPDATE pending_operations SET claimed_at = ?, lease_expires_at = ?, updated_at = ?
+       WHERE operation_id = ? AND status = 'PENDING' AND tx_hash IS NULL
+       AND lease_expires_at <= ?`,
+    ).run(now, new Date(Date.now() + leaseMs).toISOString(), now, operationId, now).changes === 1;
+  }
+
+  failOperationAsConflict(operationId: string, error: string) {
+    return this.db.prepare(
+      `UPDATE pending_operations SET status = 'FAILED', error = ?, updated_at = ?
+       WHERE operation_id = ? AND status IN ('PENDING', 'FAILED')`,
+    ).run(error, new Date().toISOString(), operationId).changes === 1;
   }
 
   completeFailedOperation(operationId: string, txHash?: string) {
@@ -583,7 +636,8 @@ export class Repository {
 
   getPendingOperation(operationId: string) {
     const row = this.db.prepare(
-      `SELECT operation_id, operation_type, status, tx_hash, payload_json
+      `SELECT operation_id, operation_type, status, tx_hash, payload_json,
+       claimed_at, lease_expires_at
        FROM pending_operations WHERE operation_id = ?`,
     ).get(operationId) as Record<string, string> | undefined;
     return row ? {
@@ -591,6 +645,9 @@ export class Repository {
       operationType: row.operation_type,
       status: row.status,
       txHash: row.tx_hash,
+      claimedAt: row.claimed_at,
+      leaseExpiresAt: row.lease_expires_at,
+      stale: row.status === "PENDING" && row.lease_expires_at <= new Date().toISOString(),
       payload: JSON.parse(row.payload_json) as Record<string, unknown>,
     } : undefined;
   }

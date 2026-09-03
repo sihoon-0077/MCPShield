@@ -86,6 +86,7 @@ test("concurrent registration retries have exactly one transaction sender", asyn
     async getRelease(releaseId) { return { releaseId, artifactDigest: digestA, toolSurfaceHash: toolHash, status: "UNVERIFIED" }; },
     async findRelease() { return undefined; }, async getValidatorNonce() { return 0; },
     async hasVoted() { return false; }, async getReceipt() { return "PENDING"; },
+    async getValidatorVote() { return undefined; },
     async validateConnection() {},
   };
   const app = await buildApp({ ...options, registryClient: fakeRegistry });
@@ -121,6 +122,7 @@ test("concurrent attestation retries have exactly one relayer sender", async () 
     async getRelease(releaseId) { return { releaseId, artifactDigest: digestA, toolSurfaceHash: toolHash, status: "QUARANTINED" }; },
     async findRelease(releaseId) { return this.getRelease(releaseId); },
     async getValidatorNonce() { return 1; }, async hasVoted() { return true; },
+    async getValidatorVote() { return undefined; },
     async getReceipt() { return "PENDING"; }, async validateConnection() {},
   };
   const app = await buildApp({ ...options, registryClient: fakeRegistry });
@@ -139,6 +141,36 @@ test("concurrent attestation retries have exactly one relayer sender", async () 
     assert.equal(completedRetry.statusCode, 200);
     assert.equal(sendCount, 1);
   } finally { await app.close(); }
+});
+
+test("failed attestation retry rejects a different direct on-chain vote", async () => {
+  const releaseId = "mail-mcp@2.3.0";
+  let sendCount = 0;
+  const fakeRegistry: RegistryClient = {
+    async registerRelease() { return { hash: `0x${"5".repeat(64)}`, async wait() {} }; },
+    async submitAttestation() { sendCount += 1; throw new Error("relay crashed"); },
+    async getRelease(id) { return { releaseId: id, artifactDigest: digestA,
+      toolSurfaceHash: toolHash, status: "UNVERIFIED" }; },
+    async findRelease(id) { return this.getRelease(id); },
+    async getValidatorNonce() { return 1; }, async hasVoted() { return true; },
+    async getValidatorVote(id, validatorAddress) { return { releaseId: id,
+      validatorAddress, decision: "PASS", evidenceHash: `0x${"d".repeat(64)}`, nonce: 0 }; },
+    async getReceipt() { return "REVERTED"; }, async validateConnection() {},
+  };
+  const app = await buildApp({ ...options, registryClient: fakeRegistry });
+  try {
+    assert.equal((await register(app, releaseId)).statusCode, 201);
+    const storedScan = await scan(app, releaseId);
+    const payload = await attestation(wallets[0], releaseId, storedScan.scanId, "FAIL");
+    assert.equal((await app.inject({ method: "POST", url: "/api/validators/vote", payload })).statusCode, 500);
+    const retry = await app.inject({ method: "POST", url: "/api/validators/vote", payload });
+    assert.equal(retry.statusCode, 409);
+    assert.equal(retry.json().error.code, "CHAIN_VOTE_CONFLICT");
+    assert.equal((await app.inject({ method: "POST", url: "/api/validators/vote", payload })).statusCode, 409);
+    assert.equal(sendCount, 1);
+  } finally {
+    await app.close();
+  }
 });
 
 test("scanner ingestion requires credentials, stamps LIVE, limits rate and body", async () => {

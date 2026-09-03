@@ -36,6 +36,7 @@ export interface AppOptions {
   attestationContract?: string;
   bodyLimit?: number;
   scanRateLimit?: number;
+  operationLeaseMs?: number;
 }
 
 function errorBody(code: string, message: string, details?: unknown) {
@@ -66,6 +67,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     (options.validatorAddresses ?? defaultValidators).map((address) => address.toLowerCase()),
   );
   const adminToken = options.adminApiToken;
+  const operationLeaseMs = options.operationLeaseMs ?? 30_000;
   const domain = attestationDomain(
     options.attestationChainId ?? 31337,
     options.attestationContract ?? "0x0000000000000000000000000000000000000001",
@@ -93,7 +95,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       return reply.code(400).send(errorBody("INVALID_RELEASE", "Release payload does not match contract v1"));
     }
     const operationId = `register:${body.releaseId}`;
-    let claim = repository.claimOperation(operationId, "REGISTER_RELEASE", body);
+    let claim = repository.claimOperation(operationId, "REGISTER_RELEASE", body, operationLeaseMs);
     if (!claim.claimed) {
       const existing = claim.operation;
       if (
@@ -104,7 +106,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         return reply.code(200).send({ schemaVersion: SCHEMA_VERSION,
           release: repository.getRelease(body.releaseId), txHash: existing.txHash, idempotent: true });
       }
-      if (existing.status === "PENDING" || existing.status === "SUBMITTED") {
+      if (existing.status === "SUBMITTED" || (existing.status === "PENDING" && !existing.stale)) {
         return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
           operation: { operationId, status: existing.status, txHash: existing.txHash } });
       }
@@ -112,24 +114,39 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         return reply.code(409).send(errorBody("CHAIN_TRUTH_UNAVAILABLE", "Cannot retry failed operation without chain truth"));
       }
       try {
-        const receipt = existing.txHash
-          ? await options.registryClient.getReceipt(existing.txHash)
-          : "REVERTED";
-        if (receipt === "PENDING") return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
-          operation: { operationId, status: "SUBMITTED", txHash: existing.txHash } });
-        let chainRelease = await options.registryClient.findRelease(body.releaseId);
-        if (receipt === "SUCCESS" || chainRelease) {
-          if (!chainRelease) chainRelease = await options.registryClient.getRelease(body.releaseId);
-          repository.upsertReleaseFromChain(chainRelease);
-          repository.completeFailedOperation(operationId, existing.txHash);
-          return reply.code(200).send({ schemaVersion: SCHEMA_VERSION,
-            release: repository.getRelease(body.releaseId), txHash: existing.txHash, idempotent: true });
+        if (existing.status === "PENDING") {
+          const chainRelease = await options.registryClient.findRelease(body.releaseId);
+          if (chainRelease) {
+            repository.upsertReleaseFromChain(chainRelease);
+            repository.updatePendingOperation(operationId, "COMPLETED");
+            return reply.code(200).send({ schemaVersion: SCHEMA_VERSION,
+              release: repository.getRelease(body.releaseId), idempotent: true });
+          }
+          if (!repository.reclaimStalePending(operationId, operationLeaseMs)) {
+            return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
+              operation: repository.getPendingOperation(operationId) });
+          }
+          claim = { claimed: true, operation: repository.getPendingOperation(operationId)! };
+        } else {
+          const receipt = existing.txHash
+            ? await options.registryClient.getReceipt(existing.txHash)
+            : "REVERTED";
+          if (receipt === "PENDING") return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
+            operation: { operationId, status: "SUBMITTED", txHash: existing.txHash } });
+          let chainRelease = await options.registryClient.findRelease(body.releaseId);
+          if (receipt === "SUCCESS" || chainRelease) {
+            if (!chainRelease) chainRelease = await options.registryClient.getRelease(body.releaseId);
+            repository.upsertReleaseFromChain(chainRelease);
+            repository.completeFailedOperation(operationId, existing.txHash);
+            return reply.code(200).send({ schemaVersion: SCHEMA_VERSION,
+              release: repository.getRelease(body.releaseId), txHash: existing.txHash, idempotent: true });
+          }
+          if (!repository.retryFailedOperation(operationId, operationLeaseMs)) {
+            return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
+              operation: repository.getPendingOperation(operationId) });
+          }
+          claim = { claimed: true, operation: repository.getPendingOperation(operationId)! };
         }
-        if (!repository.retryFailedOperation(operationId)) {
-          return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
-            operation: repository.getPendingOperation(operationId) });
-        }
-        claim = { claimed: true, operation: repository.getPendingOperation(operationId)! };
       } catch (error) {
         return reply.code(503).send(errorBody("CHAIN_TRUTH_UNAVAILABLE", "Failed operation was not retried", String(error)));
       }
@@ -244,7 +261,9 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     }
     const operationId = `attestation:${id(body.signature)}`;
     const operationPayload = { ...body, validatorAddress };
-    const claim = repository.claimOperation(operationId, "SUBMIT_ATTESTATION", operationPayload);
+    const claim = repository.claimOperation(
+      operationId, "SUBMIT_ATTESTATION", operationPayload, operationLeaseMs,
+    );
     if (!claim.claimed) {
       const existing = claim.operation;
       if (existing.status === "COMPLETED") {
@@ -252,7 +271,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
           release: repository.getRelease(body.releaseId), validatorAddress,
           txHash: existing.txHash, idempotent: true });
       }
-      if (existing.status === "PENDING" || existing.status === "SUBMITTED") {
+      if (existing.status === "SUBMITTED" || (existing.status === "PENDING" && !existing.stale)) {
         return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
           operation: { operationId, status: existing.status, txHash: existing.txHash } });
       }
@@ -260,25 +279,48 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         return reply.code(409).send(errorBody("CHAIN_TRUTH_UNAVAILABLE", "Cannot retry failed operation without chain truth"));
       }
       try {
-        const receipt = existing.txHash
+        const receipt = existing.status === "FAILED" && existing.txHash
           ? await options.registryClient.getReceipt(existing.txHash)
           : "REVERTED";
         if (receipt === "PENDING") return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
           operation: { operationId, status: "SUBMITTED", txHash: existing.txHash } });
-        const voted = await options.registryClient.hasVoted(body.releaseId, validatorAddress);
-        if (receipt === "SUCCESS" || voted) {
+        const chainVote = await options.registryClient.getValidatorVote(body.releaseId, validatorAddress);
+        if (chainVote) {
           const chainRelease = await options.registryClient.getRelease(body.releaseId);
           const chainNonce = await options.registryClient.getValidatorNonce(validatorAddress);
-          repository.reconcileVoteFromChain({ releaseId: body.releaseId, validatorAddress,
-            decision, evidenceHash: body.evidenceHash, scanId: body.scanId,
-            nonce: body.nonce as number, signature: body.signature, txHash: existing.txHash },
-          chainRelease.status, chainNonce);
-          repository.completeFailedOperation(operationId, existing.txHash);
-          return reply.code(200).send({ schemaVersion: SCHEMA_VERSION,
-            release: repository.getRelease(body.releaseId), validatorAddress,
-            txHash: existing.txHash, idempotent: true });
+          const matches = chainVote.releaseId === body.releaseId &&
+            chainVote.validatorAddress.toLowerCase() === validatorAddress &&
+            chainVote.decision === decision &&
+            chainVote.evidenceHash.toLowerCase() === body.evidenceHash.toLowerCase() &&
+            chainVote.nonce === body.nonce;
+          if (matches) {
+            repository.reconcileVoteFromChain({ releaseId: body.releaseId, validatorAddress,
+              decision, evidenceHash: body.evidenceHash, scanId: body.scanId,
+              nonce: body.nonce as number, signature: body.signature, txHash: existing.txHash },
+            chainRelease.status, chainNonce);
+            if (existing.status === "FAILED") repository.completeFailedOperation(operationId, existing.txHash);
+            else repository.updatePendingOperation(operationId, "COMPLETED", existing.txHash);
+            return reply.code(200).send({ schemaVersion: SCHEMA_VERSION,
+              release: repository.getRelease(body.releaseId), validatorAddress,
+              txHash: existing.txHash, idempotent: true });
+          }
+          repository.reconcileObservedVoteFromChain({ ...chainVote, txHash: existing.txHash },
+            chainRelease.status, chainNonce);
+          repository.failOperationAsConflict(operationId, "CHAIN_VOTE_CONFLICT");
+          return reply.code(409).send(errorBody(
+            "CHAIN_VOTE_CONFLICT", "On-chain validator vote differs from this attestation",
+            { chainVote },
+          ));
         }
-        if (!repository.retryFailedOperation(operationId)) {
+        if (receipt === "SUCCESS") {
+          return reply.code(503).send(errorBody(
+            "CHAIN_TRUTH_UNAVAILABLE", "Confirmed transaction has no queryable validator vote",
+          ));
+        }
+        const reclaimed = existing.status === "PENDING"
+          ? repository.reclaimStalePending(operationId, operationLeaseMs)
+          : repository.retryFailedOperation(operationId, operationLeaseMs);
+        if (!reclaimed) {
           return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
             operation: repository.getPendingOperation(operationId) });
         }

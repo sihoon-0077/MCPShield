@@ -16,6 +16,7 @@ const app = await buildApp({
   corsAllowlist: config.corsAllowlist,
   attestationChainId: config.attestationChainId,
   attestationContract: config.attestationContract,
+  operationLeaseMs: config.operationLeaseMs,
 });
 
 await app.listen({ host: config.apiHost, port: config.apiPort });

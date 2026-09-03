@@ -34,6 +34,11 @@ export function loadConfig(env = process.env) {
     env.REGISTRY_ADDRESS.toLowerCase() !== attestationContract.toLowerCase()
   ) throw new Error("ATTESTATION_CONTRACT must equal REGISTRY_ADDRESS in EVM mode");
 
+  const operationLeaseMs = Number(env.OPERATION_LEASE_MS || 30_000);
+  if (!Number.isSafeInteger(operationLeaseMs) || operationLeaseMs <= 0) {
+    throw new Error("OPERATION_LEASE_MS must be a positive integer");
+  }
+
   const evmValues = [env.RPC_URL, env.REGISTRY_ADDRESS, env.RELAYER_PRIVATE_KEY];
   if (evmValues.some(Boolean) && !evmValues.every(Boolean)) {
     throw new Error("RPC_URL, REGISTRY_ADDRESS and RELAYER_PRIVATE_KEY must be set together");
@@ -46,6 +51,7 @@ export function loadConfig(env = process.env) {
     validatorAddresses,
     attestationChainId,
     attestationContract,
+    operationLeaseMs,
     databasePath: env.DATABASE_PATH || "./mcpshield.db",
     apiPort: Number(env.API_PORT || 3001),
     apiHost: env.API_HOST || "127.0.0.1",

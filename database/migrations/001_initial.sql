@@ -78,6 +78,8 @@ CREATE TABLE pending_operations (
   tx_hash TEXT,
   payload JSONB NOT NULL,
   error TEXT,
+  claimed_at TIMESTAMPTZ NOT NULL,
+  lease_expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

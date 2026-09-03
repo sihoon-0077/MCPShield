@@ -16,6 +16,8 @@ function fakeRegistry(receipt: "PENDING" | "SUCCESS" | "REVERTED"): RegistryClie
     getRelease: chainRelease, findRelease: chainRelease,
     async getValidatorNonce() { return 1; }, async validateConnection() {},
     async hasVoted() { return true; },
+    async getValidatorVote(releaseId, validatorAddress) { return { releaseId,
+      validatorAddress, decision: "FAIL", evidenceHash, nonce: 0 }; },
     async registerRelease() { throw new Error("unused"); },
     async submitAttestation() { throw new Error("unused"); } };
 }
@@ -52,5 +54,19 @@ test("receipt pending and timeout preserve SUBMITTED state", async () => {
     timeout.getReceipt = async () => { throw new Error("RPC_TIMEOUT:receipt"); };
     assert.deepEqual((await reconcileSubmittedOperations(repository, timeout)).pending, ["pending:test"]);
     assert.equal(repository.getPendingOperation("pending:test")?.status, "SUBMITTED");
+  } finally { repository.close(); }
+});
+
+test("a stale crash claim has exactly one concurrent reclaimer and sender", async () => {
+  const repository = new Repository(":memory:");
+  try {
+    repository.claimOperation("stale:test", "REGISTER_RELEASE", { releaseId: "mail-mcp@2.2.0" }, 1);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    let sendCount = 0;
+    await Promise.all(Array.from({ length: 8 }, async () => {
+      if (repository.reclaimStalePending("stale:test", 30_000)) sendCount += 1;
+    }));
+    assert.equal(sendCount, 1);
+    assert.equal(repository.getPendingOperation("stale:test")?.stale, false);
   } finally { repository.close(); }
 });

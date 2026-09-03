@@ -18,11 +18,21 @@ contract ReleaseRegistry {
         bool exists;
     }
 
+    struct ValidatorVote {
+        bytes32 releaseKey;
+        address signer;
+        Decision decision;
+        bytes32 evidenceHash;
+        uint256 nonce;
+        bool exists;
+    }
+
     uint8 public constant QUORUM = 2;
     address public immutable owner;
     mapping(address => bool) public isValidator;
     mapping(bytes32 => Release) private releases;
     mapping(bytes32 => mapping(address => bool)) public hasVoted;
+    mapping(bytes32 => mapping(address => ValidatorVote)) private validatorVotes;
     mapping(address => uint256) public nonces;
 
     bytes32 private constant DOMAIN_TYPEHASH = keccak256(
@@ -150,6 +160,14 @@ contract ReleaseRegistry {
 
         nonces[validator] = nonce + 1;
         hasVoted[key][validator] = true;
+        validatorVotes[key][validator] = ValidatorVote({
+            releaseKey: key,
+            signer: validator,
+            decision: decision,
+            evidenceHash: evidenceHash,
+            nonce: nonce,
+            exists: true
+        });
         if (decision == Decision.PASS) item.passVotes += 1;
         if (decision == Decision.FAIL) item.failVotes += 1;
         emit VoteSubmitted(key, validator, decision, evidenceHash, nonce);
@@ -174,6 +192,13 @@ contract ReleaseRegistry {
         if (item.status != previous) {
             emit StatusChanged(key, previous, item.status);
         }
+    }
+
+    function getValidatorVote(
+        bytes32 key,
+        address validator
+    ) external view returns (ValidatorVote memory) {
+        return validatorVotes[key][validator];
     }
 
     function domainSeparator() public view returns (bytes32) {

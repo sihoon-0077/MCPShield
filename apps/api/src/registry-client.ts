@@ -27,6 +27,14 @@ export interface ChainRelease {
   status: ReleaseStatus;
 }
 
+export interface ChainValidatorVote {
+  releaseId: string;
+  validatorAddress: string;
+  decision: ValidatorDecision;
+  evidenceHash: string;
+  nonce: number;
+}
+
 export interface SubmittedTransaction {
   hash: string;
   wait(): Promise<void>;
@@ -43,6 +51,7 @@ export interface RegistryClient {
   findRelease(releaseId: string): Promise<ChainRelease | undefined>;
   getValidatorNonce(validatorAddress: string): Promise<number>;
   hasVoted(releaseId: string, validatorAddress: string): Promise<boolean>;
+  getValidatorVote(releaseId: string, validatorAddress: string): Promise<ChainValidatorVote | undefined>;
   getReceipt(txHash: string): Promise<"PENDING" | "SUCCESS" | "REVERTED">;
   validateConnection(expectedChainId?: number, validators?: string[]): Promise<void>;
 }
@@ -179,6 +188,26 @@ export class EvmRegistryClient implements RegistryClient {
       this.timeoutMs,
       "hasVoted",
     ));
+  }
+
+  async getValidatorVote(releaseId: string, validatorAddress: string) {
+    const vote = await withDeadline<any>(
+      this.reader.getValidatorVote(releaseKey(releaseId), validatorAddress),
+      this.timeoutMs,
+      "getValidatorVote",
+    );
+    if (!vote.exists) return undefined;
+    if (String(vote.releaseKey).toLowerCase() !== releaseKey(releaseId).toLowerCase()) {
+      throw new Error("CHAIN_VOTE_RELEASE_MISMATCH");
+    }
+    const decisions: readonly ValidatorDecision[] = ["PASS", "FAIL", "ABSTAIN"];
+    return {
+      releaseId,
+      validatorAddress: String(vote.signer).toLowerCase(),
+      decision: decisions[Number(vote.decision)],
+      evidenceHash: String(vote.evidenceHash).toLowerCase(),
+      nonce: Number(vote.nonce),
+    };
   }
 
   async getReceipt(txHash: string) {

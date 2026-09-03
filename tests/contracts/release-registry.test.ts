@@ -43,6 +43,13 @@ test("contract recovers validator signer and rejects outsider, replay, and expir
     await assert.rejects(registry.submitAttestation(key, 1, evidence, 0, deadline, outsiderSig));
     const signature = await sign(validators[0], domain, key, "FAIL", 0, deadline);
     await (await registry.submitAttestation(key, 1, evidence, 0, deadline, signature)).wait();
+    const storedVote = await registry.getValidatorVote(key, validators[0].address);
+    assert.equal(storedVote.releaseKey, key);
+    assert.equal(storedVote.signer, validators[0].address);
+    assert.equal(storedVote.decision, 1n);
+    assert.equal(storedVote.evidenceHash, evidence);
+    assert.equal(storedVote.nonce, 0n);
+    assert.equal(storedVote.exists, true);
     await assert.rejects(async () => {
       await (await registry.submitAttestation(key, 1, evidence, 0, deadline, signature)).wait();
     });
