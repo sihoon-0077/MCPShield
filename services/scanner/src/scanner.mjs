@@ -6,6 +6,7 @@ import { assertFinding, assertScanResult } from './schema.mjs';
 import { assertCanonicalScanResult } from './protocol-schema.mjs';
 import { runSandbox } from './sandbox.mjs';
 import { copyFixtureSnapshot, removeFixtureSnapshot } from './snapshot.mjs';
+import { importPolicyIssues } from '../../../packages/artifact-policy/import-policy.mjs';
 
 const TEXT_EXTENSIONS = new Set(['.js', '.cjs', '.mjs', '.ts', '.json', '.py']);
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -96,6 +97,12 @@ async function sourceFiles(fixtureDir) {
 
 function staticFindings(files, manifest) {
   const findings = [];
+  const importIssue = importPolicyIssues(files)[0];
+  if (importIssue) findings.push({
+    code: 'UNSAFE_MODULE_LOAD', severity: 'HIGH', deterministic: true, stage: 'STATIC',
+    message: 'Artifact module loading is not self-contained.',
+    evidence: { file: importIssue.path, rule: 'self-contained-imports-v1', reason: importIssue.reason },
+  });
   const sensitive = files.find(({ content }) => /(?:readFile|readFileSync)[\s\S]{0,160}(?:MCP_CANARY_PATH|\.ssh|\.env)/.test(content));
   if (sensitive) findings.push({
     code: 'SENSITIVE_FILE_READ', severity: 'HIGH', deterministic: true, stage: 'STATIC',

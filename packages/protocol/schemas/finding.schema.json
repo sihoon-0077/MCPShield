@@ -12,7 +12,8 @@
         "UNDECLARED_EGRESS",
         "CANARY_EXFILTRATION",
         "TOOL_SURFACE_CHANGED",
-        "SEMANTIC_BEHAVIOR_MISMATCH"
+        "SEMANTIC_BEHAVIOR_MISMATCH",
+        "UNSAFE_MODULE_LOAD"
       ]
     },
     "severity": {

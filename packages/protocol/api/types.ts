@@ -22,7 +22,8 @@ export interface Finding {
     | "UNDECLARED_EGRESS"
     | "CANARY_EXFILTRATION"
     | "TOOL_SURFACE_CHANGED"
-    | "SEMANTIC_BEHAVIOR_MISMATCH";
+    | "SEMANTIC_BEHAVIOR_MISMATCH"
+    | "UNSAFE_MODULE_LOAD";
   severity: "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
   deterministic: boolean;
   stage: "STATIC" | "AI" | "SANDBOX" | "POLICY";
