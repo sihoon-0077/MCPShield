@@ -1,41 +1,161 @@
 name: mcpshield
 
-x-gateway: &gateway
-  build:
-    context: .
-    dockerfile: apps/gateway/Dockerfile
-  environment:
-    MCPSHIELD_MODE: ${MCPSHIELD_MODE:-replay}
-    MCPSHIELD_API_URL: ${MCPSHIELD_API_URL:-http://host.docker.internal:3001}
-    MCPSHIELD_ADMISSION_TIMEOUT_MS: ${MCPSHIELD_ADMISSION_TIMEOUT_MS:-3000}
+# This stack contains synthetic data and deterministic DEVELOPMENT credentials only.
+# Bindings are loopback-only. Supply non-default secrets through the environment for any shared host.
+x-security: &security
   read_only: true
   security_opt:
     - no-new-privileges:true
   cap_drop:
     - ALL
+
+x-backend-env: &backend-env
+  ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-dev_admin_token_32_characters}
+  SCANNER_API_TOKEN: ${SCANNER_API_TOKEN:-dev_scanner_token_32_characters}
+  CORS_ALLOWLIST: http://localhost:3000
+  DATABASE_PATH: /tmp/mcpshield.db
+  API_HOST: 0.0.0.0
+  API_PORT: 3001
+  VALIDATOR_ADDRESSES: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266,0x70997970C51812dc3A010C7d01b50e0d17dc79C8,0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
+  ATTESTATION_CHAIN_ID: 31337
+  ATTESTATION_CONTRACT: 0x0000000000000000000000000000000000000001
+
+x-gateway: &gateway
+  <<: *security
+  build:
+    context: .
+    dockerfile: apps/gateway/Dockerfile
+  environment:
+    MCPSHIELD_MODE: live
+    MCPSHIELD_API_URL: http://backend:3001
+    MCPSHIELD_ADMISSION_TIMEOUT_MS: 3000
+  depends_on:
+    demo-seed:
+      condition: service_completed_successfully
   healthcheck:
-    test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)})"]
+    test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
     interval: 5s
     timeout: 2s
-    retries: 6
+    retries: 12
+  restart: unless-stopped
 
 services:
+  local-chain:
+    <<: *security
+    build:
+      context: .
+      dockerfile: scripts/demo/Dockerfile.backend
+    command: ["npx", "ganache", "--server.host", "0.0.0.0", "--server.port", "8545", "--chain.chainId", "31337", "--wallet.deterministic", "--logging.quiet"]
+    ports:
+      - "127.0.0.1:8545:8545"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8545',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_chainId',params:[]})}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  backend:
+    <<: *security
+    build:
+      context: .
+      dockerfile: scripts/demo/Dockerfile.backend
+    environment: *backend-env
+    ports:
+      - "127.0.0.1:3001:3001"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  demo-seed:
+    <<: *security
+    build:
+      context: .
+      dockerfile: scripts/demo/Dockerfile.backend
+    command: ["npm", "run", "demo:seed"]
+    environment:
+      <<: *backend-env
+      MCPSHIELD_API_URL: http://backend:3001
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: "no"
+
   dashboard:
+    <<: *security
     build:
       context: .
       dockerfile: apps/dashboard/Dockerfile
     environment:
-      MCPSHIELD_API_URL: ${MCPSHIELD_API_URL:-http://host.docker.internal:3001}
+      MCPSHIELD_API_URL: http://backend:3001
+      MCPSHIELD_API_TIMEOUT_MS: 3000
+      MCPSHIELD_SCAN_IDS: 00000000-0000-4000-8000-000000000100,00000000-0000-4000-8000-000000000101
     ports:
-      - "3000:3000"
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
+      - "127.0.0.1:3000:3000"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+      - /app/apps/dashboard/.next/cache:rw,noexec,nosuid,size=32m,mode=1777
+    depends_on:
+      demo-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
 
   gateway-a:
     <<: *gateway
+    ports:
+      - "127.0.0.1:8787:8787"
 
   gateway-b:
     <<: *gateway
+    ports:
+      - "127.0.0.1:8788:8787"
+
+  scanner:
+    <<: *security
+    profiles: ["scan"]
+    build:
+      context: .
+      dockerfile: scripts/demo/Dockerfile.scanner
+    command: ["node", "services/scanner/src/cli.mjs", "--fixture", "demo/fixtures/mail-mcp-1.0.1", "--baseline", "demo/fixtures/mail-mcp-1.0.0", "--sandbox", "local", "--submit-url", "http://backend:3001/api/scans"]
+    environment:
+      SCANNER_API_TOKEN: ${SCANNER_API_TOKEN:-dev_scanner_token_32_characters}
+    depends_on:
+      demo-seed:
+        condition: service_completed_successfully
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    restart: "no"
+
+  exfil-sink:
+    <<: *security
+    profiles: ["standalone-sink"]
+    build:
+      context: .
+      dockerfile: scripts/demo/Dockerfile.scanner
+    command: ["node", "services/exfil-sink/server.mjs"]
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      SINK_TOKEN: ${SINK_TOKEN:-dev_sink_token_32_characters}
+    expose:
+      - "8080"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+    restart: unless-stopped

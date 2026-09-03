@@ -14,17 +14,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            apps/dashboard/package-lock.json
-            apps/gateway/package-lock.json
-      - name: Test gateway
-        run: npm ci --prefix apps/gateway && npm test --prefix apps/gateway
-      - name: Build dashboard
-        run: npm ci --prefix apps/dashboard && npm run build --prefix apps/dashboard
-      - name: Run replay smoke test
-        run: npm run demo:reset --prefix scripts/demo && npm run demo:run --prefix scripts/demo
+          cache-dependency-path: package-lock.json
+      - name: Install monorepo dependencies
+        run: npm ci
+      - name: Test backend, contracts, gateway, and replay demo
+        run: npm test
+      - name: Build backend types and dashboard
+        run: npm run build
       - name: Validate compose
         run: docker compose config --quiet
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
       - name: Reject obvious private keys
         run: |
           if grep -RIE --exclude='*.lock' --exclude-dir=node_modules 'BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|AKIA[0-9A-Z]{16}' apps/dashboard apps/gateway scripts/demo; then
