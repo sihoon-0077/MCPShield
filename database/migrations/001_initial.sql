@@ -33,6 +33,9 @@ CREATE TABLE validator_votes (
   validator_address TEXT NOT NULL,
   decision validator_decision NOT NULL,
   evidence_hash TEXT NOT NULL,
+  scan_id UUID NOT NULL REFERENCES scans(scan_id),
+  nonce BIGINT NOT NULL,
+  signature TEXT NOT NULL,
   tx_hash TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (release_id, validator_address)
@@ -45,9 +48,33 @@ CREATE TABLE chain_events (
   status release_status,
   tx_hash TEXT,
   block_number BIGINT,
+  log_index INTEGER,
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX scans_release_id_idx ON scans(release_id);
 CREATE INDEX chain_events_release_id_idx ON chain_events(release_id, id);
+CREATE UNIQUE INDEX chain_events_log_uidx ON chain_events(tx_hash, log_index)
+  WHERE tx_hash IS NOT NULL AND log_index IS NOT NULL;
+
+CREATE TABLE validator_nonces (
+  validator_address TEXT PRIMARY KEY,
+  next_nonce BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE indexer_checkpoints (
+  name TEXT PRIMARY KEY,
+  block_number BIGINT NOT NULL
+);
+
+CREATE TABLE pending_operations (
+  operation_id TEXT PRIMARY KEY,
+  operation_type TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('PENDING', 'SUBMITTED', 'COMPLETED', 'FAILED')),
+  tx_hash TEXT,
+  payload JSONB NOT NULL,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

@@ -11,47 +11,82 @@ import type {
   ValidatorDecision,
 } from "../../../packages/protocol/api/types.js";
 
+export interface SignedAttestation {
+  releaseId: string;
+  decision: ValidatorDecision;
+  evidenceHash: string;
+  nonce: number;
+  deadline: number;
+  signature: string;
+}
+
+export interface ChainRelease {
+  releaseId: string;
+  artifactDigest: string;
+  toolSurfaceHash: string;
+  status: ReleaseStatus;
+}
+
+export interface SubmittedTransaction {
+  hash: string;
+  wait(): Promise<void>;
+}
+
 export interface RegistryClient {
   registerRelease(
     releaseId: string,
     artifactDigest: string,
     toolSurfaceHash: string,
-  ): Promise<string>;
-  submitVote(
-    releaseId: string,
-    validatorAddress: string,
-    decision: ValidatorDecision,
-    evidenceHash: string,
-  ): Promise<string>;
-  getStatus(releaseId: string): Promise<ReleaseStatus>;
+  ): Promise<SubmittedTransaction>;
+  submitAttestation(attestation: SignedAttestation): Promise<SubmittedTransaction>;
+  getRelease(releaseId: string): Promise<ChainRelease>;
+  validateConnection(expectedChainId?: number): Promise<void>;
+}
+
+function withDeadline<T>(promise: Promise<T>, timeoutMs: number, operation: string) {
+  let timer: NodeJS.Timeout;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`RPC_TIMEOUT:${operation}`)), timeoutMs);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer!));
 }
 
 export class EvmRegistryClient implements RegistryClient {
+  private readonly provider: JsonRpcProvider;
   private readonly reader: any;
-  private readonly owner: any;
-  private readonly validators = new Map<string, any>();
+  private readonly relayer: any;
+  private readonly relayerAddress: string;
 
   constructor(
     rpcUrl: string,
-    registryAddress: string,
-    ownerPrivateKey: string,
-    validatorPrivateKeys: string[],
+    private readonly registryAddress: string,
+    relayerPrivateKey: string,
+    private readonly timeoutMs = 5_000,
   ) {
-    if (validatorPrivateKeys.length !== 3) {
-      throw new Error("Exactly three validator private keys are required");
-    }
-    const provider = new JsonRpcProvider(rpcUrl);
-    this.reader = createReleaseRegistry(registryAddress, provider);
-    this.owner = createReleaseRegistry(
-      registryAddress,
-      new Wallet(ownerPrivateKey, provider),
+    this.provider = new JsonRpcProvider(rpcUrl);
+    this.reader = createReleaseRegistry(registryAddress, this.provider);
+    const signer = new Wallet(relayerPrivateKey, this.provider);
+    this.relayerAddress = signer.address;
+    this.relayer = createReleaseRegistry(registryAddress, signer);
+  }
+
+  async validateConnection(expectedChainId?: number) {
+    const code = await withDeadline(
+      this.provider.getCode(this.registryAddress),
+      this.timeoutMs,
+      "getCode",
     );
-    for (const privateKey of validatorPrivateKeys) {
-      const signer = new Wallet(privateKey, provider);
-      this.validators.set(
-        signer.address.toLowerCase(),
-        createReleaseRegistry(registryAddress, signer),
-      );
+    if (code === "0x") throw new Error("REGISTRY_CONTRACT_NOT_FOUND");
+    await withDeadline(this.reader.QUORUM(), this.timeoutMs, "quorum");
+    const owner = await withDeadline<any>(this.reader.owner(), this.timeoutMs, "owner");
+    if (String(owner).toLowerCase() !== this.relayerAddress.toLowerCase()) {
+      throw new Error("RELAYER_MUST_BE_REGISTRY_OWNER_FOR_RELEASE_REGISTRATION");
+    }
+    const network = await withDeadline(
+      this.provider.getNetwork(), this.timeoutMs, "network",
+    );
+    if (expectedChainId && network.chainId !== BigInt(expectedChainId)) {
+      throw new Error("ATTESTATION_CHAIN_ID_MISMATCH");
     }
   }
 
@@ -60,35 +95,56 @@ export class EvmRegistryClient implements RegistryClient {
     artifactDigest: string,
     toolSurfaceHash: string,
   ) {
-    const tx = await this.owner.registerRelease(
-      releaseId,
-      artifactDigestToBytes32(artifactDigest),
-      toolSurfaceHash,
+    const tx = await withDeadline<any>(
+      this.relayer.registerRelease(
+        releaseId,
+        artifactDigestToBytes32(artifactDigest),
+        toolSurfaceHash,
+      ),
+      this.timeoutMs,
+      "registerRelease",
     );
-    await tx.wait();
-    return tx.hash as string;
+    return {
+      hash: tx.hash as string,
+      wait: async () => {
+        await withDeadline(tx.wait(), this.timeoutMs, "registerReleaseReceipt");
+      },
+    };
   }
 
-  async submitVote(
-    releaseId: string,
-    validatorAddress: string,
-    decision: ValidatorDecision,
-    evidenceHash: string,
-  ) {
-    const registry = this.validators.get(validatorAddress.toLowerCase());
-    if (!registry) throw new Error("VALIDATOR_SIGNER_UNAVAILABLE");
-    const tx = await registry.submitVote(
-      releaseKey(releaseId),
-      chainDecisions[decision],
-      evidenceHash,
+  async submitAttestation(attestation: SignedAttestation) {
+    const tx = await withDeadline<any>(
+      this.relayer.submitAttestation(
+        releaseKey(attestation.releaseId),
+        chainDecisions[attestation.decision],
+        attestation.evidenceHash,
+        attestation.nonce,
+        attestation.deadline,
+        attestation.signature,
+      ),
+      this.timeoutMs,
+      "submitAttestation",
     );
-    await tx.wait();
-    return tx.hash as string;
+    return {
+      hash: tx.hash as string,
+      wait: async () => {
+        await withDeadline(tx.wait(), this.timeoutMs, "attestationReceipt");
+      },
+    };
   }
 
-  async getStatus(releaseId: string) {
-    const release = await this.reader.getRelease(releaseKey(releaseId));
-    return statusFromChain(release.status);
+  async getRelease(releaseId: string): Promise<ChainRelease> {
+    const release = await withDeadline<any>(
+      this.reader.getRelease(releaseKey(releaseId)),
+      this.timeoutMs,
+      "getRelease",
+    );
+    return {
+      releaseId: release.releaseId,
+      artifactDigest: `sha256:${String(release.artifactDigest).slice(2).toLowerCase()}`,
+      toolSurfaceHash: String(release.toolSurfaceHash).toLowerCase(),
+      status: statusFromChain(release.status),
+    };
   }
 }
 
@@ -96,12 +152,16 @@ export function registryClientFromEnv() {
   const address = process.env.REGISTRY_ADDRESS;
   if (!address) return undefined;
   const rpcUrl = process.env.RPC_URL;
-  const ownerKey = process.env.DEPLOYER_PRIVATE_KEY;
-  const validatorKeys = process.env.VALIDATOR_PRIVATE_KEYS?.split(",");
-  if (!rpcUrl || !ownerKey || validatorKeys?.length !== 3) {
+  const relayerKey = process.env.RELAYER_PRIVATE_KEY;
+  if (!rpcUrl || !relayerKey) {
     throw new Error(
-      "EVM mode requires RPC_URL, REGISTRY_ADDRESS, DEPLOYER_PRIVATE_KEY and three VALIDATOR_PRIVATE_KEYS",
+      "EVM mode requires RPC_URL, REGISTRY_ADDRESS and RELAYER_PRIVATE_KEY",
     );
   }
-  return new EvmRegistryClient(rpcUrl, address, ownerKey, validatorKeys);
+  return new EvmRegistryClient(
+    rpcUrl,
+    address,
+    relayerKey,
+    Number(process.env.RPC_TIMEOUT_MS ?? 5_000),
+  );
 }

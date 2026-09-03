@@ -22,6 +22,9 @@ export interface VoteRecord {
   validatorAddress: string;
   decision: ValidatorDecision;
   evidenceHash: string;
+  scanId: string;
+  nonce: number;
+  signature: string;
   txHash?: string;
 }
 
@@ -134,23 +137,25 @@ export class Repository {
   }
 
   recordVote(vote: VoteRecord): ReleaseRecord {
-    const release = this.getRelease(vote.releaseId);
-    if (!release) throw new Error("RELEASE_NOT_FOUND");
-    if (release.status === "REVOKED") throw new Error("RELEASE_REVOKED");
-
+    this.validateVote(vote);
+    const release = this.getRelease(vote.releaseId)!;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
         .prepare(
           `INSERT INTO validator_votes
-            (release_id, validator_address, decision, evidence_hash, tx_hash, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+            (release_id, validator_address, decision, evidence_hash, scan_id,
+             nonce, signature, tx_hash, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           vote.releaseId,
           vote.validatorAddress,
           vote.decision,
           vote.evidenceHash,
+          vote.scanId,
+          vote.nonce,
+          vote.signature,
           vote.txHash ?? null,
           new Date().toISOString(),
         );
@@ -189,12 +194,43 @@ export class Repository {
           newStatus: next,
         });
       }
+      this.db.prepare(
+        `INSERT INTO validator_nonces (validator_address, next_nonce) VALUES (?, ?)
+         ON CONFLICT(validator_address) DO UPDATE SET next_nonce = excluded.next_nonce`,
+      ).run(vote.validatorAddress, vote.nonce + 1);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
     return this.getRelease(vote.releaseId)!;
+  }
+
+  validateVote(
+    vote: Pick<
+      VoteRecord,
+      "releaseId" | "validatorAddress" | "scanId" | "evidenceHash" | "nonce"
+    >,
+  ) {
+    const release = this.getRelease(vote.releaseId);
+    if (!release) throw new Error("RELEASE_NOT_FOUND");
+    if (release.status === "REVOKED") throw new Error("RELEASE_REVOKED");
+    const scan = this.getScan(vote.scanId);
+    if (
+      !scan ||
+      scan.releaseId !== vote.releaseId ||
+      scan.evidenceHash !== vote.evidenceHash
+    ) throw new Error("SCAN_EVIDENCE_MISMATCH");
+    if (vote.nonce !== this.getValidatorNonce(vote.validatorAddress)) {
+      throw new Error("INVALID_NONCE");
+    }
+  }
+
+  getValidatorNonce(validatorAddress: string) {
+    const row = this.db
+      .prepare("SELECT next_nonce FROM validator_nonces WHERE validator_address = ?")
+      .get(validatorAddress) as { next_nonce: number } | undefined;
+    return row?.next_nonce ?? 0;
   }
 
   hasVote(releaseId: string, validatorAddress: string) {
@@ -232,12 +268,13 @@ export class Repository {
     txHash?: string,
     blockNumber?: number,
     payload: Record<string, unknown> = {},
+    logIndex?: number,
   ) {
     this.db
       .prepare(
         `INSERT INTO chain_events
-          (release_id, event_name, status, tx_hash, block_number, payload_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          (release_id, event_name, status, tx_hash, block_number, log_index, payload_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         releaseId,
@@ -245,9 +282,80 @@ export class Repository {
         status ?? null,
         txHash ?? null,
         blockNumber ?? null,
+        logIndex ?? null,
         JSON.stringify(payload),
         new Date().toISOString(),
       );
+  }
+
+  upsertIndexedRelease(input: Omit<ReleaseRecord, "status" | "createdAt" | "updatedAt">) {
+    if (this.getRelease(input.releaseId)) return;
+    this.createRelease(input);
+  }
+
+  recordIndexedEvent(input: {
+    releaseId: string;
+    eventName: string;
+    status?: ReleaseStatus;
+    txHash: string;
+    blockNumber: number;
+    logIndex: number;
+    payload?: Record<string, unknown>;
+  }) {
+    try {
+      this.addEvent(
+        input.releaseId,
+        input.eventName,
+        input.status,
+        input.txHash,
+        input.blockNumber,
+        input.payload,
+        input.logIndex,
+      );
+      return true;
+    } catch (error) {
+      if (String(error).includes("UNIQUE constraint failed")) return false;
+      throw error;
+    }
+  }
+
+  getCheckpoint(name: string) {
+    const row = this.db.prepare(
+      "SELECT block_number FROM indexer_checkpoints WHERE name = ?",
+    ).get(name) as { block_number: number } | undefined;
+    return row?.block_number;
+  }
+
+  setCheckpoint(name: string, blockNumber: number) {
+    this.db.prepare(
+      `INSERT INTO indexer_checkpoints (name, block_number) VALUES (?, ?)
+       ON CONFLICT(name) DO UPDATE SET block_number = excluded.block_number`,
+    ).run(name, blockNumber);
+  }
+
+  createPendingOperation(
+    operationId: string,
+    operationType: string,
+    payload: Record<string, unknown>,
+  ) {
+    const now = new Date().toISOString();
+    this.db.prepare(
+      `INSERT OR IGNORE INTO pending_operations
+       (operation_id, operation_type, status, payload_json, created_at, updated_at)
+       VALUES (?, ?, 'PENDING', ?, ?, ?)`,
+    ).run(operationId, operationType, JSON.stringify(payload), now, now);
+  }
+
+  updatePendingOperation(
+    operationId: string,
+    status: "SUBMITTED" | "COMPLETED" | "FAILED",
+    txHash?: string,
+    error?: string,
+  ) {
+    this.db.prepare(
+      `UPDATE pending_operations SET status = ?, tx_hash = COALESCE(?, tx_hash),
+       error = ?, updated_at = ? WHERE operation_id = ?`,
+    ).run(status, txHash ?? null, error ?? null, new Date().toISOString(), operationId);
   }
 
   listEvents(releaseId?: string) {

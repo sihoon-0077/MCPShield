@@ -23,6 +23,18 @@ contract ReleaseRegistry {
     mapping(address => bool) public isValidator;
     mapping(bytes32 => Release) private releases;
     mapping(bytes32 => mapping(address => bool)) public hasVoted;
+    mapping(address => uint256) public nonces;
+
+    bytes32 private constant DOMAIN_TYPEHASH = keccak256(
+        "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+    );
+    bytes32 private constant ATTESTATION_TYPEHASH = keccak256(
+        "Attestation(bytes32 releaseKey,uint8 decision,bytes32 evidenceHash,uint256 nonce,uint256 deadline)"
+    );
+    bytes32 private constant NAME_HASH = keccak256("MCPShield");
+    bytes32 private constant VERSION_HASH = keccak256("1");
+    uint256 private constant SECP256K1N_DIV_2 =
+        0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0;
 
     error OnlyOwner();
     error NotValidator();
@@ -31,6 +43,9 @@ contract ReleaseRegistry {
     error ReleaseNotFound();
     error AlreadyVoted();
     error ReleaseIsRevoked();
+    error AttestationExpired();
+    error InvalidNonce();
+    error InvalidSignature();
 
     event ReleaseRegistered(
         bytes32 indexed releaseKey,
@@ -101,20 +116,42 @@ contract ReleaseRegistry {
         emit ReleaseRegistered(key, releaseId, artifactDigest, toolSurfaceHash);
     }
 
-    function submitVote(
+    function submitAttestation(
         bytes32 key,
         Decision decision,
-        bytes32 evidenceHash
-    ) external onlyValidator {
+        bytes32 evidenceHash,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external {
         Release storage item = releases[key];
         if (!item.exists) revert ReleaseNotFound();
         if (item.status == Status.REVOKED) revert ReleaseIsRevoked();
-        if (hasVoted[key][msg.sender]) revert AlreadyVoted();
+        if (block.timestamp > deadline) revert AttestationExpired();
 
-        hasVoted[key][msg.sender] = true;
+        bytes32 structHash = keccak256(
+            abi.encode(
+                ATTESTATION_TYPEHASH,
+                key,
+                uint8(decision),
+                evidenceHash,
+                nonce,
+                deadline
+            )
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", domainSeparator(), structHash)
+        );
+        address validator = _recover(digest, signature);
+        if (!isValidator[validator]) revert NotValidator();
+        if (nonce != nonces[validator]) revert InvalidNonce();
+        if (hasVoted[key][validator]) revert AlreadyVoted();
+
+        nonces[validator] = nonce + 1;
+        hasVoted[key][validator] = true;
         if (decision == Decision.PASS) item.passVotes += 1;
         if (decision == Decision.FAIL) item.failVotes += 1;
-        emit VoteSubmitted(key, msg.sender, decision, evidenceHash);
+        emit VoteSubmitted(key, validator, decision, evidenceHash);
 
         Status previous = item.status;
         if (decision == Decision.FAIL) {
@@ -136,6 +173,36 @@ contract ReleaseRegistry {
         if (item.status != previous) {
             emit StatusChanged(key, previous, item.status);
         }
+    }
+
+    function domainSeparator() public view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                DOMAIN_TYPEHASH,
+                NAME_HASH,
+                VERSION_HASH,
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    function _recover(bytes32 digest, bytes calldata signature) private pure returns (address) {
+        if (signature.length != 65) revert InvalidSignature();
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly {
+            r := calldataload(signature.offset)
+            s := calldataload(add(signature.offset, 32))
+            v := byte(0, calldataload(add(signature.offset, 64)))
+        }
+        if (uint256(s) > SECP256K1N_DIV_2 || (v != 27 && v != 28)) {
+            revert InvalidSignature();
+        }
+        address signer = ecrecover(digest, v, r, s);
+        if (signer == address(0)) revert InvalidSignature();
+        return signer;
     }
 
     function getRelease(bytes32 key) external view returns (Release memory) {

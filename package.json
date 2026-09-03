@@ -2,6 +2,7 @@
   "name": "mcpshield-blockchain-backend",
   "version": "0.1.0",
   "private": true,
+  "engines": { "node": ">=22 <25" },
   "type": "module",
   "scripts": {
     "dev:api": "tsx watch apps/api/src/server.ts",
