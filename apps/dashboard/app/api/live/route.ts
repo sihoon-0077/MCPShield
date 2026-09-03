@@ -11,14 +11,14 @@ async function gatewayEvidence(releases: BackendRelease[]): Promise<Snapshot["ad
   const directory = process.env.MCPSHIELD_GATEWAY_EVIDENCE_DIR;
   if (!directory) return undefined;
   const expected = new Map(releases.map((release) => [release.releaseId, release]));
-  return Promise.all(["gateway-a.json", "gateway-b.json"].map(async (file) => {
+  return Promise.all([["gateway-a.json", "Gateway A LIVE probe"], ["gateway-b.json", "Gateway B LIVE probe"]].map(async ([file, expectedGateway]) => {
     const evidenceFile = path.join(/* turbopackIgnore: true */ directory, file);
     const evidence = JSON.parse(await readFile(/* turbopackIgnore: true */ evidenceFile, "utf8")) as Record<string, unknown>;
     const releaseId = typeof evidence.releaseId === "string" ? evidence.releaseId : "";
     const gateway = typeof evidence.gateway === "string" ? evidence.gateway : "";
     const checkedAt = typeof evidence.checkedAt === "string" ? evidence.checkedAt : "";
     const release = expected.get(releaseId);
-    if (evidence.schemaVersion !== "1.0.0" || !release || evidence.source !== "LIVE" || evidence.decision !== "BLOCK" ||
+    if (evidence.schemaVersion !== "1.0.0" || releaseId !== "mail-mcp@1.0.1" || !release || gateway !== expectedGateway || evidence.source !== "LIVE" || evidence.decision !== "BLOCK" ||
       evidence.releaseStatus !== "REVOKED" || evidence.reasonCode !== "RELEASE_REVOKED" || evidence.spawnAttempted !== false ||
       evidence.artifactDigest !== release.artifactDigest || evidence.toolSurfaceHash !== release.toolSurfaceHash ||
       !gateway || Number.isNaN(Date.parse(checkedAt))) {

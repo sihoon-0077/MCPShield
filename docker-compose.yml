@@ -37,6 +37,8 @@ x-gateway: &gateway
   environment: *gateway-env
   volumes:
     - gateway-evidence:/evidence
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=32m,mode=1777
   depends_on:
     demo-seed:
       condition: service_completed_successfully
