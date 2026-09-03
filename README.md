@@ -74,11 +74,11 @@ npm.cmd run stack:down
 
 2026-09-04 로컬 통합 실행 기준:
 
-- Backend/Contract 15개, Security 20개, Gateway 9개 테스트 통과
-- Replay smoke와 비-Docker LIVE E2E 통과
+- Backend/Contract 18개, Security 25개, Gateway 20개 테스트 통과
+- Replay smoke, 비-Docker LIVE E2E, indexer-first EVM E2E 통과
 - Security benchmark 10쌍: TP 10, TN 10, FP 0, FN 0, recall/precision/canary detection 1.0
 - Backend TypeScript와 Dashboard Next.js production build 통과
-- 운영 의존성 감사 결과는 `npm audit --omit=dev`로 확인합니다.
+- 전체 tracked-file 비밀 스캔 통과, `npm audit --omit=dev` 운영 의존성 취약점 0건
 
 이 수치는 정상·악성 fixture 각 1종을 반복한 해커톤용 소규모 측정이며 일반화된 탐지 성능 주장이 아닙니다. 상세 조건은 [평가 문서](docs/evaluation.md)를 참고하세요.
 
@@ -89,4 +89,4 @@ npm.cmd run stack:down
 - SQLite는 데모 런타임입니다. PostgreSQL migration은 제공하지만 production adapter는 범위 밖입니다.
 - 본 프로토타입은 local stdio MCP를 우선 지원하며 모든 remote MCP를 완전 증명하지 않습니다.
 
-자세한 내용: [아키텍처](docs/architecture.md) · [인터페이스 계약](docs/interface-contract.md) · [데모 시나리오](docs/demo-scenario.md) · [통합 체크리스트](docs/integration-checklist.md) · [보안 정책](SECURITY.md)
+자세한 내용: [구현 매트릭스](docs/implementation-matrix.md) · [아키텍처](docs/architecture.md) · [인터페이스 계약](docs/interface-contract.md) · [데모 시나리오](docs/demo-scenario.md) · [통합 체크리스트](docs/integration-checklist.md) · [보안 정책](SECURITY.md)

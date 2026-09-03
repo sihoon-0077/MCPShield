@@ -13,6 +13,9 @@
 - [x] Security benchmark with sample size and source labels
 - [x] Production dependency audit
 - [x] Compose structure and security-policy static validation
+- [x] Concurrent indexer-first EVM receipt-race test
+- [x] Full tracked-file secret scan with explicit deterministic-demo allowlist
+- [x] Docker-capable CI job for Compose startup and two LIVE Gateway evidence records
 
 ## P0 demo acceptance
 
@@ -42,5 +45,5 @@
 - [x] Backend and Gateway fail closed on unavailable trust state
 - [x] `SECURITY.md` and threat model exist
 - [ ] Choose and add a repository license before making the project public
-- [ ] Run the final repository secret scan immediately before publishing
+- [x] Run the final repository secret scan immediately before publishing
 - [ ] Pin the public demo commit and record its checksum
