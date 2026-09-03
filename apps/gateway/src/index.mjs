@@ -1,21 +1,14 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { Transform } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { createArtifactSnapshot, toolSurfaceHash } from "./artifact.mjs";
 
-const RELEASE_ID = /^.+@\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
-const ARTIFACT_DIGEST = /^sha256:[0-9a-f]{64}$/;
-const TOOL_SURFACE_HASH = /^0x[0-9a-f]{64}$/;
 const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED"]);
 const SOURCES = new Set(["LIVE", "MOCK", "REPLAY"]);
 const REASONS = new Set(["RELEASE_VERIFIED", "RELEASE_UNVERIFIED", "RELEASE_QUARANTINED", "RELEASE_REVOKED", "DIGEST_MISMATCH", "STATUS_UNAVAILABLE"]);
 const DECISION_KEYS = new Set(["schemaVersion", "releaseId", "decision", "releaseStatus", "reasonCode", "checkedAt", "source"]);
-
-const MOCK_RELEASES = new Map([
-  ["mail-mcp@1.0.0", { artifactDigest: `sha256:${"a".repeat(64)}`, toolSurfaceHash: `0x${"b".repeat(64)}`, status: "VERIFIED" }],
-  ["mail-mcp@1.0.1", { artifactDigest: `sha256:${"c".repeat(64)}`, toolSurfaceHash: `0x${"d".repeat(64)}`, status: "REVOKED" }],
-]);
 
 export class AdmissionBlockedError extends Error {
   constructor(decision) {
@@ -25,209 +18,185 @@ export class AdmissionBlockedError extends Error {
   }
 }
 
+export class ToolSurfaceDriftError extends Error {
+  constructor(expected, observed) {
+    super(`Runtime tools/list drift: expected ${expected}, observed ${observed}`);
+    this.name = "ToolSurfaceDriftError";
+    this.expected = expected;
+    this.observed = observed;
+  }
+}
+
 function log(event, fields = {}) {
   process.stderr.write(`${JSON.stringify({ time: new Date().toISOString(), event, ...fields })}\n`);
 }
 
-function mismatchDecision(releaseId, releaseStatus, source, checkedAt = new Date().toISOString()) {
-  return {
-    schemaVersion: "1.0.0",
-    releaseId,
-    decision: "BLOCK",
-    releaseStatus,
-    reasonCode: "DIGEST_MISMATCH",
-    checkedAt,
-    source,
-  };
-}
-
-function decisionFor(releaseId, artifactDigest, toolSurfaceHash, source) {
-  const expected = MOCK_RELEASES.get(releaseId);
-  const releaseStatus = expected?.status ?? "UNVERIFIED";
-  const mismatch = expected && (expected.artifactDigest !== artifactDigest || expected.toolSurfaceHash !== toolSurfaceHash);
-  if (mismatch) return mismatchDecision(releaseId, releaseStatus, source);
-  const allow = releaseStatus === "VERIFIED";
-  return {
-    schemaVersion: "1.0.0",
-    releaseId,
-    decision: allow ? "ALLOW" : "BLOCK",
-    releaseStatus,
-    reasonCode: expected ? `RELEASE_${releaseStatus}` : "STATUS_UNAVAILABLE",
-    checkedAt: new Date().toISOString(),
-    source,
-  };
-}
-
 function validateDecision(value, releaseId) {
-  if (!value || value.schemaVersion !== "1.0.0" || value.releaseId !== releaseId) {
-    throw new Error("Admission response does not match schemaVersion/releaseId");
-  }
-  if (Object.keys(value).some((key) => !DECISION_KEYS.has(key))) {
-    throw new Error("Admission response contains unknown fields");
-  }
-  if (!new Set(["ALLOW", "BLOCK"]).has(value.decision) || !STATUSES.has(value.releaseStatus)) {
-    throw new Error("Admission response contains an unknown decision or releaseStatus");
-  }
-  if (!REASONS.has(value.reasonCode) || !SOURCES.has(value.source) || Number.isNaN(Date.parse(value.checkedAt))) {
-    throw new Error("Admission response contains an invalid reasonCode, source, or checkedAt");
-  }
-  if ((value.decision === "ALLOW") !== (value.releaseStatus === "VERIFIED" && value.reasonCode === "RELEASE_VERIFIED")) {
-    throw new Error("Admission response has an inconsistent allow decision");
-  }
+  if (!value || value.schemaVersion !== "1.0.0" || value.releaseId !== releaseId) throw new Error("Admission response does not match schemaVersion/releaseId");
+  if (Object.keys(value).some((key) => !DECISION_KEYS.has(key))) throw new Error("Admission response contains unknown fields");
+  if (!new Set(["ALLOW", "BLOCK"]).has(value.decision) || !STATUSES.has(value.releaseStatus)) throw new Error("Admission response contains an unknown decision or releaseStatus");
+  if (!REASONS.has(value.reasonCode) || !SOURCES.has(value.source) || Number.isNaN(Date.parse(value.checkedAt))) throw new Error("Admission response contains invalid metadata");
+  if ((value.decision === "ALLOW") !== (value.releaseStatus === "VERIFIED" && value.reasonCode === "RELEASE_VERIFIED")) throw new Error("Admission response has an inconsistent allow decision");
   return value;
 }
 
-function assertIdentity(releaseId, artifactDigest, toolSurfaceHash) {
-  if (!RELEASE_ID.test(releaseId)) throw new Error(`Invalid releaseId: ${releaseId}`);
-  if (!ARTIFACT_DIGEST.test(artifactDigest)) throw new Error(`Invalid artifactDigest: ${artifactDigest}`);
-  if (!TOOL_SURFACE_HASH.test(toolSurfaceHash)) throw new Error(`Invalid toolSurfaceHash: ${toolSurfaceHash}`);
+function mockDecision(identity) {
+  return validateDecision({ schemaVersion: "1.0.0", releaseId: identity.releaseId, decision: "BLOCK", releaseStatus: "UNVERIFIED", reasonCode: "STATUS_UNAVAILABLE", checkedAt: new Date().toISOString(), source: "MOCK" }, identity.releaseId);
 }
 
-export async function getAdmission({
-  releaseId,
-  artifactDigest,
-  toolSurfaceHash,
-  mode = process.env.MCPSHIELD_MODE ?? "live",
-  apiBaseUrl = process.env.MCPSHIELD_API_URL ?? "http://127.0.0.1:3001",
-  replayFile = process.env.MCPSHIELD_REPLAY_FILE,
-  timeoutMs = Number(process.env.MCPSHIELD_ADMISSION_TIMEOUT_MS ?? 3000),
-  fetchImpl = fetch,
-}) {
-  assertIdentity(releaseId, artifactDigest, toolSurfaceHash);
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
-    throw new Error("Admission timeout must be an integer between 1 and 30000ms");
-  }
-
-  if (mode === "mock") return validateDecision(decisionFor(releaseId, artifactDigest, toolSurfaceHash, "MOCK"), releaseId);
+export async function getAdmission({ identity, mode = process.env.MCPSHIELD_MODE ?? "live", apiBaseUrl = process.env.MCPSHIELD_API_URL ?? "http://127.0.0.1:3001", replayFile = process.env.MCPSHIELD_REPLAY_FILE, timeoutMs = Number(process.env.MCPSHIELD_ADMISSION_TIMEOUT_MS ?? 3000), fetchImpl = fetch }) {
+  if (!identity?.releaseId || !identity.artifactDigest || !identity.toolSurfaceHash) throw new Error("Gateway-owned artifact identity is required");
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) throw new Error("Admission timeout must be between 1 and 30000ms");
+  if (mode === "mock") return mockDecision(identity);
   if (mode === "replay") {
     if (!replayFile) throw new Error("MCPSHIELD_REPLAY_FILE is required in replay mode");
     const replay = JSON.parse(await readFile(replayFile, "utf8"));
-    const saved = replay.decisions?.[releaseId];
-    if (!saved) throw new Error(`Replay has no admission decision for ${releaseId}`);
-    const expected = replay.snapshot?.releases?.find((release) => release.releaseId === releaseId);
-    if (!expected || expected.artifactDigest !== artifactDigest || expected.toolSurfaceHash !== toolSurfaceHash) {
-      return validateDecision(mismatchDecision(releaseId, saved.releaseStatus ?? "UNVERIFIED", "REPLAY", saved.checkedAt), releaseId);
+    const saved = replay.decisions?.[identity.releaseId];
+    const expected = replay.snapshot?.releases?.find((release) => release.releaseId === identity.releaseId);
+    if (!saved || !expected) throw new Error(`Replay has no admission evidence for ${identity.releaseId}`);
+    if (expected.artifactDigest !== identity.artifactDigest || expected.toolSurfaceHash !== identity.toolSurfaceHash) {
+      return validateDecision({ ...saved, decision: "BLOCK", reasonCode: "DIGEST_MISMATCH", source: "REPLAY" }, identity.releaseId);
     }
-    return validateDecision({ ...saved, source: "REPLAY" }, releaseId);
+    return validateDecision({ ...saved, source: "REPLAY" }, identity.releaseId);
   }
   if (mode !== "live") throw new Error(`Unknown MCPShield mode: ${mode}`);
-
   const response = await fetchImpl(`${apiBaseUrl.replace(/\/$/, "")}/api/admission/check`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify({ schemaVersion: "1.0.0", releaseId, artifactDigest, toolSurfaceHash }),
+    body: JSON.stringify({ schemaVersion: "1.0.0", releaseId: identity.releaseId, artifactDigest: identity.artifactDigest, toolSurfaceHash: identity.toolSurfaceHash }),
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw new Error(`Admission API returned ${response.status}`);
-  return validateDecision(await response.json(), releaseId);
+  return validateDecision(await response.json(), identity.releaseId);
 }
 
-function allowedCommands() {
-  const configured = process.env.MCPSHIELD_ALLOWED_COMMANDS;
-  return new Set((configured ? configured.split(",") : ["node", "node.exe", "npx", "npx.cmd"])
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean));
+function spawnSnapshot(snapshot) {
+  return spawn(process.execPath, [snapshot.entrypoint], { cwd: snapshot.root, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, MCP_SHIELD_GATEWAY: "1" } });
 }
 
-function assertCommand(command) {
-  if (!command || !allowedCommands().has(basename(command).toLowerCase())) {
-    throw new Error(`Command is not allowlisted: ${command || "<empty>"}`);
-  }
-}
-
-function spawnChild(command, args, stdio) {
-  assertCommand(command);
-  return spawn(command, args, { shell: false, windowsHide: true, stdio });
-}
-
-function execute(command, args, { capture = false, timeoutMs = 15_000 } = {}) {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("Execution timeout must be a positive integer");
-  return new Promise((resolve, reject) => {
-    const child = spawnChild(command, args, capture ? ["ignore", "pipe", "pipe"] : "inherit");
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    child.stdout?.on("data", (chunk) => { stdout += chunk; });
-    child.stderr?.on("data", (chunk) => { stderr += chunk; });
-    const finish = (callback) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      callback();
-    };
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      finish(() => reject(new Error(`Child execution timed out after ${timeoutMs}ms`)));
-    }, timeoutMs);
-    child.once("error", (error) => finish(() => reject(error)));
-    child.once("exit", (code, signal) => finish(() => signal
-      ? reject(new Error(`Child terminated by ${signal}`))
-      : resolve({ code: code ?? 1, stdout, stderr })));
+function lineTransform(onMessage) {
+  let pending = Buffer.alloc(0);
+  const inspect = (line) => {
+    const text = line.toString("utf8").trim();
+    if (!text) return;
+    let message;
+    try { message = JSON.parse(text); } catch { throw new Error("MCP stdio emitted invalid newline-delimited JSON-RPC"); }
+    onMessage(message);
+  };
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      try {
+        pending = Buffer.concat([pending, Buffer.from(chunk)]);
+        if (pending.byteLength > 1024 * 1024) throw new Error("MCP JSON-RPC line exceeds 1 MiB");
+        let newline;
+        while ((newline = pending.indexOf(0x0a)) !== -1) {
+          const line = pending.subarray(0, newline + 1);
+          pending = pending.subarray(newline + 1);
+          inspect(line);
+          this.push(line);
+        }
+        callback();
+      } catch (error) { callback(error); }
+    },
+    flush(callback) {
+      try { if (pending.length) { inspect(pending); this.push(pending); } callback(); } catch (error) { callback(error); }
+    },
   });
 }
 
-export async function runRelease({ releaseId, artifactDigest, toolSurfaceHash, command, args = [], capture = false, executionTimeoutMs, ...admissionOptions }) {
-  const decision = await getAdmission({ releaseId, artifactDigest, toolSurfaceHash, ...admissionOptions });
-  log("admission", { releaseId, decision: decision.decision, status: decision.releaseStatus, source: decision.source });
-  if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") throw new AdmissionBlockedError(decision);
-  const result = await execute(command, args, { capture, timeoutMs: executionTimeoutMs ?? 15_000 });
-  log("process_exit", { releaseId, command: basename(command), code: result.code });
-  return { decision, ...result };
+const idKey = (id) => `${typeof id}:${JSON.stringify(id)}`;
+
+export function runtimeSurfaceGuards(expectedHash) {
+  const pendingToolsList = new Set();
+  const requests = lineTransform((message) => {
+    if (message?.jsonrpc === "2.0" && message.method === "tools/list" && Object.hasOwn(message, "id")) {
+      const key = idKey(message.id);
+      if (!pendingToolsList.has(key) && pendingToolsList.size >= 1_024) throw new Error("Too many pending tools/list requests");
+      pendingToolsList.add(key);
+    }
+  });
+  const responses = lineTransform((message) => {
+    const key = message && Object.hasOwn(message, "id") ? idKey(message.id) : undefined;
+    if (!key || !pendingToolsList.delete(key) || message.error) return;
+    if (!Array.isArray(message.result?.tools)) throw new ToolSurfaceDriftError(expectedHash, "INVALID_TOOLS_LIST");
+    const observed = toolSurfaceHash(message.result.tools);
+    if (observed !== expectedHash) throw new ToolSurfaceDriftError(expectedHash, observed);
+  });
+  return { requests, responses };
 }
 
-export async function proxyStdio({ releaseId, artifactDigest, toolSurfaceHash, command, args = [], ...admissionOptions }) {
-  const decision = await getAdmission({ releaseId, artifactDigest, toolSurfaceHash, ...admissionOptions });
-  log("admission", { releaseId, decision: decision.decision, status: decision.releaseStatus, source: decision.source });
-  if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") throw new AdmissionBlockedError(decision);
+async function admittedSnapshot(artifactDir, options) {
+  const snapshot = await createArtifactSnapshot(artifactDir);
+  try {
+    const decision = await getAdmission({ identity: snapshot, ...options });
+    log("admission", { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash, decision: decision.decision, status: decision.releaseStatus, source: decision.source });
+    if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") throw new AdmissionBlockedError(decision);
+    return { snapshot, decision };
+  } catch (error) {
+    await snapshot.cleanup();
+    throw error;
+  }
+}
 
-  const child = spawnChild(command, args, ["pipe", "pipe", "pipe"]);
-  process.stdin.pipe(child.stdin);
-  child.stdout.pipe(process.stdout);
-  child.stderr.pipe(process.stderr);
+export async function runArtifact({ artifactDir, capture = false, executionTimeoutMs = 15_000, ...options }) {
+  const { snapshot, decision } = await admittedSnapshot(artifactDir, options);
+  try {
+    const child = spawnSnapshot(snapshot);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; if (!capture) process.stdout.write(chunk); });
+    child.stderr.on("data", (chunk) => { stderr += chunk; if (!capture) process.stderr.write(chunk); });
+    const result = await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (callback) => { if (settled) return; settled = true; clearTimeout(timer); callback(); };
+      const timer = setTimeout(() => { child.kill("SIGTERM"); finish(() => reject(new Error(`Child execution timed out after ${executionTimeoutMs}ms`))); }, executionTimeoutMs);
+      child.once("error", (error) => finish(() => reject(error)));
+      child.once("exit", (code, signal) => finish(() => signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve({ code: code ?? 1, stdout, stderr })));
+    });
+    return { decision, identity: { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash }, ...result };
+  } finally { await snapshot.cleanup(); }
+}
 
+export async function proxyArtifactStdio({ artifactDir, ...options }) {
+  const { snapshot } = await admittedSnapshot(artifactDir, options);
+  const child = spawnSnapshot(snapshot);
+  const { requests, responses } = runtimeSurfaceGuards(snapshot.toolSurfaceHash);
+  let terminalError;
   let cleaned = false;
   const cleanup = (signal = "SIGTERM") => {
     if (cleaned) return;
     cleaned = true;
-    process.stdin.unpipe(child.stdin);
-    child.stdout.unpipe(process.stdout);
+    process.stdin.unpipe(requests);
+    requests.unpipe(child.stdin);
+    child.stdout.unpipe(responses);
+    responses.unpipe(process.stdout);
     child.stderr.unpipe(process.stderr);
-    if (!child.killed && child.exitCode === null) child.kill(signal);
+    if (child.exitCode === null && child.signalCode === null) child.kill(signal);
   };
-  const signalHandlers = new Map();
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-    const handler = () => cleanup(signal);
-    signalHandlers.set(signal, handler);
-    process.once(signal, handler);
+  process.stdin.pipe(requests).pipe(child.stdin);
+  child.stdout.pipe(responses).pipe(process.stdout);
+  child.stderr.pipe(process.stderr);
+  const fail = (error) => { terminalError = error; log("gateway_runtime_blocked", { releaseId: snapshot.releaseId, error: error.message }); cleanup(); };
+  requests.once("error", fail);
+  responses.once("error", fail);
+  const handlers = new Map();
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) { const handler = () => cleanup(signal); handlers.set(signal, handler); process.once(signal, handler); }
+  try {
+    return await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => terminalError ? reject(terminalError) : signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve(code ?? 1));
+    });
+  } finally {
+    cleanup();
+    for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+    await snapshot.cleanup();
   }
-  const removeHandlers = () => {
-    for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
-  };
-
-  return new Promise((resolve, reject) => {
-    child.once("error", (error) => {
-      cleanup();
-      removeHandlers();
-      reject(error);
-    });
-    child.once("exit", (code, signal) => {
-      cleanup();
-      removeHandlers();
-      log("process_exit", { releaseId, command: basename(command), code, signal });
-      signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve(code ?? 1);
-    });
-  });
 }
 
 async function stdio() {
-  const releaseId = process.env.MCPSHIELD_RELEASE_ID;
-  const artifactDigest = process.env.MCPSHIELD_ARTIFACT_DIGEST;
-  const toolSurfaceHash = process.env.MCPSHIELD_TOOL_SURFACE_HASH;
-  const command = JSON.parse(process.env.MCPSHIELD_COMMAND_JSON ?? "[]");
-  if (!releaseId || !artifactDigest || !toolSurfaceHash || !Array.isArray(command) || !command.every((item) => typeof item === "string") || command.length === 0) {
-    throw new Error("MCPSHIELD_RELEASE_ID, MCPSHIELD_ARTIFACT_DIGEST, MCPSHIELD_TOOL_SURFACE_HASH, and a non-empty JSON-array MCPSHIELD_COMMAND_JSON are required");
-  }
-  process.exitCode = await proxyStdio({ releaseId, artifactDigest, toolSurfaceHash, command: command[0], args: command.slice(1) });
+  const artifactDir = process.env.MCPSHIELD_ARTIFACT_DIR;
+  if (!artifactDir) throw new Error("MCPSHIELD_ARTIFACT_DIR is required");
+  process.exitCode = await proxyArtifactStdio({ artifactDir });
 }
 
 function serve() {
@@ -235,18 +204,21 @@ function serve() {
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be valid");
   createServer((request, response) => {
     response.setHeader("cache-control", "no-store");
-    if (request.method === "GET" && request.url === "/health") {
-      response.writeHead(200, { "content-type": "application/json" });
-      return response.end(JSON.stringify({ schemaVersion: "1.0.0", status: "ok", mode: (process.env.MCPSHIELD_MODE ?? "live").toUpperCase() }));
-    }
-    response.writeHead(404, { "content-type": "application/json" });
-    response.end(JSON.stringify({ error: "not_found" }));
+    if (request.method === "GET" && request.url === "/health") { response.writeHead(200, { "content-type": "application/json" }); return response.end(JSON.stringify({ schemaVersion: "1.0.0", status: "ok", mode: (process.env.MCPSHIELD_MODE ?? "live").toUpperCase() })); }
+    response.writeHead(404, { "content-type": "application/json" }); response.end(JSON.stringify({ error: "not_found" }));
   }).listen(port, "0.0.0.0", () => log("gateway_ready", { port }));
 }
 
-function option(args, name, fallback) {
-  const index = args.indexOf(name);
-  return index === -1 ? fallback : args[index + 1];
+function parseRun(args) {
+  const allowed = new Set(["--artifact", "--mode", "--replay"]);
+  const parsed = {};
+  for (let index = 0; index < args.length; index += 2) {
+    const key = args[index]; const value = args[index + 1];
+    if (!allowed.has(key) || value === undefined) throw new Error(`Unsupported Gateway argument: ${key ?? "<missing>"}`);
+    parsed[key.slice(2)] = value;
+  }
+  if (!parsed.artifact) throw new Error("--artifact is required");
+  return parsed;
 }
 
 async function main() {
@@ -254,37 +226,14 @@ async function main() {
   if (subcommand === "stdio") return stdio();
   if (subcommand === "serve") return serve();
   if (subcommand !== "run") throw new Error(`Unknown command: ${subcommand}`);
-  const split = args.indexOf("--");
-  const command = split === -1 ? [] : args.slice(split + 1);
+  const parsed = parseRun(args);
   try {
-    const result = await runRelease({
-      releaseId: option(args, "--release"),
-      artifactDigest: option(args, "--digest"),
-      toolSurfaceHash: option(args, "--surface"),
-      mode: option(args, "--mode", process.env.MCPSHIELD_MODE ?? "live"),
-      replayFile: option(args, "--replay", process.env.MCPSHIELD_REPLAY_FILE),
-      command: command[0],
-      args: command.slice(1),
-    });
+    const result = await runArtifact({ artifactDir: parsed.artifact, mode: parsed.mode ?? process.env.MCPSHIELD_MODE ?? "live", replayFile: parsed.replay ?? process.env.MCPSHIELD_REPLAY_FILE });
     process.exitCode = result.code;
   } catch (error) {
-    if (error instanceof AdmissionBlockedError) {
-      process.stderr.write(`${JSON.stringify(error.decision)}\n`);
-      process.exitCode = 3;
-      return;
-    }
+    if (error instanceof AdmissionBlockedError) { process.stderr.write(`${JSON.stringify(error.decision)}\n`); process.exitCode = 3; return; }
     throw error;
   }
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  main().catch((error) => {
-    if (error instanceof AdmissionBlockedError) {
-      log("gateway_blocked", { ...error.decision });
-      process.exitCode = 3;
-    } else {
-      log("gateway_error", { message: error.message });
-      process.exitCode = 1;
-    }
-  });
-}
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) main().catch((error) => { log("gateway_error", { name: error.name, message: error.message }); process.exitCode = error instanceof AdmissionBlockedError ? 3 : 1; });
