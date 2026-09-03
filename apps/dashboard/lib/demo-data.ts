@@ -39,6 +39,7 @@ export const mockSnapshot: Snapshot = {
 export const unavailableSnapshot = (source: Snapshot["source"]): Snapshot => ({
   schemaVersion: "1.0.0",
   source,
+  availability: "UNAVAILABLE",
   generatedAt: new Date().toISOString(),
   releases: [],
   pipeline: (["STATIC", "AI", "SANDBOX"] as const).map((stage) => ({ stage, status: "INCONCLUSIVE", detail: "No current evidence is available" })),

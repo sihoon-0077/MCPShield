@@ -21,15 +21,22 @@ x-backend-env: &backend-env
   RPC_URL: http://local-chain:8545
   RELAYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
+x-gateway-env: &gateway-env
+  MCPSHIELD_MODE: live
+  MCPSHIELD_API_URL: http://backend:3001
+  MCPSHIELD_ADMISSION_TIMEOUT_MS: 3000
+  MCPSHIELD_GATEWAY_ENTRYPOINT: /app/apps/gateway/src/index.mjs
+  MCPSHIELD_PROBE_ARTIFACT: /fixtures/mail-mcp-1.0.1
+
 x-gateway: &gateway
   <<: *security
   build:
     context: .
     dockerfile: apps/gateway/Dockerfile
-  environment:
-    MCPSHIELD_MODE: live
-    MCPSHIELD_API_URL: http://backend:3001
-    MCPSHIELD_ADMISSION_TIMEOUT_MS: 3000
+  command: ["sh", "-c", "node /app/gateway-probe.mjs && exec node /app/apps/gateway/src/index.mjs serve"]
+  environment: *gateway-env
+  volumes:
+    - gateway-evidence:/evidence
   depends_on:
     demo-seed:
       condition: service_completed_successfully
@@ -59,14 +66,16 @@ services:
     restart: unless-stopped
 
   contract-init:
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
+    <<: *security
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
     user: "0:0"
     build:
       context: .
       dockerfile: scripts/demo/Dockerfile.backend
-    command: ["sh", "-c", "chown node:node /deployment /data && chmod 0750 /deployment /data && exec su node -s /bin/sh -c 'umask 027 && npm run chain:deploy'"]
+    command: ["sh", "-c", "chown node:node /deployment /data /evidence && chmod 0750 /deployment /data /evidence && exec su node -s /bin/sh -c 'umask 027 && npm run chain:deploy'"]
     environment:
       RPC_URL: http://local-chain:8545
       DEPLOYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -75,6 +84,7 @@ services:
     volumes:
       - deployment:/deployment
       - projection:/data
+      - gateway-evidence:/evidence
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m,mode=1777
     depends_on:
@@ -157,14 +167,21 @@ services:
     environment:
       MCPSHIELD_API_URL: http://backend:3001
       MCPSHIELD_API_TIMEOUT_MS: 3000
+      MCPSHIELD_GATEWAY_EVIDENCE_DIR: /evidence
     ports:
       - "127.0.0.1:3000:3000"
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m,mode=1777
       - /app/apps/dashboard/.next/cache:rw,noexec,nosuid,size=32m,mode=1777
+    volumes:
+      - gateway-evidence:/evidence:ro
     depends_on:
       demo-seed:
         condition: service_completed_successfully
+      gateway-a:
+        condition: service_healthy
+      gateway-b:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 5s
@@ -174,11 +191,19 @@ services:
 
   gateway-a:
     <<: *gateway
+    environment:
+      <<: *gateway-env
+      MCPSHIELD_GATEWAY_NAME: Gateway A LIVE probe
+      MCPSHIELD_GATEWAY_EVIDENCE_FILE: /evidence/gateway-a.json
     ports:
       - "127.0.0.1:8787:8787"
 
   gateway-b:
     <<: *gateway
+    environment:
+      <<: *gateway-env
+      MCPSHIELD_GATEWAY_NAME: Gateway B LIVE probe
+      MCPSHIELD_GATEWAY_EVIDENCE_FILE: /evidence/gateway-b.json
     ports:
       - "127.0.0.1:8788:8787"
 
@@ -223,3 +248,4 @@ services:
 volumes:
   deployment:
   projection:
+  gateway-evidence:

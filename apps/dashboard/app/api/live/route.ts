@@ -1,9 +1,32 @@
 import { BackendClient, type BackendEvent, type BackendFinding, type BackendRelease, type BackendScan } from "../../../lib/backend-client";
 import type { Snapshot } from "../../../lib/types";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 export const dynamic = "force-dynamic";
 
 const releaseIds = ["mail-mcp@1.0.0", "mail-mcp@1.0.1"] as const;
+
+async function gatewayEvidence(releases: BackendRelease[]): Promise<Snapshot["admissions"] | undefined> {
+  const directory = process.env.MCPSHIELD_GATEWAY_EVIDENCE_DIR;
+  if (!directory) return undefined;
+  const expected = new Map(releases.map((release) => [release.releaseId, release]));
+  return Promise.all(["gateway-a.json", "gateway-b.json"].map(async (file) => {
+    const evidenceFile = path.join(/* turbopackIgnore: true */ directory, file);
+    const evidence = JSON.parse(await readFile(/* turbopackIgnore: true */ evidenceFile, "utf8")) as Record<string, unknown>;
+    const releaseId = typeof evidence.releaseId === "string" ? evidence.releaseId : "";
+    const gateway = typeof evidence.gateway === "string" ? evidence.gateway : "";
+    const checkedAt = typeof evidence.checkedAt === "string" ? evidence.checkedAt : "";
+    const release = expected.get(releaseId);
+    if (evidence.schemaVersion !== "1.0.0" || !release || evidence.source !== "LIVE" || evidence.decision !== "BLOCK" ||
+      evidence.releaseStatus !== "REVOKED" || evidence.reasonCode !== "RELEASE_REVOKED" || evidence.spawnAttempted !== false ||
+      evidence.artifactDigest !== release.artifactDigest || evidence.toolSurfaceHash !== release.toolSurfaceHash ||
+      !gateway || Number.isNaN(Date.parse(checkedAt))) {
+      throw new Error(`Invalid Gateway evidence: ${file}`);
+    }
+    return { gateway, releaseId, decision: "BLOCK", reasonCode: "RELEASE_REVOKED", checkedAt, source: "LIVE", spawnAttempted: false };
+  }));
+}
 
 function explorerBaseUrl() {
   try {
@@ -81,9 +104,9 @@ export async function GET() {
     ]);
     const scanByRelease = new Map(scans.filter((scan): scan is BackendScan => Boolean(scan)).map((scan) => [scan.releaseId, scan]));
     const releaseViews = releases.map((release) => asRelease(release, scanByRelease.get(release.releaseId)));
-    const admissions = await Promise.all(releases.map(async (release) => {
+    const admissions = await gatewayEvidence(releases) ?? await Promise.all(releases.map(async (release) => {
       const result = await client.checkAdmission({ schemaVersion: "1.0.0", releaseId: release.releaseId, artifactDigest: release.artifactDigest, toolSurfaceHash: release.toolSurfaceHash });
-      return { gateway: "Gateway LIVE", releaseId: result.releaseId, decision: result.decision, reasonCode: result.reasonCode } as Snapshot["admissions"][number];
+      return { gateway: "Backend admission API (not a Gateway probe)", releaseId: result.releaseId, decision: result.decision, reasonCode: result.reasonCode, checkedAt: result.checkedAt, source: result.source } as Snapshot["admissions"][number];
     }));
     const maliciousScan = scanByRelease.get("mail-mcp@1.0.1");
     const snapshot: Snapshot = {
