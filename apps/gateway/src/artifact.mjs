@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { assertImportPolicy } from "../../../packages/artifact-policy/import-policy.mjs";
 
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 const MAX_ARTIFACT_FILES = 1_024;
@@ -78,6 +79,7 @@ export async function createArtifactSnapshot(sourceDirectory) {
   const manifestFile = files.find(({ path }) => path === "manifest.json");
   if (!manifestFile) throw new TypeError("artifact manifest.json is required");
   const manifest = validateManifest(JSON.parse(manifestFile.content.toString("utf8")), new Set(files.map(({ path }) => path)));
+  assertImportPolicy(files.map(({ path, content }) => ({ path, content: content.toString("utf8") })));
 
   const digest = createHash("sha256");
   for (const file of files) digest.update(file.path).update("\0").update(file.content).update("\0");

@@ -70,8 +70,23 @@ export async function getAdmission({ identity, mode = process.env.MCPSHIELD_MODE
   return validateDecision(await response.json(), identity.releaseId);
 }
 
+function childEnvironment() {
+  const configured = (process.env.MCPSHIELD_CHILD_ENV_ALLOWLIST ?? "")
+    .split(",").map((key) => key.trim()).filter((key) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key));
+  const denied = /^(?:NODE_OPTIONS|NODE_PATH|LD_|DYLD_)/i;
+  const allowed = new Set([
+    "PATH", "Path", "PATHEXT", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
+    ...configured.filter((key) => !denied.test(key)),
+  ]);
+  const env = { MCP_SHIELD_GATEWAY: "1" };
+  for (const key of allowed) if (process.env[key] !== undefined) env[key] = process.env[key];
+  return env;
+}
+
 function spawnSnapshot(snapshot) {
-  return spawn(process.execPath, [snapshot.entrypoint], { cwd: snapshot.root, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, MCP_SHIELD_GATEWAY: "1" } });
+  if (!process.allowedNodeEnvironmentFlags.has("--permission")) throw new Error("Node permission model is required");
+  return spawn(process.execPath, ["--permission", `--allow-fs-read=${snapshot.root}`, snapshot.entrypoint],
+    { cwd: snapshot.root, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: childEnvironment() });
 }
 
 function lineTransform(onMessage) {
@@ -106,23 +121,57 @@ function lineTransform(onMessage) {
 
 const idKey = (id) => `${typeof id}:${JSON.stringify(id)}`;
 
-export function runtimeSurfaceGuards(expectedHash) {
-  const pendingToolsList = new Set();
-  const requests = lineTransform((message) => {
-    if (message?.jsonrpc === "2.0" && message.method === "tools/list" && Object.hasOwn(message, "id")) {
-      const key = idKey(message.id);
-      if (!pendingToolsList.has(key) && pendingToolsList.size >= 1_024) throw new Error("Too many pending tools/list requests");
-      pendingToolsList.add(key);
+function eachMessage(value, inspect) {
+  if (!Array.isArray(value)) return inspect(value);
+  if (!value.length) throw new Error("Empty JSON-RPC batches are not allowed");
+  for (const message of value) inspect(message);
+}
+
+export function runtimeSurfaceGuards(expectedHash, tools = []) {
+  const listRequests = new Map();
+  const allowedTools = new Set(tools.map(({ name }) => name));
+  const makeRoom = () => {
+    if (listRequests.size < 1_024) return;
+    const completed = [...listRequests].find(([, state]) => state === "COMPLETE");
+    if (completed) listRequests.delete(completed[0]);
+    else throw new Error("Too many pending tools/list requests");
+  };
+  const requests = lineTransform((value) => eachMessage(value, (message) => {
+    if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("JSON-RPC batch contains an invalid request");
+    if (message.jsonrpc !== "2.0") return;
+    if (message.method === "tools/call" && !allowedTools.has(message.params?.name)) {
+      throw new Error(`Undeclared runtime tool call: ${String(message.params?.name)}`);
     }
-  });
-  const responses = lineTransform((message) => {
-    const key = message && Object.hasOwn(message, "id") ? idKey(message.id) : undefined;
-    if (!key || !pendingToolsList.delete(key) || message.error) return;
+    if (Object.hasOwn(message, "id")) {
+      const key = idKey(message.id);
+      if (message.method === "tools/list") {
+        if (listRequests.get(key) === "PENDING") throw new Error("Duplicate pending tools/list request id");
+        if (!listRequests.has(key)) makeRoom();
+        listRequests.set(key, "PENDING");
+      } else if (listRequests.get(key) === "COMPLETE") listRequests.delete(key);
+    }
+  }));
+  const responses = lineTransform((value) => eachMessage(value, (message) => {
+    if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("JSON-RPC batch contains an invalid response");
+    const key = Object.hasOwn(message, "id") ? idKey(message.id) : undefined;
+    if (!key || !listRequests.has(key)) return;
+    if (listRequests.get(key) === "COMPLETE") throw new Error("Duplicate tools/list response");
+    listRequests.set(key, "COMPLETE");
+    if (message.error) return;
     if (!Array.isArray(message.result?.tools)) throw new ToolSurfaceDriftError(expectedHash, "INVALID_TOOLS_LIST");
     const observed = toolSurfaceHash(message.result.tools);
     if (observed !== expectedHash) throw new ToolSurfaceDriftError(expectedHash, observed);
-  });
+  }));
   return { requests, responses };
+}
+
+function terminateChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  const force = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }, 500);
+  force.unref();
 }
 
 async function admittedSnapshot(artifactDir, options) {
@@ -148,10 +197,11 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
     child.stderr.on("data", (chunk) => { stderr += chunk; if (!capture) process.stderr.write(chunk); });
     const result = await new Promise((resolve, reject) => {
       let settled = false;
+      let timeoutError;
       const finish = (callback) => { if (settled) return; settled = true; clearTimeout(timer); callback(); };
-      const timer = setTimeout(() => { child.kill("SIGTERM"); finish(() => reject(new Error(`Child execution timed out after ${executionTimeoutMs}ms`))); }, executionTimeoutMs);
+      const timer = setTimeout(() => { timeoutError = new Error(`Child execution timed out after ${executionTimeoutMs}ms`); terminateChild(child); }, executionTimeoutMs);
       child.once("error", (error) => finish(() => reject(error)));
-      child.once("exit", (code, signal) => finish(() => signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve({ code: code ?? 1, stdout, stderr })));
+      child.once("exit", (code, signal) => finish(() => timeoutError ? reject(timeoutError) : signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve({ code: code ?? 1, stdout, stderr })));
     });
     return { decision, identity: { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash }, ...result };
   } finally { await snapshot.cleanup(); }
@@ -160,7 +210,7 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
 export async function proxyArtifactStdio({ artifactDir, ...options }) {
   const { snapshot } = await admittedSnapshot(artifactDir, options);
   const child = spawnSnapshot(snapshot);
-  const { requests, responses } = runtimeSurfaceGuards(snapshot.toolSurfaceHash);
+  const { requests, responses } = runtimeSurfaceGuards(snapshot.toolSurfaceHash, snapshot.tools);
   let terminalError;
   let cleaned = false;
   const cleanup = (signal = "SIGTERM") => {
@@ -171,7 +221,7 @@ export async function proxyArtifactStdio({ artifactDir, ...options }) {
     child.stdout.unpipe(responses);
     responses.unpipe(process.stdout);
     child.stderr.unpipe(process.stderr);
-    if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    if (child.exitCode === null && child.signalCode === null) terminateChild(child);
   };
   process.stdin.pipe(requests).pipe(child.stdin);
   child.stdout.pipe(responses).pipe(process.stdout);

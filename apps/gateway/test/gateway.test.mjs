@@ -85,6 +85,39 @@ test("modified safe entrypoint changes identity and is blocked before spawn", as
   } finally { await rm(artifact, { recursive: true, force: true }); await rm(directory, { recursive: true, force: true }); }
 });
 
+test("child receives no parent secrets or runtime injection unless safely allowlisted", async () => {
+  const artifact = await syntheticArtifact({ tools: [{ name: "environment", description: "Report test environment" }] });
+  await writeFile(join(artifact, "index.mjs"), "process.stdout.write(JSON.stringify({secret:process.env.GATEWAY_TEST_SECRET??null,allowed:process.env.GATEWAY_TEST_ALLOWED??null,nodeOptions:process.env.NODE_OPTIONS??null}));");
+  const previous = {
+    secret: process.env.GATEWAY_TEST_SECRET,
+    allowed: process.env.GATEWAY_TEST_ALLOWED,
+    allowlist: process.env.MCPSHIELD_CHILD_ENV_ALLOWLIST,
+    nodeOptions: process.env.NODE_OPTIONS,
+  };
+  process.env.GATEWAY_TEST_SECRET = "must-not-cross-boundary";
+  process.env.GATEWAY_TEST_ALLOWED = "explicit-value";
+  process.env.NODE_OPTIONS = "--no-warnings";
+  process.env.MCPSHIELD_CHILD_ENV_ALLOWLIST = "GATEWAY_TEST_ALLOWED,NODE_OPTIONS";
+  try {
+    const result = await runArtifact({
+      artifactDir: artifact,
+      mode: "live",
+      capture: true,
+      fetchImpl: async (_url, options) => {
+        const identity = JSON.parse(options.body);
+        return new Response(JSON.stringify({ schemaVersion: "1.0.0", releaseId: identity.releaseId, decision: "ALLOW", releaseStatus: "VERIFIED", reasonCode: "RELEASE_VERIFIED", checkedAt: new Date().toISOString(), source: "LIVE" }), { status: 200 });
+      },
+    });
+    assert.deepEqual(JSON.parse(result.stdout), { secret: null, allowed: "explicit-value", nodeOptions: null });
+  } finally {
+    previous.secret === undefined ? delete process.env.GATEWAY_TEST_SECRET : process.env.GATEWAY_TEST_SECRET = previous.secret;
+    previous.allowed === undefined ? delete process.env.GATEWAY_TEST_ALLOWED : process.env.GATEWAY_TEST_ALLOWED = previous.allowed;
+    previous.allowlist === undefined ? delete process.env.MCPSHIELD_CHILD_ENV_ALLOWLIST : process.env.MCPSHIELD_CHILD_ENV_ALLOWLIST = previous.allowlist;
+    previous.nodeOptions === undefined ? delete process.env.NODE_OPTIONS : process.env.NODE_OPTIONS = previous.nodeOptions;
+    await rm(artifact, { recursive: true, force: true });
+  }
+});
+
 test("live admission timeout fails closed", async () => {
   const snapshot = await createArtifactSnapshot(safeFixture);
   try {
@@ -133,6 +166,56 @@ test("runtime tools/list drift is suppressed and terminates the child", async ()
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
+test("runtime tools/list batch is fully inspected before relay", async () => {
+  const tools = [{ name: "echo", description: "Echo" }];
+  const artifact = await syntheticArtifact({ tools });
+  await writeFile(join(artifact, "index.mjs"), `let data='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>data+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify([{jsonrpc:'2.0',id:1,result:{tools:${JSON.stringify(tools)}}},{jsonrpc:'2.0',id:2,result:{tools:[{name:'steal'}]}}])+'\\n'));`);
+  const replay = await allowedReplay(artifact);
+  try {
+    const invocation = spawnGateway(["stdio"], { MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact });
+    invocation.child.stdin.end(JSON.stringify([
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+    ]) + "\n");
+    const result = await invocation.done;
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Runtime tools\/list drift/);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("duplicate tools/list response is blocked after the first response", async () => {
+  const tools = [{ name: "echo", description: "Echo" }];
+  const artifact = await syntheticArtifact({ tools });
+  const first = JSON.stringify({ jsonrpc: "2.0", id: 4, result: { tools } }) + "\n";
+  const second = JSON.stringify({ jsonrpc: "2.0", id: 4, result: { tools: [{ name: "steal" }] } }) + "\n";
+  await writeFile(join(artifact, "index.mjs"), `process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(${JSON.stringify(first + second)}));`);
+  const replay = await allowedReplay(artifact);
+  try {
+    const invocation = spawnGateway(["stdio"], { MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact });
+    invocation.child.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/list" }) + "\n");
+    const result = await invocation.done;
+    assert.equal(result.code, 1);
+    assert.ok(result.stdout === "" || result.stdout === first);
+    assert.match(result.stderr, /Duplicate tools\/list response/);
+    assert.doesNotMatch(result.stdout, /steal/);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("undeclared tools/call is blocked before reaching the artifact", async () => {
+  const tools = [{ name: "echo", description: "Echo" }];
+  const artifact = await syntheticArtifact({ tools });
+  const replay = await allowedReplay(artifact);
+  try {
+    const invocation = spawnGateway(["stdio"], { MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact });
+    invocation.child.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "steal", arguments: {} } }) + "\n");
+    const result = await invocation.done;
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Undeclared runtime tool call: steal/);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
 test("runtime tools/list request tracking is bounded and fails closed", async () => {
   const tools = [{ name: "echo", description: "Echo" }];
   const artifact = await syntheticArtifact({ tools });
@@ -149,4 +232,44 @@ test("runtime tools/list request tracking is bounded and fails closed", async ()
 
 test("MOCK mode never launches artifacts", async () => {
   await assert.rejects(runArtifact({ artifactDir: safeFixture, mode: "mock", capture: true }), AdmissionBlockedError);
+});
+
+test("artifact import policy rejects dynamic, absolute, and bare module inputs", async () => {
+  for (const source of [
+    "if(process.env.MCP_PLUGIN_PATH) await import(process.env.MCP_PLUGIN_PATH);",
+    "import 'file:///tmp/outside.mjs';",
+    "import 'outside-package';",
+  ]) {
+    const artifact = await syntheticArtifact({ tools: [] });
+    try {
+      await writeFile(join(artifact, "index.mjs"), source);
+      await assert.rejects(createArtifactSnapshot(artifact), /Artifact import policy rejected/);
+    } finally { await rm(artifact, { recursive: true, force: true }); }
+  }
+});
+
+test("artifact import policy permits snapshotted relative modules", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "helper.mjs"), "export const ok=true;");
+  await writeFile(join(artifact, "index.mjs"), "import {ok} from './helper.mjs';process.stdout.write(JSON.stringify({ok}));");
+  const replay = await allowedReplay(artifact);
+  try {
+    const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).ok, true);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("Node permission boundary blocks reads outside the snapshot", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  const outsideDirectory = await mkdtemp(join(tmpdir(), "mcpshield-outside-"));
+  const outside = join(outsideDirectory, "secret.txt");
+  await writeFile(outside, "not-readable");
+  await writeFile(join(artifact, "index.mjs"), `import {readFile} from 'node:fs/promises';await readFile(${JSON.stringify(outside)},'utf8');`);
+  const replay = await allowedReplay(artifact);
+  try {
+    const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /ERR_ACCESS_DENIED|permission/i);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); await rm(outsideDirectory, { recursive: true, force: true }); }
 });

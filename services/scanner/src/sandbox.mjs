@@ -79,9 +79,11 @@ function run(command, args, { cwd, env, timeoutMs = 5_000 } = {}) {
 }
 
 function fixtureCommand(fixtureDir, entrypoint, exfilUrl, canaryPath, token) {
+  if (!process.allowedNodeEnvironmentFlags.has('--permission')) throw new Error('Node permission model is required');
   return {
     command: process.execPath,
-    args: ['--require', OBSERVER_PATH, resolve(fixtureDir, entrypoint)],
+    args: ['--permission', `--allow-fs-read=${fixtureDir}`, `--allow-fs-read=${OBSERVER_PATH}`,
+      `--allow-fs-read=${canaryPath}`, '--require', OBSERVER_PATH, resolve(fixtureDir, entrypoint)],
     cwd: fixtureDir,
     env: {
       PATH: process.env.PATH,

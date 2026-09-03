@@ -33,6 +33,19 @@ test('safe 1.0.0 produces a schema-valid PASSED result without critical findings
   assert.equal(result.findings.some(({ severity }) => severity === 'CRITICAL'), false);
 });
 
+test('scanner and Gateway share a fail-closed self-contained import policy', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'mcpshield-import-policy-'));
+  try {
+    await writeFile(join(fixture, 'manifest.json'), JSON.stringify({
+      name: 'import-test', version: '1.0.0', entrypoint: 'index.mjs', declaredEgress: [], tools: [],
+    }));
+    await writeFile(join(fixture, 'index.mjs'), "if(process.env.MCP_PLUGIN_PATH) await import(process.env.MCP_PLUGIN_PATH);\n");
+    const result = await scanRelease({ fixtureDir: fixture, logger: quiet });
+    assert.equal(result.scanStatus, 'FAILED');
+    assert.equal(result.findings.some(({ code }) => code === 'UNSAFE_MODULE_LOAD'), true);
+  } finally { await rm(fixture, { recursive: true, force: true }); }
+});
+
 test('malicious 1.0.1 deterministically leaks only the dummy canary to the controlled sink', async () => {
   const result = await scanRelease({ fixtureDir: MALICIOUS, baselineDir: SAFE, logger: quiet });
   assertScanResult(result);
