@@ -14,9 +14,11 @@ async function fixture() {
   const provider = new BrowserProvider(ganacheProvider);
   const accounts = Object.values(ganacheProvider.getInitialAccounts()) as Array<{ secretKey: string }>;
   const wallets = accounts.map((account) => new Wallet(account.secretKey, provider));
-  const [owner, ...rest] = wallets;
-  const validators = rest.slice(0, 3);
-  const outsider = rest[3];
+  // Let Ganache manage the relayer nonce through eth_sendTransaction. Raw
+  // Wallet nonce reads can be briefly stale on the in-process provider.
+  const owner = await provider.getSigner(0);
+  const validators = wallets.slice(1, 4);
+  const outsider = wallets[4];
   const compiled = compileReleaseRegistry();
   const factory = new ContractFactory(compiled.abi, compiled.bytecode, owner);
   const registry: any = await factory.deploy(validators.map((validator) => validator.address));
@@ -53,7 +55,9 @@ test("contract recovers validator signer and rejects outsider, replay, and expir
     await assert.rejects(async () => {
       await (await registry.submitAttestation(key, 1, evidence, 0, deadline, signature)).wait();
     });
-    const expired = Math.floor(Date.now() / 1000) - 1;
+    // Use an epoch-adjacent deadline so the assertion is independent of the
+    // host clock and Ganache's block timestamp rounding.
+    const expired = 1;
     const expiredSig = await sign(validators[1], domain, key, "FAIL", 0, expired);
     await assert.rejects(registry.submitAttestation(key, 1, evidence, 0, expired, expiredSig));
   } finally { await ganacheProvider.disconnect(); }
