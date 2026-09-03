@@ -23,10 +23,21 @@ jobs:
         run: npm run build
       - name: Validate compose
         run: docker compose config --quiet
+      - name: Run Docker Compose end-to-end
+        timeout-minutes: 10
+        run: |
+          docker compose up --build --wait
+          node -e "fetch('http://127.0.0.1:3000/api/live').then(r=>r.json()).then(x=>{if(x.source!=='LIVE'||x.ledgerMode!=='EVM'||x.admissions?.length!==2||!x.admissions.every(a=>a.decision==='BLOCK'&&a.source==='LIVE'&&a.spawnAttempted===false))process.exit(1)})"
+      - name: Stop Docker Compose
+        if: always()
+        run: docker compose down --volumes --remove-orphans
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
-      - name: Reject obvious private keys
+      - name: Scan every tracked file for secrets
         run: |
-          if grep -RIE --exclude='*.lock' --exclude-dir=node_modules --exclude-dir=test --exclude-dir=tests 'BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|AKIA[0-9A-Z]{16}' apps contracts packages services scripts; then
+          findings="$(git grep -nEIi -f .github/secret-scan-patterns.regex -- . ':!package-lock.json' ':!.github/secret-scan-patterns.regex' ':!.github/secret-scan-allowlist.regex' || true)"
+          unexpected="$(printf '%s\n' "$findings" | grep -Evf .github/secret-scan-allowlist.regex || true)"
+          if [ -n "$unexpected" ]; then
+            printf '%s\n' "$unexpected"
             exit 1
           fi

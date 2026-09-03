@@ -77,9 +77,9 @@ export function Dashboard() {
       <div className={`notice ${error ? "notice-error" : ""}`} role={error ? "alert" : "status"} aria-live="polite"><span />{notice}</div>
 
       <section className="source-explainer" aria-label="Evidence source details">
-        <strong>{snapshot.source}</strong>
-        <p>{snapshot.source === "LIVE" ? "Fetched now from the Backend API; admission is checked with both immutable hashes." : snapshot.source === "REPLAY" ? "Saved offline evidence; no live security claim is implied." : "Deterministic product preview; values are synthetic and never presented as live."}</p>
-        <span>{snapshot.ledgerMode === "LOCAL_DEMO" ? "LOCAL DEMO LEDGER · NOT ON-CHAIN" : snapshot.ledgerMode ?? (snapshot.source === "LIVE" ? "UNKNOWN LEDGER" : "OFFLINE")}</span>
+        <strong>{snapshot.availability ?? snapshot.source}</strong>
+        <p>{snapshot.availability === "UNAVAILABLE" ? `No current ${snapshot.source} evidence is loaded; no release, scan, validator, or Gateway claim is shown.` : snapshot.source === "LIVE" ? "Fetched now from the Backend API and, when configured, Gateway probe evidence files." : snapshot.source === "REPLAY" ? "Saved offline evidence; no live security claim is implied." : "Deterministic product preview; values are synthetic and never presented as live."}</p>
+        <span>{snapshot.availability === "UNAVAILABLE" ? "NO EVIDENCE" : snapshot.ledgerMode === "LOCAL_DEMO" ? "LOCAL DEMO LEDGER · NOT ON-CHAIN" : snapshot.ledgerMode ?? (snapshot.source === "LIVE" ? "UNKNOWN LEDGER" : "OFFLINE")}</span>
       </section>
 
       <section className="metrics">
@@ -147,7 +147,7 @@ export function Dashboard() {
           <div className="section-title"><div><span>05</span><h2>Agent admission</h2></div></div>
           <div className="admissions">
             {snapshot.admissions.map((item, index) => (
-              <article key={`${item.gateway}-${item.releaseId}-${index}`}><div><small>{item.gateway}</small><b>{item.releaseId}</b></div><strong className={item.decision === "BLOCK" ? "block" : "allow"}>{item.decision}</strong><p>{item.reasonCode.replaceAll("_", " ")}</p></article>
+              <article key={`${item.gateway}-${item.releaseId}-${index}`}><div><small>{item.gateway}</small><b>{item.releaseId}</b></div><strong className={item.decision === "BLOCK" ? "block" : "allow"}>{item.decision}</strong><p>{item.reasonCode.replaceAll("_", " ")}{item.spawnAttempted === false ? " · PRE-SPAWN PROBE" : ""}</p></article>
             ))}
             {snapshot.admissions.length === 0 && <p className="empty-state">No current Gateway admission decisions are available.</p>}
           </div>
