@@ -18,6 +18,7 @@ Endpoints:
 - `POST /api/releases`
 - `POST /api/scans`
 - `GET /api/scans/:scanId`
+- `GET /api/releases/:releaseId/scans/latest`
 - `GET /api/releases/:releaseId`
 - `POST /api/validators/vote`
 - `POST /api/admission/check`
