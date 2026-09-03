@@ -180,7 +180,7 @@ function terminateChild(child) {
 async function admittedSnapshot(artifactDir, options) {
   const snapshot = await createArtifactSnapshot(artifactDir);
   try {
-    const decision = await getAdmission({ identity: snapshot, ...options });
+    const decision = await getAdmission({ ...options, identity: snapshot });
     log("admission", { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash, decision: decision.decision, status: decision.releaseStatus, source: decision.source });
     if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") throw new AdmissionBlockedError(decision);
     if (snapshot.runtimePolicyIssues.length) throw new Error(`Gateway runtime policy rejected ${snapshot.runtimePolicyIssues[0].path}: ${snapshot.runtimePolicyIssues[0].reason}`);
@@ -197,15 +197,27 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
     const child = spawnSnapshot(snapshot);
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; if (!capture) process.stdout.write(chunk); });
-    child.stderr.on("data", (chunk) => { stderr += chunk; if (!capture) process.stderr.write(chunk); });
+    let outputBytes = 0;
+    let outputError;
+    const receive = (target, chunk) => {
+      outputBytes += chunk.length;
+      if (outputBytes > 1_048_576) {
+        outputError ??= new Error("Child output exceeded 1048576 bytes");
+        terminateChild(child);
+        return;
+      }
+      if (capture) target === "stdout" ? stdout += chunk : stderr += chunk;
+      else target === "stdout" ? process.stdout.write(chunk) : process.stderr.write(chunk);
+    };
+    child.stdout.on("data", (chunk) => receive("stdout", chunk));
+    child.stderr.on("data", (chunk) => receive("stderr", chunk));
     const result = await new Promise((resolve, reject) => {
       let settled = false;
       let timeoutError;
       const finish = (callback) => { if (settled) return; settled = true; clearTimeout(timer); callback(); };
       const timer = setTimeout(() => { timeoutError = new Error(`Child execution timed out after ${executionTimeoutMs}ms`); terminateChild(child); }, executionTimeoutMs);
       child.once("error", (error) => finish(() => reject(error)));
-      child.once("exit", (code, signal) => finish(() => timeoutError ? reject(timeoutError) : signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve({ code: code ?? 1, stdout, stderr })));
+      child.once("exit", (code, signal) => finish(() => outputError ? reject(outputError) : timeoutError ? reject(timeoutError) : signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve({ code: code ?? 1, stdout, stderr })));
     });
     return { decision, identity: { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash }, ...result };
   } finally { await snapshot.cleanup(); }

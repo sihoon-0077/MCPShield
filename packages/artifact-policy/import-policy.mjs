@@ -56,17 +56,19 @@ export function importPolicyIssues(files) {
     if ([".js", ".cjs", ".node", ".wasm"].includes(extname(path))) issues.push({ path, reason: "only .mjs executable modules are allowed" });
     if (!JAVASCRIPT.has(extname(path))) continue;
     const code = maskNonCode(file.content);
-    if (DYNAMIC_LOADER.test(code)) issues.push({ path, reason: "dynamic code loaders are not allowed" });
-    if (/\bexport\b[^;]*\bfrom\b/.test(code)) issues.push({ path, reason: "re-export module loading is not allowed" });
+    // Loader-shaped source is rejected raw, even in lexically ambiguous text. This is
+    // intentionally fail-closed: a regex or template literal must never hide import().
+    if (DYNAMIC_LOADER.test(file.content)) issues.push({ path, reason: "dynamic code loaders are not allowed" });
+    if (/\bexport\b[^;]*\bfrom\b/.test(file.content)) issues.push({ path, reason: "re-export module loading is not allowed" });
     const importTokens = [...code.matchAll(/\bimport\b/g)].map((match) => match.index);
     STATIC_IMPORT.lastIndex = 0;
-    const imports = [...file.content.matchAll(STATIC_IMPORT)].filter((match) => /^(?:import|export)$/.test(code.slice(match.index, match.index + (match[0].startsWith("import") ? 6 : 6))));
+    const imports = [...file.content.matchAll(STATIC_IMPORT)];
     const recognizedImports = imports.map((match) => [match.index, match.index + match[0].length]);
     if (importTokens.some((index) => !recognizedImports.some(([start, end]) => index >= start && index < end))) {
       issues.push({ path, reason: "only single-line static import syntax is allowed" });
     }
     REQUIRE.lastIndex = 0;
-    for (const matches of [imports, [...file.content.matchAll(REQUIRE)].filter((match) => code.slice(match.index, match.index + 7) === "require")]) {
+    for (const matches of [imports, [...file.content.matchAll(REQUIRE)]]) {
       for (const match of matches) {
         const specifier = match[2];
         if (NETWORK_BUILTINS.has(specifier)) continue;
@@ -91,10 +93,11 @@ export function runtimeEgressIssues(files) {
     const path = file.path.replaceAll("\\", "/");
     if (!JAVASCRIPT.has(extname(path))) continue;
     const code = maskNonCode(file.content);
+    if (DYNAMIC_LOADER.test(file.content)) issues.push({ path, reason: "dynamic code loaders are not allowed at runtime" });
     STATIC_IMPORT.lastIndex = 0;
-    const imports = [...file.content.matchAll(STATIC_IMPORT)].filter((match) => code.slice(match.index, match.index + 6) === "import" || code.slice(match.index, match.index + 6) === "export");
+    const imports = [...file.content.matchAll(STATIC_IMPORT)];
     REQUIRE.lastIndex = 0;
-    const requires = [...file.content.matchAll(REQUIRE)].filter((match) => code.slice(match.index, match.index + 7) === "require");
+    const requires = [...file.content.matchAll(REQUIRE)];
     for (const matches of [imports, requires]) {
       for (const match of matches) {
         if (NETWORK_BUILTINS.has(match[2])) issues.push({ path, reason: `runtime network builtin is not allowed: ${match[2]}` });

@@ -46,6 +46,21 @@ test('scanner and Gateway share a fail-closed self-contained import policy', asy
   } finally { await rm(fixture, { recursive: true, force: true }); }
 });
 
+test('scanner rejects dynamic imports hidden after regex and inside template interpolation', async () => {
+  for (const source of ['const r=/"/; const net=await import("node:net");', 'const hidden = `${await import("node:net")}`;']) {
+    const fixture = await mkdtemp(join(tmpdir(), 'mcpshield-lexical-import-policy-'));
+    try {
+      await writeFile(join(fixture, 'manifest.json'), JSON.stringify({
+        name: 'lexical-import-test', version: '1.0.0', entrypoint: 'index.mjs', declaredEgress: [], tools: [],
+      }));
+      await writeFile(join(fixture, 'index.mjs'), source);
+      const result = await scanRelease({ fixtureDir: fixture, logger: quiet });
+      assert.equal(result.scanStatus, 'FAILED');
+      assert.equal(result.findings.some(({ code }) => code === 'UNSAFE_MODULE_LOAD'), true);
+    } finally { await rm(fixture, { recursive: true, force: true }); }
+  }
+});
+
 test('scanner rejects time-varying remote code and unsupported runtime egress', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'mcpshield-remote-code-'));
   try {

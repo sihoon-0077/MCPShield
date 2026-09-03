@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createArtifactSnapshot } from "../src/artifact.mjs";
-import { AdmissionBlockedError, getAdmission, runArtifact } from "../src/index.mjs";
+import { AdmissionBlockedError, getAdmission, proxyArtifactStdio, runArtifact } from "../src/index.mjs";
 
 const gateway = fileURLToPath(new URL("../src/index.mjs", import.meta.url));
 const safeFixture = fileURLToPath(new URL("../../../demo/fixtures/mail-mcp-1.0.0", import.meta.url));
@@ -138,6 +138,30 @@ test("live admission receives only the Gateway-computed identity", async () => {
   } finally { await snapshot.cleanup(); }
 });
 
+test("exported runners cannot override the Gateway-computed identity", async () => {
+  for (const runner of [
+    (options) => runArtifact({ ...options, capture: true }),
+    (options) => proxyArtifactStdio(options),
+  ]) {
+    const artifact = await syntheticArtifact({ tools: [] });
+    await writeFile(join(artifact, "index.mjs"), "process.exit(0);");
+    const snapshot = await createArtifactSnapshot(artifact);
+    let received;
+    try {
+      await runner({
+        artifactDir: artifact,
+        mode: "live",
+        identity: { releaseId: "forged@9.9.9", artifactDigest: "sha256:forged", toolSurfaceHash: "0xforged" },
+        fetchImpl: async (_url, options) => {
+          received = JSON.parse(options.body);
+          return new Response(JSON.stringify({ schemaVersion: "1.0.0", releaseId: received.releaseId, decision: "ALLOW", releaseStatus: "VERIFIED", reasonCode: "RELEASE_VERIFIED", checkedAt: new Date().toISOString(), source: "LIVE" }), { status: 200 });
+        },
+      });
+      assert.deepEqual(received, { schemaVersion: "1.0.0", releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash });
+    } finally { await snapshot.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+  }
+});
+
 test("runtime tools/list with matching surface is relayed byte-for-byte", async () => {
   const tools = [{ name: "echo", description: "Echo" }];
   const artifact = await syntheticArtifact({ tools });
@@ -243,6 +267,8 @@ test("artifact import policy rejects dynamic, absolute, and bare module inputs",
     "import {\nrunInThisContext\n} from\n'node:vm';runInThisContext('1');",
     "import {\nrequest\n} from\n'node:http';request({host:'127.0.0.1'});",
     "import{request}from'node:http';request({host:'127.0.0.1'});",
+    'const r=/"/; const net=await import("node:net");',
+    'const hidden = `${await import("node:net")}`;',
     "eval /* hidden comment */ ('1');",
   ]) {
     const artifact = await syntheticArtifact({ tools: [] });
@@ -302,12 +328,21 @@ test("artifact import policy permits snapshotted relative modules", async () => 
 
 test("artifact policy ignores import and fetch words in comments and strings", async () => {
   const artifact = await syntheticArtifact({ tools: [] });
-  await writeFile(join(artifact, "index.mjs"), "// import vm from 'node:vm'; fetch('ignored')\nprocess.stdout.write(\"documentation says import and fetch\");");
+  await writeFile(join(artifact, "index.mjs"), "// documentation mentions import and fetch\nprocess.stdout.write(\"documentation says import and fetch\");");
   const replay = await allowedReplay(artifact);
   try {
     const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true });
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /import and fetch/);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("runArtifact caps child output", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "index.mjs"), "process.stdout.write('x'.repeat(1100000));");
+  const replay = await allowedReplay(artifact);
+  try {
+    await assert.rejects(runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true }), /output exceeded 1048576 bytes/);
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 

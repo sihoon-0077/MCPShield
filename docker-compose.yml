@@ -155,6 +155,8 @@ services:
       MCPSHIELD_API_URL: http://backend:3001
     volumes:
       - deployment:/deployment:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
     depends_on:
       indexer:
         condition: service_healthy
