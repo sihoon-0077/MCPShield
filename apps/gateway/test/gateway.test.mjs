@@ -273,3 +273,17 @@ test("Node permission boundary blocks reads outside the snapshot", async () => {
     assert.match(result.stderr, /ERR_ACCESS_DENIED|permission/i);
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); await rm(outsideDirectory, { recursive: true, force: true }); }
 });
+
+test("execution timeout escalates when the artifact ignores SIGTERM", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "index.mjs"), "process.on('SIGTERM',()=>{});setInterval(()=>{},1000);");
+  const replay = await allowedReplay(artifact);
+  const started = Date.now();
+  try {
+    await assert.rejects(
+      runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true, executionTimeoutMs: 30 }),
+      /timed out/,
+    );
+    assert.ok(Date.now() - started < 2_000);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
