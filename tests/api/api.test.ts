@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { Wallet, type HDNodeWallet } from "ethers";
 import { buildApp } from "../../apps/api/src/app.js";
 import { loadConfig } from "../../apps/api/src/config.js";
+import type { RegistryClient } from "../../apps/api/src/registry-client.js";
 import { attestationDomain, attestationTypes, chainDecisions, releaseKey } from "../../packages/contracts-sdk/src/index.js";
 
 const wallets = [Wallet.createRandom(), Wallet.createRandom(), Wallet.createRandom()];
@@ -72,6 +73,74 @@ test("protects release registration and validates canonical inputs", async (t) =
   assert.equal((await register(app, "mail-mcp@1.0.0")).statusCode, 201);
 });
 
+test("concurrent registration retries have exactly one transaction sender", async () => {
+  let sendCount = 0;
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const fakeRegistry: RegistryClient = {
+    async registerRelease() { sendCount += 1; enter(); await gate;
+      return { hash: `0x${"9".repeat(64)}`, async wait() {} }; },
+    async submitAttestation() { throw new Error("unused"); },
+    async getRelease(releaseId) { return { releaseId, artifactDigest: digestA, toolSurfaceHash: toolHash, status: "UNVERIFIED" }; },
+    async findRelease() { return undefined; }, async getValidatorNonce() { return 0; },
+    async hasVoted() { return false; }, async getReceipt() { return "PENDING"; },
+    async validateConnection() {},
+  };
+  const app = await buildApp({ ...options, registryClient: fakeRegistry });
+  try {
+    const request = { method: "POST" as const, url: "/api/releases",
+      headers: { authorization: `Bearer ${adminToken}` }, payload: {
+        schemaVersion: "1.0.0", releaseId: "mail-mcp@2.0.0",
+        artifactDigest: digestA, toolSurfaceHash: toolHash } };
+    const firstPromise = app.inject(request);
+    await entered;
+    const second = await app.inject(request);
+    assert.equal(second.statusCode, 202);
+    assert.equal(sendCount, 1);
+    release();
+    assert.equal((await firstPromise).statusCode, 201);
+    const completedRetry = await app.inject(request);
+    assert.equal(completedRetry.statusCode, 200);
+    assert.equal(completedRetry.json().idempotent, true);
+    assert.equal(sendCount, 1);
+  } finally { await app.close(); }
+});
+
+test("concurrent attestation retries have exactly one relayer sender", async () => {
+  let sendCount = 0;
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const fakeRegistry: RegistryClient = {
+    async registerRelease() { return { hash: `0x${"7".repeat(64)}`, async wait() {} }; },
+    async submitAttestation() { sendCount += 1; enter(); await gate;
+      return { hash: `0x${"8".repeat(64)}`, async wait() {} }; },
+    async getRelease(releaseId) { return { releaseId, artifactDigest: digestA, toolSurfaceHash: toolHash, status: "QUARANTINED" }; },
+    async findRelease(releaseId) { return this.getRelease(releaseId); },
+    async getValidatorNonce() { return 1; }, async hasVoted() { return true; },
+    async getReceipt() { return "PENDING"; }, async validateConnection() {},
+  };
+  const app = await buildApp({ ...options, registryClient: fakeRegistry });
+  try {
+    await register(app, "mail-mcp@2.1.0");
+    const storedScan = await scan(app, "mail-mcp@2.1.0");
+    const payload = await attestation(wallets[0], "mail-mcp@2.1.0", storedScan.scanId, "FAIL");
+    const firstPromise = app.inject({ method: "POST", url: "/api/validators/vote", payload });
+    await entered;
+    const second = await app.inject({ method: "POST", url: "/api/validators/vote", payload });
+    assert.equal(second.statusCode, 202);
+    assert.equal(sendCount, 1);
+    release();
+    assert.equal((await firstPromise).statusCode, 201);
+    const completedRetry = await app.inject({ method: "POST", url: "/api/validators/vote", payload });
+    assert.equal(completedRetry.statusCode, 200);
+    assert.equal(sendCount, 1);
+  } finally { await app.close(); }
+});
+
 test("scanner ingestion requires credentials, stamps LIVE, limits rate and body", async () => {
   const unauthorizedApp = await buildApp(options);
   try {
@@ -123,7 +192,8 @@ test("accepts signed attestations, rejects impersonation/replay/evidence mismatc
   const first = await app.inject({ method: "POST", url: "/api/validators/vote", payload: firstPayload });
   assert.equal(first.statusCode, 201); assert.equal(first.json().release.status, "QUARANTINED");
   const replay = await app.inject({ method: "POST", url: "/api/validators/vote", payload: firstPayload });
-  assert.equal(replay.statusCode, 409);
+  assert.equal(replay.statusCode, 200);
+  assert.equal(replay.json().idempotent, true);
 
   const second = await app.inject({ method: "POST", url: "/api/validators/vote",
     payload: await attestation(wallets[1], "mail-mcp@1.0.1", storedScan.scanId, "FAIL") });

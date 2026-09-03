@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { Interface, type Log } from "ethers";
 import { ChainIndexer } from "../../apps/indexer/src/indexer.js";
@@ -25,9 +24,6 @@ function makeLog(event: string, args: unknown[], blockNumber: number, marker: st
 test("indexer deduplicates, recovers votes and rewinds orphaned projections", async () => {
   const repository = new Repository(":memory:");
   try {
-    repository.createRelease({ releaseId, artifactDigest: digest, toolSurfaceHash: toolHash });
-    repository.saveScan({ schemaVersion: "1.0.0", scanId: randomUUID(), releaseId,
-      artifactDigest: digest, toolSurfaceHash: toolHash, scanStatus: "FAILED", findings: [], evidenceHash, source: "LIVE" });
     let block4Hash = `0x${"4".repeat(64)}`;
     let includeStatus = true;
     const logs = [makeLog("ReleaseRegistered", [key, releaseId, digestBytes, toolHash], 1, "1"),
@@ -51,5 +47,27 @@ test("indexer deduplicates, recovers votes and rewinds orphaned projections", as
     await indexer.syncOnce();
     assert.equal(repository.getRelease(releaseId)?.status, "UNVERIFIED");
     assert.equal(repository.hasVote(releaseId, validator), true);
+  } finally { repository.close(); }
+});
+
+test("rewind removes orphaned registration and makes its operation retryable", () => {
+  const repository = new Repository(":memory:");
+  try {
+    const orphanId = "orphan-mcp@1.0.0";
+    const txHash = `0x${"8".repeat(64)}`;
+    repository.claimOperation(`register:${orphanId}`, "REGISTER_RELEASE", {
+      releaseId: orphanId, artifactDigest: digest, toolSurfaceHash: toolHash,
+    });
+    repository.updatePendingOperation(`register:${orphanId}`, "SUBMITTED", txHash);
+    repository.updatePendingOperation(`register:${orphanId}`, "COMPLETED", txHash);
+    repository.applyIndexedRelease({ releaseId: orphanId, artifactDigest: digest,
+      toolSurfaceHash: toolHash, txHash, blockNumber: 10, logIndex: 0 });
+    assert.ok(repository.getRelease(orphanId));
+    repository.rewindChainProjection(9);
+    assert.equal(repository.getRelease(orphanId), undefined);
+    assert.equal(repository.getPendingOperation(`register:${orphanId}`)?.status, "FAILED");
+    assert.equal(repository.retryFailedOperation(`register:${orphanId}`), true);
+    assert.doesNotThrow(() => repository.createRelease({ releaseId: orphanId,
+      artifactDigest: digest, toolSurfaceHash: toolHash }));
   } finally { repository.close(); }
 });

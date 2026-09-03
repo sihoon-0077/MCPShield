@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS releases (
   tool_surface_hash TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'UNVERIFIED'
     CHECK (status IN ('UNVERIFIED', 'VERIFIED', 'QUARANTINED', 'REVOKED')),
+  registration_tx_hash TEXT,
+  registration_block_number INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -28,7 +30,7 @@ CREATE TABLE IF NOT EXISTS validator_votes (
   validator_address TEXT NOT NULL,
   decision TEXT NOT NULL CHECK (decision IN ('PASS', 'FAIL', 'ABSTAIN')),
   evidence_hash TEXT NOT NULL,
-  scan_id TEXT NOT NULL REFERENCES scans(scan_id),
+  scan_id TEXT REFERENCES scans(scan_id),
   nonce INTEGER NOT NULL,
   signature TEXT NOT NULL,
   tx_hash TEXT,

@@ -11,9 +11,11 @@ const evidenceHash = `0x${"c".repeat(64)}`;
 const validator = "0x0000000000000000000000000000000000000001";
 
 function fakeRegistry(receipt: "PENDING" | "SUCCESS" | "REVERTED"): RegistryClient {
+  const chainRelease = async (releaseId: string) => ({ releaseId, artifactDigest: digest, toolSurfaceHash: toolHash, status: "REVOKED" as const });
   return { async getReceipt() { return receipt; },
-    async getRelease(releaseId) { return { releaseId, artifactDigest: digest, toolSurfaceHash: toolHash, status: "REVOKED" }; },
+    getRelease: chainRelease, findRelease: chainRelease,
     async getValidatorNonce() { return 1; }, async validateConnection() {},
+    async hasVoted() { return true; },
     async registerRelease() { throw new Error("unused"); },
     async submitAttestation() { throw new Error("unused"); } };
 }
@@ -43,6 +45,8 @@ test("receipt pending and timeout preserve SUBMITTED state", async () => {
   try {
     repository.createPendingOperation("pending:test", "REGISTER_RELEASE", { releaseId: "mail-mcp@1.0.0" });
     repository.updatePendingOperation("pending:test", "SUBMITTED", `0x${"4".repeat(64)}`);
+    assert.equal(repository.updatePendingOperation("pending:test", "FAILED", undefined, "late failure"), false);
+    assert.equal(repository.getPendingOperation("pending:test")?.status, "SUBMITTED");
     assert.deepEqual((await reconcileSubmittedOperations(repository, fakeRegistry("PENDING"))).pending, ["pending:test"]);
     const timeout = fakeRegistry("SUCCESS");
     timeout.getReceipt = async () => { throw new Error("RPC_TIMEOUT:receipt"); };

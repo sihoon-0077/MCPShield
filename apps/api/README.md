@@ -47,6 +47,10 @@ failure states to expose DB/chain partial failures. Run `npm run reconcile` to
 check `SUBMITTED` receipts and idempotently rebuild releases, votes, validator
 nonces, and status from chain truth. Pending receipts and RPC timeouts stay
 `SUBMITTED` for the next run; reverted receipts become `FAILED`.
+Registration and attestation endpoints atomically claim their operation ID
+before sending. Concurrent retries receive `202` without a second transaction;
+completed retries return the existing result. Failed operations are retried
+only after the API confirms canonical chain truth.
 
 Typed request interfaces for release registration, scan submission, signed
 attestation (including `scanId`, `nonce`, `deadline`, and `signature`), and

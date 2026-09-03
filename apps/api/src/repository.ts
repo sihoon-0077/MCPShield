@@ -15,6 +15,8 @@ export interface ReleaseRecord {
   status: ReleaseStatus;
   createdAt: string;
   updatedAt: string;
+  registrationTxHash?: string;
+  registrationBlockNumber?: number;
 }
 
 export interface VoteRecord {
@@ -22,7 +24,7 @@ export interface VoteRecord {
   validatorAddress: string;
   decision: ValidatorDecision;
   evidenceHash: string;
-  scanId: string;
+  scanId?: string;
   nonce: number;
   signature: string;
   txHash?: string;
@@ -35,6 +37,8 @@ type ReleaseRow = {
   status: ReleaseStatus;
   created_at: string;
   updated_at: string;
+  registration_tx_hash: string | null;
+  registration_block_number: number | null;
 };
 
 export class Repository {
@@ -60,10 +64,12 @@ export class Repository {
     this.db
       .prepare(
         `INSERT INTO releases
-          (release_id, artifact_digest, tool_surface_hash, status, created_at, updated_at)
-         VALUES (?, ?, ?, 'UNVERIFIED', ?, ?)`,
+          (release_id, artifact_digest, tool_surface_hash, status, registration_tx_hash,
+           registration_block_number, created_at, updated_at)
+         VALUES (?, ?, ?, 'UNVERIFIED', ?, ?, ?, ?)`,
       )
-      .run(input.releaseId, input.artifactDigest, input.toolSurfaceHash, now, now);
+      .run(input.releaseId, input.artifactDigest, input.toolSurfaceHash,
+        input.registrationTxHash ?? null, input.registrationBlockNumber ?? null, now, now);
     this.addEvent(input.releaseId, "ReleaseRegistered", "UNVERIFIED", undefined, undefined, {
       artifactDigest: input.artifactDigest,
       toolSurfaceHash: input.toolSurfaceHash,
@@ -83,6 +89,8 @@ export class Repository {
           status: row.status,
           createdAt: row.created_at,
           updatedAt: row.updated_at,
+          registrationTxHash: row.registration_tx_hash ?? undefined,
+          registrationBlockNumber: row.registration_block_number ?? undefined,
         }
       : undefined;
   }
@@ -115,6 +123,10 @@ export class Repository {
         scan.source,
         new Date().toISOString(),
       );
+    this.db.prepare(
+      `UPDATE validator_votes SET scan_id = ? WHERE scan_id IS NULL
+       AND release_id = ? AND evidence_hash = ?`,
+    ).run(scan.scanId, scan.releaseId, scan.evidenceHash);
     return scan;
   }
 
@@ -161,7 +173,7 @@ export class Repository {
           vote.validatorAddress,
           vote.decision,
           vote.evidenceHash,
-          vote.scanId,
+          vote.scanId ?? null,
           vote.nonce,
           vote.signature,
           vote.txHash ?? null,
@@ -223,7 +235,7 @@ export class Repository {
     const release = this.getRelease(vote.releaseId);
     if (!release) throw new Error("RELEASE_NOT_FOUND");
     if (release.status === "REVOKED") throw new Error("RELEASE_REVOKED");
-    const scan = this.getScan(vote.scanId);
+    const scan = vote.scanId ? this.getScan(vote.scanId) : undefined;
     if (
       !scan ||
       scan.releaseId !== vote.releaseId ||
@@ -239,7 +251,7 @@ export class Repository {
     status: ReleaseStatus,
     chainNonce: number,
   ) {
-    const scan = this.getScan(vote.scanId);
+    const scan = vote.scanId ? this.getScan(vote.scanId) : undefined;
     if (!scan || scan.releaseId !== vote.releaseId || scan.evidenceHash !== vote.evidenceHash) {
       throw new Error("SCAN_EVIDENCE_MISMATCH");
     }
@@ -250,7 +262,7 @@ export class Repository {
          (release_id, validator_address, decision, evidence_hash, scan_id, nonce,
           signature, tx_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(vote.releaseId, vote.validatorAddress, vote.decision, vote.evidenceHash,
-        vote.scanId, vote.nonce, vote.signature, vote.txHash ?? null, new Date().toISOString());
+        vote.scanId ?? null, vote.nonce, vote.signature, vote.txHash ?? null, new Date().toISOString());
       this.db.prepare(
         `INSERT INTO validator_nonces (validator_address, next_nonce) VALUES (?, ?)
          ON CONFLICT(validator_address) DO UPDATE SET next_nonce =
@@ -326,12 +338,16 @@ export class Repository {
     const now = new Date().toISOString();
     this.db.prepare(
       `INSERT INTO releases
-       (release_id, artifact_digest, tool_surface_hash, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+       (release_id, artifact_digest, tool_surface_hash, status, registration_tx_hash,
+        registration_block_number, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(release_id) DO UPDATE SET artifact_digest = excluded.artifact_digest,
        tool_surface_hash = excluded.tool_surface_hash, status = excluded.status,
+       registration_tx_hash = COALESCE(excluded.registration_tx_hash, releases.registration_tx_hash),
+       registration_block_number = COALESCE(excluded.registration_block_number, releases.registration_block_number),
        updated_at = excluded.updated_at`,
-    ).run(input.releaseId, input.artifactDigest, input.toolSurfaceHash, input.status, now, now);
+    ).run(input.releaseId, input.artifactDigest, input.toolSurfaceHash, input.status,
+      input.registrationTxHash ?? null, input.registrationBlockNumber ?? null, now, now);
   }
 
   private hasIndexedLog(txHash: string, logIndex: number) {
@@ -351,7 +367,8 @@ export class Repository {
     if (this.hasIndexedLog(input.txHash, input.logIndex)) return false;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.upsertReleaseFromChain({ ...input, status: "UNVERIFIED" });
+      this.upsertReleaseFromChain({ ...input, status: "UNVERIFIED",
+        registrationTxHash: input.txHash, registrationBlockNumber: input.blockNumber });
       this.addEvent(
         input.releaseId,
         "ReleaseRegistered",
@@ -404,7 +421,6 @@ export class Repository {
   }) {
     if (this.hasIndexedLog(input.txHash, input.logIndex)) return false;
     const scan = this.findScanByEvidence(input.releaseId, input.evidenceHash);
-    if (!scan) throw new Error("INDEXED_VOTE_SCAN_NOT_FOUND");
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.addEvent(input.releaseId, "VoteSubmitted", undefined, input.txHash,
@@ -415,7 +431,7 @@ export class Repository {
          (release_id, validator_address, decision, evidence_hash, scan_id, nonce,
           signature, tx_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, 'CHAIN_RECOVERED', ?, ?)`,
       ).run(input.releaseId, input.validatorAddress, input.decision, input.evidenceHash,
-        scan.scanId, input.nonce, input.txHash, new Date().toISOString());
+        scan?.scanId ?? null, input.nonce, input.txHash, new Date().toISOString());
       this.db.prepare(
         `INSERT INTO validator_nonces (validator_address, next_nonce) VALUES (?, ?)
          ON CONFLICT(validator_address) DO UPDATE SET next_nonce =
@@ -447,6 +463,20 @@ export class Repository {
   rewindChainProjection(afterBlock: number) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const orphaned = this.db.prepare(
+        `SELECT release_id FROM releases WHERE registration_block_number > ?`,
+      ).all(afterBlock) as Array<{ release_id: string }>;
+      for (const { release_id: releaseId } of orphaned) {
+        this.db.prepare(
+          `UPDATE pending_operations SET status = 'FAILED', tx_hash = NULL,
+           error = 'REORG_ORPHANED', updated_at = ?
+           WHERE json_extract(payload_json, '$.releaseId') = ?`,
+        ).run(new Date().toISOString(), releaseId);
+        this.db.prepare("DELETE FROM validator_votes WHERE release_id = ?").run(releaseId);
+        this.db.prepare("DELETE FROM scans WHERE release_id = ?").run(releaseId);
+        this.db.prepare("DELETE FROM chain_events WHERE release_id = ?").run(releaseId);
+        this.db.prepare("DELETE FROM releases WHERE release_id = ?").run(releaseId);
+      }
       this.db.prepare(
         `DELETE FROM validator_votes WHERE tx_hash IN
          (SELECT tx_hash FROM chain_events WHERE block_number > ?)`,
@@ -479,17 +509,41 @@ export class Repository {
     }
   }
 
-  createPendingOperation(
+  claimOperation(
     operationId: string,
     operationType: string,
     payload: Record<string, unknown>,
   ) {
     const now = new Date().toISOString();
-    this.db.prepare(
+    const result = this.db.prepare(
       `INSERT OR IGNORE INTO pending_operations
        (operation_id, operation_type, status, payload_json, created_at, updated_at)
        VALUES (?, ?, 'PENDING', ?, ?, ?)`,
     ).run(operationId, operationType, JSON.stringify(payload), now, now);
+    return { claimed: result.changes === 1, operation: this.getPendingOperation(operationId)! };
+  }
+
+  createPendingOperation(
+    operationId: string,
+    operationType: string,
+    payload: Record<string, unknown>,
+  ) {
+    return this.claimOperation(operationId, operationType, payload);
+  }
+
+  retryFailedOperation(operationId: string) {
+    const result = this.db.prepare(
+      `UPDATE pending_operations SET status = 'PENDING', tx_hash = NULL, error = NULL,
+       updated_at = ? WHERE operation_id = ? AND status = 'FAILED'`,
+    ).run(new Date().toISOString(), operationId);
+    return result.changes === 1;
+  }
+
+  completeFailedOperation(operationId: string, txHash?: string) {
+    return this.db.prepare(
+      `UPDATE pending_operations SET status = 'COMPLETED', tx_hash = COALESCE(?, tx_hash),
+       error = NULL, updated_at = ? WHERE operation_id = ? AND status = 'FAILED'`,
+    ).run(txHash ?? null, new Date().toISOString(), operationId).changes === 1;
   }
 
   updatePendingOperation(
@@ -498,10 +552,19 @@ export class Repository {
     txHash?: string,
     error?: string,
   ) {
-    this.db.prepare(
-      `UPDATE pending_operations SET status = ?, tx_hash = COALESCE(?, tx_hash),
-       error = ?, updated_at = ? WHERE operation_id = ?`,
-    ).run(status, txHash ?? null, error ?? null, new Date().toISOString(), operationId);
+    const transition = status === "SUBMITTED"
+      ? "status = 'PENDING'"
+      : status === "COMPLETED"
+        ? "status IN ('PENDING', 'SUBMITTED')"
+        : txHash
+          ? "status = 'SUBMITTED' AND tx_hash = ?"
+          : "status = 'PENDING' AND tx_hash IS NULL";
+    const sql = `UPDATE pending_operations SET status = ?, tx_hash = COALESCE(?, tx_hash),
+       error = ?, updated_at = ? WHERE operation_id = ? AND ${transition}`;
+    const params: Array<string | null> = [status, txHash ?? null, error ?? null,
+      new Date().toISOString(), operationId];
+    if (status === "FAILED" && txHash) params.push(txHash);
+    return this.db.prepare(sql).run(...params).changes === 1;
   }
 
   listSubmittedOperations() {

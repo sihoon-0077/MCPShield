@@ -38,7 +38,8 @@ export async function reconcileSubmittedOperations(
     const releaseId = String(payload.releaseId);
     const chainRelease = await registry.getRelease(releaseId);
     if (operation.operationType === "REGISTER_RELEASE") {
-      repository.upsertReleaseFromChain(chainRelease);
+      repository.upsertReleaseFromChain({ ...chainRelease,
+        registrationTxHash: operation.txHash });
     } else if (operation.operationType === "SUBMIT_ATTESTATION") {
       const validatorAddress = String(payload.validatorAddress).toLowerCase();
       const chainNonce = await registry.getValidatorNonce(validatorAddress);

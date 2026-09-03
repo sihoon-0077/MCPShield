@@ -11,6 +11,8 @@ CREATE TABLE releases (
   artifact_digest TEXT NOT NULL CHECK (artifact_digest ~ '^sha256:[0-9a-f]{64}$'),
   tool_surface_hash TEXT NOT NULL CHECK (tool_surface_hash ~ '^0x[0-9a-f]{64}$'),
   status release_status NOT NULL DEFAULT 'UNVERIFIED',
+  registration_tx_hash TEXT,
+  registration_block_number BIGINT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -33,7 +35,7 @@ CREATE TABLE validator_votes (
   validator_address TEXT NOT NULL,
   decision validator_decision NOT NULL,
   evidence_hash TEXT NOT NULL,
-  scan_id UUID NOT NULL REFERENCES scans(scan_id),
+  scan_id UUID REFERENCES scans(scan_id),
   nonce BIGINT NOT NULL,
   signature TEXT NOT NULL,
   tx_hash TEXT,

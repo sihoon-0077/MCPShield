@@ -40,7 +40,9 @@ export interface RegistryClient {
   ): Promise<SubmittedTransaction>;
   submitAttestation(attestation: SignedAttestation): Promise<SubmittedTransaction>;
   getRelease(releaseId: string): Promise<ChainRelease>;
+  findRelease(releaseId: string): Promise<ChainRelease | undefined>;
   getValidatorNonce(validatorAddress: string): Promise<number>;
+  hasVoted(releaseId: string, validatorAddress: string): Promise<boolean>;
   getReceipt(txHash: string): Promise<"PENDING" | "SUCCESS" | "REVERTED">;
   validateConnection(expectedChainId?: number, validators?: string[]): Promise<void>;
 }
@@ -155,11 +157,28 @@ export class EvmRegistryClient implements RegistryClient {
     };
   }
 
+  async findRelease(releaseId: string) {
+    try {
+      return await this.getRelease(releaseId);
+    } catch (error) {
+      if ((error as { code?: string }).code === "CALL_EXCEPTION") return undefined;
+      throw error;
+    }
+  }
+
   async getValidatorNonce(validatorAddress: string) {
     const nonce = await withDeadline<any>(
       this.reader.nonces(validatorAddress), this.timeoutMs, "validatorNonce",
     );
     return Number(nonce);
+  }
+
+  async hasVoted(releaseId: string, validatorAddress: string) {
+    return Boolean(await withDeadline<any>(
+      this.reader.hasVoted(releaseKey(releaseId), validatorAddress),
+      this.timeoutMs,
+      "hasVoted",
+    ));
   }
 
   async getReceipt(txHash: string) {

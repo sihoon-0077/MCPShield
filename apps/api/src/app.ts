@@ -92,16 +92,60 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     ) {
       return reply.code(400).send(errorBody("INVALID_RELEASE", "Release payload does not match contract v1"));
     }
-    if (repository.getRelease(body.releaseId)) {
-      return reply.code(409).send(errorBody("RELEASE_EXISTS", "Release ID is already registered"));
-    }
     const operationId = `register:${body.releaseId}`;
-    repository.createPendingOperation(operationId, "REGISTER_RELEASE", body);
+    let claim = repository.claimOperation(operationId, "REGISTER_RELEASE", body);
+    if (!claim.claimed) {
+      const existing = claim.operation;
+      if (
+        existing.payload.artifactDigest !== body.artifactDigest ||
+        existing.payload.toolSurfaceHash !== body.toolSurfaceHash
+      ) return reply.code(409).send(errorBody("IDEMPOTENCY_CONFLICT", "Release retry payload changed"));
+      if (existing.status === "COMPLETED") {
+        return reply.code(200).send({ schemaVersion: SCHEMA_VERSION,
+          release: repository.getRelease(body.releaseId), txHash: existing.txHash, idempotent: true });
+      }
+      if (existing.status === "PENDING" || existing.status === "SUBMITTED") {
+        return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
+          operation: { operationId, status: existing.status, txHash: existing.txHash } });
+      }
+      if (!options.registryClient) {
+        return reply.code(409).send(errorBody("CHAIN_TRUTH_UNAVAILABLE", "Cannot retry failed operation without chain truth"));
+      }
+      try {
+        const receipt = existing.txHash
+          ? await options.registryClient.getReceipt(existing.txHash)
+          : "REVERTED";
+        if (receipt === "PENDING") return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
+          operation: { operationId, status: "SUBMITTED", txHash: existing.txHash } });
+        let chainRelease = await options.registryClient.findRelease(body.releaseId);
+        if (receipt === "SUCCESS" || chainRelease) {
+          if (!chainRelease) chainRelease = await options.registryClient.getRelease(body.releaseId);
+          repository.upsertReleaseFromChain(chainRelease);
+          repository.completeFailedOperation(operationId, existing.txHash);
+          return reply.code(200).send({ schemaVersion: SCHEMA_VERSION,
+            release: repository.getRelease(body.releaseId), txHash: existing.txHash, idempotent: true });
+        }
+        if (!repository.retryFailedOperation(operationId)) {
+          return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
+            operation: repository.getPendingOperation(operationId) });
+        }
+        claim = { claimed: true, operation: repository.getPendingOperation(operationId)! };
+      } catch (error) {
+        return reply.code(503).send(errorBody("CHAIN_TRUTH_UNAVAILABLE", "Failed operation was not retried", String(error)));
+      }
+    }
+    if (repository.getRelease(body.releaseId)) {
+      repository.updatePendingOperation(operationId, "COMPLETED");
+      return reply.code(200).send({ schemaVersion: SCHEMA_VERSION,
+        release: repository.getRelease(body.releaseId), idempotent: true });
+    }
+    let submittedTxHash: string | undefined;
     try {
       const tx = await options.registryClient?.registerRelease(
         body.releaseId, body.artifactDigest, body.toolSurfaceHash,
       );
       if (tx) {
+        submittedTxHash = tx.hash;
         repository.updatePendingOperation(operationId, "SUBMITTED", tx.hash);
         await tx.wait();
       }
@@ -109,12 +153,13 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         releaseId: body.releaseId,
         artifactDigest: body.artifactDigest,
         toolSurfaceHash: body.toolSurfaceHash,
+        registrationTxHash: tx?.hash,
       });
       repository.updatePendingOperation(operationId, "COMPLETED", tx?.hash);
       return reply.code(201).send({ schemaVersion: SCHEMA_VERSION, release, txHash: tx?.hash });
     } catch (error) {
       if (!String(error).includes("RPC_TIMEOUT:registerReleaseReceipt")) {
-        repository.updatePendingOperation(operationId, "FAILED", undefined, String(error));
+        repository.updatePendingOperation(operationId, "FAILED", submittedTxHash, String(error));
       }
       throw error;
     }
@@ -176,7 +221,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       !["PASS", "FAIL", "ABSTAIN"].includes(decision) ||
       typeof body.evidenceHash !== "string" || !patterns.bytes32.test(body.evidenceHash) ||
       !Number.isSafeInteger(body.nonce) || (body.nonce as number) < 0 ||
-      !Number.isSafeInteger(body.deadline) || (body.deadline as number) <= Math.floor(Date.now() / 1000) ||
+      !Number.isSafeInteger(body.deadline) || (body.deadline as number) < 0 ||
       typeof body.signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(body.signature)
     ) {
       return reply.code(400).send(errorBody("INVALID_ATTESTATION", "Signed attestation is invalid or expired"));
@@ -197,7 +242,56 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     if (!validators.has(validatorAddress)) {
       return reply.code(403).send(errorBody("NOT_VALIDATOR", "Recovered signer is not a validator"));
     }
+    const operationId = `attestation:${id(body.signature)}`;
+    const operationPayload = { ...body, validatorAddress };
+    const claim = repository.claimOperation(operationId, "SUBMIT_ATTESTATION", operationPayload);
+    if (!claim.claimed) {
+      const existing = claim.operation;
+      if (existing.status === "COMPLETED") {
+        return reply.code(200).send({ schemaVersion: SCHEMA_VERSION,
+          release: repository.getRelease(body.releaseId), validatorAddress,
+          txHash: existing.txHash, idempotent: true });
+      }
+      if (existing.status === "PENDING" || existing.status === "SUBMITTED") {
+        return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
+          operation: { operationId, status: existing.status, txHash: existing.txHash } });
+      }
+      if (!options.registryClient) {
+        return reply.code(409).send(errorBody("CHAIN_TRUTH_UNAVAILABLE", "Cannot retry failed operation without chain truth"));
+      }
+      try {
+        const receipt = existing.txHash
+          ? await options.registryClient.getReceipt(existing.txHash)
+          : "REVERTED";
+        if (receipt === "PENDING") return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
+          operation: { operationId, status: "SUBMITTED", txHash: existing.txHash } });
+        const voted = await options.registryClient.hasVoted(body.releaseId, validatorAddress);
+        if (receipt === "SUCCESS" || voted) {
+          const chainRelease = await options.registryClient.getRelease(body.releaseId);
+          const chainNonce = await options.registryClient.getValidatorNonce(validatorAddress);
+          repository.reconcileVoteFromChain({ releaseId: body.releaseId, validatorAddress,
+            decision, evidenceHash: body.evidenceHash, scanId: body.scanId,
+            nonce: body.nonce as number, signature: body.signature, txHash: existing.txHash },
+          chainRelease.status, chainNonce);
+          repository.completeFailedOperation(operationId, existing.txHash);
+          return reply.code(200).send({ schemaVersion: SCHEMA_VERSION,
+            release: repository.getRelease(body.releaseId), validatorAddress,
+            txHash: existing.txHash, idempotent: true });
+        }
+        if (!repository.retryFailedOperation(operationId)) {
+          return reply.code(202).send({ schemaVersion: SCHEMA_VERSION,
+            operation: repository.getPendingOperation(operationId) });
+        }
+      } catch (error) {
+        return reply.code(503).send(errorBody("CHAIN_TRUTH_UNAVAILABLE", "Failed operation was not retried", String(error)));
+      }
+    }
+    if ((body.deadline as number) <= Math.floor(Date.now() / 1000)) {
+      repository.updatePendingOperation(operationId, "FAILED", undefined, "ATTESTATION_EXPIRED");
+      return reply.code(400).send(errorBody("ATTESTATION_EXPIRED", "Attestation deadline has passed"));
+    }
     if (repository.hasVote(body.releaseId, validatorAddress)) {
+      repository.updatePendingOperation(operationId, "FAILED", undefined, "DUPLICATE_VOTE");
       return reply.code(409).send(errorBody("DUPLICATE_VOTE", "Validator already voted"));
     }
     try {
@@ -210,14 +304,11 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       });
     } catch (error) {
       const code = error instanceof Error ? error.message : "ATTESTATION_FAILED";
+      repository.updatePendingOperation(operationId, "FAILED", undefined, code);
       return reply.code(409).send(errorBody(code, "Attestation does not match current release state"));
     }
 
-    const operationId = `attestation:${id(body.signature)}`;
-    repository.createPendingOperation(operationId, "SUBMIT_ATTESTATION", {
-      ...body,
-      validatorAddress,
-    });
+    let submittedTxHash: string | undefined;
     try {
       const attestation = {
         releaseId: body.releaseId,
@@ -229,6 +320,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       };
       const tx = await options.registryClient?.submitAttestation(attestation);
       if (tx) {
+        submittedTxHash = tx.hash;
         repository.updatePendingOperation(operationId, "SUBMITTED", tx.hash);
         await tx.wait();
       }
@@ -242,7 +334,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       return reply.code(201).send({ schemaVersion: SCHEMA_VERSION, release, validatorAddress, txHash: tx?.hash });
     } catch (error) {
       if (!String(error).includes("RPC_TIMEOUT:attestationReceipt")) {
-        repository.updatePendingOperation(operationId, "FAILED", undefined, String(error));
+        repository.updatePendingOperation(operationId, "FAILED", submittedTxHash, String(error));
       }
       const code = error instanceof Error ? error.message : "ATTESTATION_FAILED";
       if (["RELEASE_NOT_FOUND", "SCAN_EVIDENCE_MISMATCH"].includes(code)) return reply.code(409).send(errorBody(code, "Attestation does not match a stored release scan"));
