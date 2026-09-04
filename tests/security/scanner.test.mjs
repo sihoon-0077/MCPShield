@@ -229,7 +229,7 @@ test('AI transport rejects insecure remote URLs and oversized responses', async 
 });
 
 test('AI prompt redacts common secret forms and enforces a bounded excerpt', () => {
-  const secret = 'AKIA1234567890ABCDEF';
+  const secret = ['AKIA', '1234567890ABCDEF'].join('');
   const token = 'super-sensitive-token-value';
   const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkZW1vLXVzZXIifQ.synthetic_signature_12345';
   const github = `ghp_${'G'.repeat(36)}`;
