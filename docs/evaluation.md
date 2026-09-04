@@ -11,7 +11,7 @@
 
 | Suite | Result |
 |---|---|
-| Backend, API, indexer, reconciler, contract | 18/18 passed |
+| Backend, API, indexer, reconciler, contract | 19/19 passed |
 | Security and AI pipeline | 28/28 passed |
 | Gateway | 27/27 passed |
 | Clean-reset Replay smoke | 10/10 passed |

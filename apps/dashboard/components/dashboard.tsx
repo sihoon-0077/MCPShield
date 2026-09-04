@@ -69,6 +69,7 @@ export function Dashboard() {
           <p>Deterministic evidence, validator quorum, and pre-spawn enforcement for MCP runtimes.</p>
         </div>
         <div className="source-panel" aria-label="Data source selector" aria-busy={loading}>
+          <a className="judge-entry" href="/try">TRY</a>
           {(["MOCK", "LIVE", "REPLAY"] as Source[]).map((source) => (
             <button key={source} className={snapshot.source === source ? "active" : ""} onClick={() => selectSource(source)} disabled={loading} aria-pressed={snapshot.source === source}>{source}</button>
           ))}

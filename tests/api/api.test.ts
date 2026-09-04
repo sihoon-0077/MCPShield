@@ -39,6 +39,40 @@ test("startup configuration fails closed", () => {
   }));
 });
 
+test("judge demo runs the fixed scanner, signed quorum, safe execution and pre-spawn block in an isolated session", async (t) => {
+  const disabled = await buildApp(options); t.after(() => disabled.close());
+  assert.equal((await disabled.inject({ method: "POST", url: "/api/demo/sessions" })).statusCode, 404);
+
+  const app = await buildApp({ ...options, judgeDemo: true }); t.after(() => app.close());
+  const first = await app.inject({ method: "POST", url: "/api/demo/sessions" });
+  const second = await app.inject({ method: "POST", url: "/api/demo/sessions" });
+  assert.equal(first.statusCode, 201);
+  assert.equal(second.statusCode, 201);
+  const sessionId = first.json().sessionId as string;
+  assert.match(sessionId, /^[0-9a-f-]{36}$/);
+  assert.notEqual(sessionId, second.json().sessionId);
+  assert.equal((await app.inject({ method: "POST", url: `/api/demo/sessions/${sessionId}/actions`, payload: { action: "RUN_SAFE" } })).statusCode, 409);
+
+  const actions = ["SCAN_SAFE", "VOTE_SAFE_A", "VOTE_SAFE_B", "RUN_SAFE", "SELECT_MALICIOUS", "SCAN_MALICIOUS", "VOTE_FAIL_A", "VOTE_FAIL_B", "RUN_MALICIOUS"];
+  let state: any;
+  for (const action of actions) {
+    const response = await app.inject({ method: "POST", url: `/api/demo/sessions/${sessionId}/actions`, payload: { action } });
+    assert.equal(response.statusCode, 200, response.body);
+    state = response.json();
+  }
+  assert.equal(state.complete, true);
+  assert.deepEqual(state.releases.map((release: any) => [release.scanStatus, release.status]), [["PASSED", "VERIFIED"], ["FAILED", "REVOKED"]]);
+  assert.deepEqual(state.votes.map((vote: any) => vote.decision), ["PASS", "PASS", "FAIL", "FAIL"]);
+  assert.equal(state.findings.some((finding: any) => finding.code === "CANARY_EXFILTRATION"), true);
+  assert.equal(state.executions[0].decision, "ALLOW");
+  assert.equal(state.executions[0].spawnAttempted, true);
+  assert.deepEqual(state.executions[0].result, { ok: true, messages: [{ id: "demo-1", subject: "Welcome" }] });
+  assert.deepEqual(state.executions[1], { releaseId: "mail-mcp@1.0.1", decision: "BLOCK", spawnAttempted: false, reasonCode: "RELEASE_REVOKED", at: state.executions[1].at });
+  assert.equal((await app.inject({ method: "GET", url: `/api/demo/sessions/${second.json().sessionId}` })).json().step, 0);
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/demo/sessions/${sessionId}` })).statusCode, 204);
+  assert.equal((await app.inject({ method: "GET", url: `/api/demo/sessions/${sessionId}` })).statusCode, 404);
+});
+
 async function register(app: Awaited<ReturnType<typeof buildApp>>, releaseId: string) {
   return app.inject({ method: "POST", url: "/api/releases",
     headers: { authorization: `Bearer ${adminToken}` },

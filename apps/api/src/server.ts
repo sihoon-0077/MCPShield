@@ -17,6 +17,7 @@ const app = await buildApp({
   attestationChainId: config.attestationChainId,
   attestationContract: config.attestationContract,
   operationLeaseMs: config.operationLeaseMs,
+  judgeDemo: process.env.MCPSHIELD_JUDGE_DEMO_ENABLED === "true",
 });
 
 await app.listen({ host: config.apiHost, port: config.apiPort });

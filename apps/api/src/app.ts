@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { id, verifyTypedData } from "ethers";
@@ -17,6 +17,8 @@ import {
 import { Repository } from "./repository.js";
 import { patterns, validateScanResult } from "./validation.js";
 import type { RegistryClient } from "./registry-client.js";
+// @ts-expect-error The judge runner is ESM JavaScript shared with the scanner and Gateway.
+import { createJudgeDemo, JudgeDemoError } from "./judge-demo.mjs";
 
 const defaultValidators = [
   "0x0000000000000000000000000000000000000001",
@@ -38,6 +40,7 @@ export interface AppOptions {
   scanRateLimit?: number;
   operationLeaseMs?: number;
   repository?: Repository;
+  judgeDemo?: boolean;
 }
 
 function errorBody(code: string, message: string, details?: unknown) {
@@ -73,6 +76,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     options.attestationChainId ?? 31337,
     options.attestationContract ?? "0x0000000000000000000000000000000000000001",
   );
+  const judgeDemo = options.judgeDemo ? createJudgeDemo() : undefined;
 
   app.addHook("onClose", async () => repository.close());
 
@@ -81,6 +85,33 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     status: "ok",
     ledgerMode: options.registryClient ? "EVM" : "LOCAL_DEMO",
   }));
+
+  if (judgeDemo) {
+    const demoError = (error: unknown, reply: FastifyReply) => {
+      const known = error as { statusCode: number; code: string; message: string };
+      return error instanceof JudgeDemoError
+        ? reply.code(known.statusCode).send(errorBody(known.code, known.message))
+        : reply.code(500).send(errorBody("DEMO_ACTION_FAILED", "The synthetic demo action failed"));
+    };
+    app.post("/api/demo/sessions", {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    }, async (_request, reply) => {
+      try { return reply.code(201).send(judgeDemo.create()); } catch (error) { return demoError(error, reply); }
+    });
+    app.get("/api/demo/sessions/:sessionId", async (request, reply) => {
+      try { return judgeDemo.get((request.params as { sessionId: string }).sessionId); } catch (error) { return demoError(error, reply); }
+    });
+    app.post("/api/demo/sessions/:sessionId/actions", {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    }, async (request, reply) => {
+      const body = request.body as { action?: unknown } | null;
+      if (!body || typeof body.action !== "string") return reply.code(400).send(errorBody("DEMO_ACTION_INVALID", "A fixed demo action is required"));
+      try { return await judgeDemo.act((request.params as { sessionId: string }).sessionId, body.action); } catch (error) { return demoError(error, reply); }
+    });
+    app.delete("/api/demo/sessions/:sessionId", async (request, reply) => {
+      try { judgeDemo.remove((request.params as { sessionId: string }).sessionId); return reply.code(204).send(); } catch (error) { return demoError(error, reply); }
+    });
+  }
 
   app.post("/api/releases", async (request, reply) => {
     if (!tokenMatches(request.headers.authorization, adminToken)) {

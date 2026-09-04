@@ -17,6 +17,7 @@
 - [x] Concurrent indexer-first EVM receipt-race test
 - [x] Full tracked-file secret scan with explicit deterministic-demo allowlist
 - [x] Docker-capable CI job for Compose startup and two LIVE Gateway evidence records
+- [x] Session-isolated Judge Lab with fixed fixtures, 15-minute TTL, rate limits, real Scanner execution, EIP-712 demo signatures, and Gateway pre-spawn proof
 
 ## P0 demo acceptance
 

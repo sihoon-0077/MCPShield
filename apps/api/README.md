@@ -24,6 +24,15 @@ Endpoints:
 - `POST /api/admission/check`
 - `GET /api/events?releaseId=...`
 
+Set `MCPSHIELD_JUDGE_DEMO_ENABLED=true` to expose the public, fixed-fixture Judge Lab endpoints:
+
+- `POST /api/demo/sessions`
+- `GET /api/demo/sessions/:sessionId`
+- `POST /api/demo/sessions/:sessionId/actions`
+- `DELETE /api/demo/sessions/:sessionId`
+
+Judge sessions live for 15 minutes in one process, accept only the nine fixed actions, and never accept artifact uploads, URLs, credentials, or validator keys. The UI is available at `/try` on the Dashboard. Keep the feature disabled outside the isolated hackathon demo deployment.
+
 Every request payload requires `schemaVersion: "1.0.0"`. Scan results are
 validated against the canonical JSON Schemas under `packages/protocol/schemas`.
 
