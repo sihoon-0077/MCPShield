@@ -191,7 +191,10 @@ async function admittedSnapshot(artifactDir, options) {
   }
 }
 
-export async function runArtifact({ artifactDir, capture = false, executionTimeoutMs = 15_000, ...options }) {
+export async function runArtifact({ artifactDir, capture = false, executionTimeoutMs = 15_000, input, ...options }) {
+  if (input !== undefined && (typeof input !== "string" || Buffer.byteLength(input) > 1_048_576)) {
+    throw new TypeError("Child input must be a string no larger than 1048576 bytes");
+  }
   const { snapshot, decision } = await admittedSnapshot(artifactDir, options);
   try {
     const child = spawnSnapshot(snapshot);
@@ -211,6 +214,7 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
     };
     child.stdout.on("data", (chunk) => receive("stdout", chunk));
     child.stderr.on("data", (chunk) => receive("stderr", chunk));
+    if (input !== undefined) child.stdin.end(input);
     const result = await new Promise((resolve, reject) => {
       let settled = false;
       let timeoutError;

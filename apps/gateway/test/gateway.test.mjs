@@ -52,11 +52,20 @@ test("Gateway computes the same fixture identities as the scanner", async () => 
   }
 });
 
-test("safe artifact runs only its snapshotted manifest entrypoint", async () => {
-  const result = await runArtifact({ artifactDir: safeFixture, mode: "replay", replayFile, capture: true });
+test("safe MCP artifact runs only its snapshotted manifest entrypoint", async () => {
+  const input = [
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "gateway-test", version: "1.0.0" } } },
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    { jsonrpc: "2.0", id: 2, method: "tools/list" },
+    { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_messages", arguments: {} } },
+  ].map(JSON.stringify).join("\n") + "\n";
+  const result = await runArtifact({ artifactDir: safeFixture, mode: "replay", replayFile, capture: true, input });
   assert.equal(result.decision.source, "REPLAY");
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /"ok":true/);
+  const responses = result.stdout.trim().split(/\r?\n/).map(JSON.parse);
+  assert.equal(responses.find(({ id }) => id === 1).result.serverInfo.name, "mail-mcp");
+  assert.deepEqual(responses.find(({ id }) => id === 2).result.tools.map(({ name }) => name), ["list_messages"]);
+  assert.deepEqual(JSON.parse(responses.find(({ id }) => id === 3).result.content[0].text), { ok: true, messages: [{ id: "demo-1", subject: "Welcome" }] });
 });
 
 test("revoked artifact is blocked before its manifest entrypoint starts", async () => {

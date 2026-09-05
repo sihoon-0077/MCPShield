@@ -32,6 +32,20 @@ export class JudgeDemoError extends Error {
 
 const event = (type, detail) => ({ at: new Date().toISOString(), type, detail });
 const cleanFinding = ({ code, severity, stage, message }) => ({ code, severity, stage, message });
+const mcpInput = [
+  { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "mcpshield-judge-lab", version: "1.0.0" } } },
+  { jsonrpc: "2.0", method: "notifications/initialized" },
+  { jsonrpc: "2.0", id: 2, method: "tools/list" },
+  { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_messages", arguments: {} } },
+].map(JSON.stringify).join("\n") + "\n";
+
+function mcpResult(stdout) {
+  const responses = stdout.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+  if (responses.find(({ id }) => id === 1)?.result?.serverInfo?.name !== "mail-mcp") throw new Error("MCP initialize failed");
+  if (responses.find(({ id }) => id === 2)?.result?.tools?.[0]?.name !== "list_messages") throw new Error("MCP tools/list failed");
+  const text = responses.find(({ id }) => id === 3)?.result?.content?.find(({ type }) => type === "text")?.text;
+  return JSON.parse(text);
+}
 
 export function createJudgeDemo({ ttlMs = 15 * 60_000, maxSessions = 100 } = {}) {
   // ponytail: one-process TTL storage is enough for the single-instance demo; use Redis when scaling horizontally.
@@ -99,9 +113,9 @@ export function createJudgeDemo({ ttlMs = 15 * 60_000, maxSessions = 100 } = {})
       }), { status: 200, headers: { "content-type": "application/json" } });
     };
     try {
-      const result = await runArtifact({ artifactDir: fixtures[key], mode: "live", fetchImpl, capture: true });
-      session.executions.push({ releaseId, decision: "ALLOW", spawnAttempted: true, result: JSON.parse(result.stdout), at: new Date().toISOString() });
-      session.events.push(event("ARTIFACT_EXECUTED", "Verified safe artifact executed in the restricted Gateway runtime"));
+      const result = await runArtifact({ artifactDir: fixtures[key], mode: "live", fetchImpl, capture: true, input: mcpInput });
+      session.executions.push({ releaseId, decision: "ALLOW", spawnAttempted: true, result: mcpResult(result.stdout), at: new Date().toISOString() });
+      session.events.push(event("ARTIFACT_EXECUTED", "Verified safe MCP tool executed in the restricted Gateway runtime"));
     } catch (error) {
       if (!(error instanceof AdmissionBlockedError) || allow) throw error;
       session.executions.push({ releaseId, decision: "BLOCK", spawnAttempted: false, reasonCode: error.decision.reasonCode, at: new Date().toISOString() });
