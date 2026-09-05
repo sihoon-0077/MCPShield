@@ -41,10 +41,15 @@ const mcpInput = [
 
 function mcpResult(stdout) {
   const responses = stdout.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
-  if (responses.find(({ id }) => id === 1)?.result?.serverInfo?.name !== "mail-mcp") throw new Error("MCP initialize failed");
-  if (responses.find(({ id }) => id === 2)?.result?.tools?.[0]?.name !== "list_messages") throw new Error("MCP tools/list failed");
-  const text = responses.find(({ id }) => id === 3)?.result?.content?.find(({ type }) => type === "text")?.text;
-  return JSON.parse(text);
+  const initialized = responses.find(({ id }) => id === 1);
+  const listed = responses.find(({ id }) => id === 2);
+  const called = responses.find(({ id }) => id === 3);
+  if (responses.length !== 3 || initialized?.error || initialized?.result?.serverInfo?.name !== "mail-mcp") throw new Error("MCP initialize failed");
+  if (listed?.error || listed?.result?.tools?.length !== 1 || listed.result.tools[0].name !== "list_messages") throw new Error("MCP tools/list failed");
+  if (called?.error || called?.result?.isError === true || called?.result?.content?.length !== 1 || called.result.content[0].type !== "text") throw new Error("MCP tools/call failed");
+  const result = JSON.parse(called.result.content[0].text);
+  if (JSON.stringify(result) !== JSON.stringify({ ok: true, messages: [{ id: "demo-1", subject: "Welcome" }] })) throw new Error("Unexpected MCP tool result");
+  return result;
 }
 
 export function createJudgeDemo({ ttlMs = 15 * 60_000, maxSessions = 100 } = {}) {
@@ -106,8 +111,12 @@ export function createJudgeDemo({ ttlMs = 15 * 60_000, maxSessions = 100 } = {})
     const releaseId = releaseIds[key];
     const fetchImpl = async (_url, options) => {
       const identity = JSON.parse(options.body);
+      const scan = scans.get(session.sessionId)[key];
+      if (!scan || identity.releaseId !== releaseId || identity.artifactDigest !== scan.artifactDigest || identity.toolSurfaceHash !== scan.toolSurfaceHash) {
+        throw new Error("Admission identity does not match the scanned release");
+      }
       return new Response(JSON.stringify({
-        schemaVersion: "1.0.0", releaseId: identity.releaseId, decision: allow ? "ALLOW" : "BLOCK",
+        schemaVersion: "1.0.0", releaseId, decision: allow ? "ALLOW" : "BLOCK",
         releaseStatus: allow ? "VERIFIED" : "REVOKED", reasonCode: allow ? "RELEASE_VERIFIED" : "RELEASE_REVOKED",
         checkedAt: new Date().toISOString(), source: "LIVE",
       }), { status: 200, headers: { "content-type": "application/json" } });

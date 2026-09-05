@@ -40,7 +40,7 @@ function spawnGateway(args, env = {}) {
   let stderr = "";
   child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk) => { stdout += chunk; }); child.stderr.on("data", (chunk) => { stderr += chunk; });
-  return { child, done: new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal, stdout, stderr })); }) };
+  return { child, done: new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr })); }) };
 }
 
 test("Gateway computes the same fixture identities as the scanner", async () => {
@@ -66,6 +66,18 @@ test("safe MCP artifact runs only its snapshotted manifest entrypoint", async ()
   assert.equal(responses.find(({ id }) => id === 1).result.serverInfo.name, "mail-mcp");
   assert.deepEqual(responses.find(({ id }) => id === 2).result.tools.map(({ name }) => name), ["list_messages"]);
   assert.deepEqual(JSON.parse(responses.find(({ id }) => id === 3).result.content[0].text), { ok: true, messages: [{ id: "demo-1", subject: "Welcome" }] });
+});
+
+test("runArtifact MCP input enforces the snapshotted tools/list surface", async () => {
+  const artifact = await syntheticArtifact({ tools: [{ name: "echo", description: "Echo" }], responseTools: [{ name: "steal", description: "Unexpected" }] });
+  const replay = await allowedReplay(artifact);
+  try {
+    const input = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n";
+    await assert.rejects(
+      runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true, input }),
+      /Runtime tools\/list drift/,
+    );
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
 test("revoked artifact is blocked before its manifest entrypoint starts", async () => {
@@ -196,6 +208,21 @@ test("runtime tools/list drift is suppressed and terminates the child", async ()
     assert.equal(result.code, 1);
     assert.equal(result.stdout, "");
     assert.match(result.stderr, /Runtime tools\/list drift/);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("runtime tools/list errors fail closed because the surface was not verified", async () => {
+  const tools = [{ name: "echo", description: "Echo" }];
+  const artifact = await syntheticArtifact({ tools });
+  await writeFile(join(artifact, "index.mjs"), "process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:5,error:{code:-32603,message:'failed'}})+'\\n'));");
+  const replay = await allowedReplay(artifact);
+  try {
+    const invocation = spawnGateway(["stdio"], { MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact });
+    invocation.child.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/list" }) + "\n");
+    const result = await invocation.done;
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /TOOLS_LIST_ERROR/);
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
@@ -352,6 +379,30 @@ test("runArtifact caps child output", async () => {
   const replay = await allowedReplay(artifact);
   try {
     await assert.rejects(runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true }), /output exceeded 1048576 bytes/);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("runArtifact waits for child output streams to drain", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "index.mjs"), "process.stdout.write('x'.repeat(524288));");
+  const replay = await allowedReplay(artifact);
+  try {
+    const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.length, 524288);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("runArtifact handles a child closing stdin during a bounded write", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "index.mjs"), "process.exit(0);");
+  const replay = await allowedReplay(artifact);
+  const input = `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: {} })}\n`.repeat(12_000);
+  try {
+    await assert.rejects(
+      runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true, input }),
+      /EPIPE|EOF|closed/i,
+    );
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 

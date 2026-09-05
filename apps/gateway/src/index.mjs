@@ -160,7 +160,7 @@ export function runtimeSurfaceGuards(expectedHash, tools = []) {
     if (!key || !listRequests.has(key)) return;
     if (listRequests.get(key) === "COMPLETE") throw new Error("Duplicate tools/list response");
     listRequests.set(key, "COMPLETE");
-    if (message.error) return;
+    if (message.error) throw new ToolSurfaceDriftError(expectedHash, "TOOLS_LIST_ERROR");
     if (!Array.isArray(message.result?.tools)) throw new ToolSurfaceDriftError(expectedHash, "INVALID_TOOLS_LIST");
     const observed = toolSurfaceHash(message.result.tools);
     if (observed !== expectedHash) throw new ToolSurfaceDriftError(expectedHash, observed);
@@ -212,16 +212,25 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
       if (capture) target === "stdout" ? stdout += chunk : stderr += chunk;
       else target === "stdout" ? process.stdout.write(chunk) : process.stderr.write(chunk);
     };
-    child.stdout.on("data", (chunk) => receive("stdout", chunk));
+    const guarded = input === undefined ? undefined : runtimeSurfaceGuards(snapshot.toolSurfaceHash, snapshot.tools);
+    const failOutput = (error) => { outputError ??= error; terminateChild(child); };
+    child.stdin.once("error", failOutput);
+    if (guarded) {
+      guarded.requests.once("error", failOutput);
+      guarded.responses.once("error", failOutput);
+      guarded.requests.pipe(child.stdin);
+      child.stdout.pipe(guarded.responses);
+      guarded.responses.on("data", (chunk) => receive("stdout", chunk));
+      guarded.requests.end(input);
+    } else child.stdout.on("data", (chunk) => receive("stdout", chunk));
     child.stderr.on("data", (chunk) => receive("stderr", chunk));
-    if (input !== undefined) child.stdin.end(input);
     const result = await new Promise((resolve, reject) => {
       let settled = false;
       let timeoutError;
       const finish = (callback) => { if (settled) return; settled = true; clearTimeout(timer); callback(); };
       const timer = setTimeout(() => { timeoutError = new Error(`Child execution timed out after ${executionTimeoutMs}ms`); terminateChild(child); }, executionTimeoutMs);
       child.once("error", (error) => finish(() => reject(error)));
-      child.once("exit", (code, signal) => finish(() => outputError ? reject(outputError) : timeoutError ? reject(timeoutError) : signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve({ code: code ?? 1, stdout, stderr })));
+      child.once("close", (code, signal) => finish(() => outputError ? reject(outputError) : timeoutError ? reject(timeoutError) : signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve({ code: code ?? 1, stdout, stderr })));
     });
     return { decision, identity: { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash }, ...result };
   } finally { await snapshot.cleanup(); }
@@ -243,18 +252,19 @@ export async function proxyArtifactStdio({ artifactDir, ...options }) {
     child.stderr.unpipe(process.stderr);
     if (child.exitCode === null && child.signalCode === null) terminateChild(child);
   };
+  const fail = (error) => { terminalError ??= error; log("gateway_runtime_blocked", { releaseId: snapshot.releaseId, error: error.message }); cleanup(); };
+  requests.once("error", fail);
+  responses.once("error", fail);
+  child.stdin.once("error", fail);
   process.stdin.pipe(requests).pipe(child.stdin);
   child.stdout.pipe(responses).pipe(process.stdout);
   child.stderr.pipe(process.stderr);
-  const fail = (error) => { terminalError = error; log("gateway_runtime_blocked", { releaseId: snapshot.releaseId, error: error.message }); cleanup(); };
-  requests.once("error", fail);
-  responses.once("error", fail);
   const handlers = new Map();
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) { const handler = () => cleanup(signal); handlers.set(signal, handler); process.once(signal, handler); }
   try {
     return await new Promise((resolve, reject) => {
       child.once("error", reject);
-      child.once("exit", (code, signal) => terminalError ? reject(terminalError) : signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve(code ?? 1));
+      child.once("close", (code, signal) => terminalError ? reject(terminalError) : signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve(code ?? 1));
     });
   } finally {
     cleanup();

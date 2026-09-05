@@ -6,10 +6,9 @@ The child receives only a minimal system environment. Pass an MCP-specific varia
 
 ```powershell
 npm.cmd run test:gateway
-node apps/gateway/src/index.mjs run --artifact demo/fixtures/mail-mcp-1.0.0 --mode replay --replay scripts/demo/replay.json
-node apps/gateway/src/index.mjs run --artifact demo/fixtures/mail-mcp-1.0.1 --mode replay --replay scripts/demo/replay.json
+npm.cmd run demo:mcp-e2e
 ```
 
-For MCP stdio mode set `MCPSHIELD_ARTIFACT_DIR`, `MCPSHIELD_MODE`, `MCPSHIELD_API_URL`, and optionally `MCPSHIELD_ADMISSION_TIMEOUT_MS` or `MCPSHIELD_REPLAY_FILE`. The Gateway relays newline-delimited JSON-RPC bytes while observing request IDs. It fully checks JSON-RPC batches, allows only manifest-declared `tools/call` names, and suppresses duplicate or mismatched `tools/list` responses before terminating the child fail-closed.
+The `demo:mcp-e2e` command connects the official MCP client through the Gateway. For direct MCP stdio mode set `MCPSHIELD_ARTIFACT_DIR`, `MCPSHIELD_MODE`, `MCPSHIELD_API_URL`, and optionally `MCPSHIELD_ADMISSION_TIMEOUT_MS` or `MCPSHIELD_REPLAY_FILE`, then start `node apps/gateway/src/index.mjs stdio` from an MCP client. The Gateway relays newline-delimited JSON-RPC bytes while observing request IDs. It fully checks JSON-RPC batches, allows only manifest-declared `tools/call` names, and suppresses errored, duplicate, or mismatched `tools/list` responses before terminating the child fail-closed.
 
 Symlinks, traversal entrypoints, non-JavaScript entrypoints, oversized artifacts, arbitrary commands, command arguments, shells, `npx`, and caller-supplied identity values are not accepted. Stop the Gateway service to disable spawning. REPLAY is demo-only and verifies its saved artifact identity; MOCK is display-only and always returns BLOCK in the Gateway.
