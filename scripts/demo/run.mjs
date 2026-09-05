@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createGatewayClient } from "./mcp-client.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const gateway = resolve(here, "../../apps/gateway/src/index.mjs");
@@ -14,16 +15,22 @@ function invoke(gatewayName, artifactDir) {
 
 const safeFixture = resolve(here, "../../demo/fixtures/mail-mcp-1.0.0");
 const maliciousFixture = resolve(here, "../../demo/fixtures/mail-mcp-1.0.1");
-const safe = invoke("Gateway A", safeFixture);
+const safe = createGatewayClient({ root: resolve(here, "../.."), artifactDir: safeFixture, mode: "replay", replayFile: replay });
+try {
+  await safe.client.connect(safe.transport);
+  const listed = await safe.client.listTools();
+  assert.deepEqual(listed.tools.map(({ name }) => name), ["list_messages"]);
+  const called = await safe.client.callTool({ name: "list_messages", arguments: {} });
+  const text = called.content.find((item) => item.type === "text")?.text;
+  assert.deepEqual(JSON.parse(text), { ok: true, messages: [{ id: "demo-1", subject: "Welcome" }] });
+} finally { await safe.close(); }
 const blockedA = invoke("Gateway A", maliciousFixture);
 const blockedB = invoke("Gateway B", maliciousFixture);
 
-assert.equal(safe.status, 0, safe.stderr);
-assert.match(safe.stdout, /"ok":true/);
 for (const result of [blockedA, blockedB]) {
   assert.equal(result.status, 3, result.stderr);
   assert.equal(result.stdout, "");
   assert.match(result.stderr, /RELEASE_REVOKED/);
 }
 
-console.log(JSON.stringify({ source: "REPLAY", safe: "Gateway-owned snapshot ALLOW", malicious: ["Gateway A BLOCK before spawn", "Gateway B BLOCK before spawn"], result: "PASS" }, null, 2));
+console.log(JSON.stringify({ source: "REPLAY", safe: "MCP initialize + list_messages ALLOW", malicious: ["Gateway A BLOCK before spawn", "Gateway B BLOCK before spawn"], result: "PASS" }, null, 2));

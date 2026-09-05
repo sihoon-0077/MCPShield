@@ -25,7 +25,7 @@
     "scan:safe": "node services/scanner/src/cli.mjs --fixture demo/fixtures/mail-mcp-1.0.0",
     "scan:malicious": "node services/scanner/src/cli.mjs --fixture demo/fixtures/mail-mcp-1.0.1 --baseline demo/fixtures/mail-mcp-1.0.0",
     "benchmark:security": "node benchmarks/evaluate.mjs --runs 10",
-    "test": "npm run test:backend && npm run test:security && npm run test:gateway && npm run demo:smoke && npm run demo:live-smoke",
+    "test": "npm run test:backend && npm run test:security && npm run test:gateway && npm run demo:smoke && npm run demo:mcp-e2e && npm run demo:live-smoke",
     "test:backend": "node --import tsx --test \"tests/**/*.test.ts\"",
     "test:security": "node --import tsx --test tests/security/*.test.mjs",
     "test:gateway": "npm test --workspace @mcpshield/gateway",
@@ -35,6 +35,7 @@
     "demo:reset": "npm run demo:reset --workspace @mcpshield/demo",
     "demo:run": "npm run demo:run --workspace @mcpshield/demo",
     "demo:seed": "npm run demo:seed --workspace @mcpshield/demo",
+    "demo:mcp-e2e": "npm run demo:mcp-e2e --workspace @mcpshield/demo",
     "demo:live-smoke": "npm run demo:live-smoke --workspace @mcpshield/demo",
     "demo:smoke": "npm run demo:reset && npm run demo:run",
     "stack:config": "docker compose config --quiet",
@@ -52,6 +53,7 @@
     "tsx": "^4.20.5"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "^24.3.0",
     "ganache": "^7.9.2",
     "solc": "^0.8.30",
