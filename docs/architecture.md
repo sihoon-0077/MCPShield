@@ -67,7 +67,7 @@ Timeout, unavailable chain truth, an unknown response, and either hash mismatch 
 - Raw evidence stays off-chain. Only fixed-size hashes, votes, status, and events are placed on-chain.
 - The Gateway creates its own immutable artifact snapshot, computes both hashes, checks admission, and starts only the manifest entrypoint with `shell: false`.
 - Scanner and Gateway inspect the same bounded artifact bytes with a self-contained ESM policy: executable artifact code is `.mjs` only, using allowlisted non-network `node:` built-ins or relative `.mjs` modules inside the snapshot. Gateway execution also uses Node's filesystem permission boundary, disabled string code generation and runtime egress, and a minimal child environment.
-- The stdio proxy inspects every JSON-RPC batch element, allows only manifest-declared `tools/call` names, and blocks duplicate or mismatched `tools/list` responses.
+- The stdio proxy admits the exact artifact before spawn, relays the MCP initialization lifecycle, inspects every JSON-RPC batch element, allows only manifest-declared `tools/call` names, and blocks duplicate or mismatched `tools/list` responses.
 - API writes after an EVM receipt reconcile from chain truth, so an indexer that projects the same log first is idempotent. SQLite WAL uses a bounded busy timeout for the demo's two writers.
 - Dashboard secrets and Backend tokens remain server-side.
 

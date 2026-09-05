@@ -8,6 +8,7 @@
 - [x] Solidity compile and EIP-712/quorum/replay tests
 - [x] Security fixture, AI schema, sandbox, redaction, timeout, and submission tests
 - [x] Gateway LIVE/MOCK/REPLAY identity and pre-spawn block tests
+- [x] Official MCP client stdio handshake, `tools/list`, and `tools/call` through Gateway
 - [x] Offline replay smoke test
 - [x] Clean reset followed by the same Replay demo 10/10 times
 - [x] Ephemeral LIVE Backend end-to-end smoke test

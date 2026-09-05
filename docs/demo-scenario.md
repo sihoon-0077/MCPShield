@@ -13,7 +13,7 @@
 3. Show the static, AI, and sandbox pipeline for `1.0.1`.
 4. Point out `SEMANTIC_BEHAVIOR_MISMATCH` and `CANARY_EXFILTRATION` evidence.
 5. Show two independent `FAIL` votes and the `REVOKED` status.
-6. Run the safe release through Gateway A: the marker process starts.
+6. Connect the official MCP client through Gateway A, list `mail-mcp@1.0.0` tools, and call `list_messages`.
 7. Run the malicious release through Gateway A and Gateway B: both return exit code 3 and emit no child marker.
 8. Finish with: `Registry: Available · Signature: Valid · MCPShield: REVOKED · Agent: BLOCKED`.
 
@@ -21,12 +21,13 @@
 
 ```powershell
 npm.cmd ci
+npm.cmd run demo:mcp-e2e
 npm.cmd run demo:smoke
 npm.cmd run demo:live-smoke
 npm.cmd run benchmark:security
 ```
 
-`demo:smoke` is an offline REPLAY fallback. `demo:live-smoke` starts an ephemeral real Backend and proves the API, signatures, quorum, admission decision, and pre-spawn enforcement without Docker.
+`demo:mcp-e2e` uses the official MCP TypeScript client to prove the stdio handshake, tool discovery, tool call, and pre-spawn block. `demo:smoke` is an offline REPLAY fallback. `demo:live-smoke` starts an ephemeral real Backend and proves the API, signatures, quorum, admission decision, and pre-spawn enforcement without Docker.
 
 For the dashboard and two long-running gateways:
 
@@ -40,7 +41,7 @@ npm.cmd run stack:down
 
 | Path | Scan | Votes | Status | Gateway |
 |---|---|---|---|---|
-| `1.0.0` safe | `PASSED` | A/B `PASS` | `VERIFIED` | `ALLOW`, child starts |
+| `1.0.0` safe | `PASSED` | A/B `PASS` | `VERIFIED` | `ALLOW`, MCP tool call succeeds |
 | `1.0.1` malicious | `FAILED` | A/B `FAIL` | `REVOKED` | `BLOCK`, child never starts |
 
 ## Failure recovery

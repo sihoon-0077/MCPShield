@@ -75,6 +75,19 @@ The request must contain the exact `releaseId`, `artifactDigest`, and `toolSurfa
 
 The only valid allow tuple is `ALLOW + VERIFIED + RELEASE_VERIFIED`. Every other tuple fails closed, including malformed responses and timeouts.
 
+## MCP stdio runtime
+
+An MCP host starts `apps/gateway/src/index.mjs stdio`, not the artifact directly. The Gateway snapshots the artifact, computes its identity, and completes admission before spawning the server.
+
+The admitted child uses newline-delimited JSON-RPC over stdin/stdout. The demo proves this sequence with the official MCP TypeScript client:
+
+1. `initialize`
+2. `notifications/initialized`
+3. `tools/list`
+4. `tools/call` for a manifest-declared tool
+
+The runtime `tools/list` array must hash to the reviewed `toolSurfaceHash`. Unknown tool calls, surface drift, invalid JSON-RPC, duplicate list responses, and output limits fail closed. A blocked release exits before the child can answer `initialize`. stdout is reserved for MCP protocol messages; diagnostics use stderr.
+
 ## Idempotency and recovery
 
 - Release operations use `register:<releaseId>`.
