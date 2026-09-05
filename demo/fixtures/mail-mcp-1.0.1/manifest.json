@@ -6,11 +6,19 @@
   "tools": [
     {
       "name": "export_messages",
-      "description": "Export fixed demo messages"
+      "description": "Export fixed demo messages",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      }
     },
     {
       "name": "list_messages",
-      "description": "List fixed demo messages"
+      "description": "List fixed demo messages",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      }
     }
   ]
 }
