@@ -285,7 +285,7 @@ test("accepts signed attestations, rejects impersonation/replay/evidence mismatc
   assert.equal(second.json().release.status, "REVOKED");
 });
 
-test("admission requires both hashes and allows only verified releases", async (t) => {
+test("admission requires matching hashes and allows only verified releases", async (t) => {
   const app = await buildApp(options); t.after(() => app.close());
   await register(app, "mail-mcp@1.0.0");
   const storedScan = await scan(app, "mail-mcp@1.0.0");
@@ -298,8 +298,57 @@ test("admission requires both hashes and allows only verified releases", async (
     schemaVersion: "1.0.0", releaseId: "mail-mcp@1.0.0", artifactDigest: digestA, toolSurfaceHash: toolHash,
   } });
   assert.equal(allowed.json().decision, "ALLOW");
-  const mismatch = await app.inject({ method: "POST", url: "/api/admission/check", payload: {
-    schemaVersion: "1.0.0", releaseId: "mail-mcp@1.0.0", artifactDigest: digestA, toolSurfaceHash: `0x${"f".repeat(64)}`,
+  for (const identity of [
+    { artifactDigest: `sha256:${"f".repeat(64)}`, toolSurfaceHash: toolHash },
+    { artifactDigest: digestA, toolSurfaceHash: `0x${"f".repeat(64)}` },
+  ]) {
+    const mismatch = await app.inject({ method: "POST", url: "/api/admission/check", payload: {
+      schemaVersion: "1.0.0", releaseId: "mail-mcp@1.0.0", ...identity,
+    } });
+    assert.equal(mismatch.json().decision, "BLOCK");
+    assert.equal(mismatch.json().reasonCode, "DIGEST_MISMATCH");
+  }
+
+  await register(app, "mail-mcp@1.0.1");
+  const revokedScan = await scan(app, "mail-mcp@1.0.1");
+  for (let index = 0; index < 2; index++) {
+    await app.inject({ method: "POST", url: "/api/validators/vote",
+      payload: await attestation(wallets[index], "mail-mcp@1.0.1", revokedScan.scanId, "FAIL", 1) });
+  }
+  const revoked = await app.inject({ method: "POST", url: "/api/admission/check", payload: {
+    schemaVersion: "1.0.0", releaseId: "mail-mcp@1.0.1", artifactDigest: digestA, toolSurfaceHash: toolHash,
   } });
-  assert.equal(mismatch.json().reasonCode, "DIGEST_MISMATCH");
+  assert.equal(revoked.json().decision, "BLOCK");
+  assert.equal(revoked.json().reasonCode, "RELEASE_REVOKED");
+});
+
+test("admission fails closed when chain truth is unavailable", async (t) => {
+  let unavailable = false;
+  const registryClient: RegistryClient = {
+    async registerRelease() { return { hash: `0x${"9".repeat(64)}`, async wait() {} }; },
+    async getRelease(releaseId: string) {
+      if (unavailable) throw new Error("RPC_TIMEOUT:getRelease");
+      return { releaseId, artifactDigest: digestA, toolSurfaceHash: toolHash, status: "VERIFIED" as const };
+    },
+    async submitAttestation() { throw new Error("unused"); },
+    async findRelease() { return undefined; },
+    async getValidatorNonce() { return 0; },
+    async hasVoted() { return false; },
+    async getValidatorVote() { return undefined; },
+    async getReceipt() { return "REVERTED"; },
+    async validateConnection() {},
+  };
+  const app = await buildApp({ ...options, registryClient }); t.after(() => app.close());
+  assert.equal((await register(app, "mail-mcp@1.0.2")).statusCode, 201);
+  const allowed = await app.inject({ method: "POST", url: "/api/admission/check", payload: {
+    schemaVersion: "1.0.0", releaseId: "mail-mcp@1.0.2", artifactDigest: digestA, toolSurfaceHash: toolHash,
+  } });
+  assert.equal(allowed.json().decision, "ALLOW");
+  unavailable = true;
+
+  const blocked = await app.inject({ method: "POST", url: "/api/admission/check", payload: {
+    schemaVersion: "1.0.0", releaseId: "mail-mcp@1.0.2", artifactDigest: digestA, toolSurfaceHash: toolHash,
+  } });
+  assert.equal(blocked.json().decision, "BLOCK");
+  assert.equal(blocked.json().reasonCode, "STATUS_UNAVAILABLE");
 });
