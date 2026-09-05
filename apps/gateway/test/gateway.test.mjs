@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createArtifactSnapshot } from "../src/artifact.mjs";
-import { AdmissionBlockedError, getAdmission, proxyArtifactStdio, runArtifact } from "../src/index.mjs";
+import { AdmissionBlockedError, createGatewayHttpServer, getAdmission, proxyArtifactStdio, runArtifact } from "../src/index.mjs";
 
 const gateway = fileURLToPath(new URL("../src/index.mjs", import.meta.url));
 const safeFixture = fileURLToPath(new URL("../../../demo/fixtures/mail-mcp-1.0.0", import.meta.url));
@@ -43,6 +44,15 @@ function spawnGateway(args, env = {}) {
   return { child, done: new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr })); }) };
 }
 
+async function listenGateway(options) {
+  const server = createGatewayHttpServer(options);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  return { server, url: new URL(`http://127.0.0.1:${port}/mcp`) };
+}
+
+const closeServer = (server) => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+
 test("Gateway computes the same fixture identities as the scanner", async () => {
   const expected = JSON.parse(await readFile(expectedFile, "utf8")).fixtures;
   for (const fixture of [safeFixture, maliciousFixture]) {
@@ -66,6 +76,26 @@ test("safe MCP artifact runs only its snapshotted manifest entrypoint", async ()
   assert.equal(responses.find(({ id }) => id === 1).result.serverInfo.name, "mail-mcp");
   assert.deepEqual(responses.find(({ id }) => id === 2).result.tools.map(({ name }) => name), ["list_messages"]);
   assert.deepEqual(JSON.parse(responses.find(({ id }) => id === 3).result.content[0].text), { ok: true, messages: [{ id: "demo-1", subject: "Welcome" }] });
+});
+
+test("Streamable HTTP exposes a read-only tool and keeps admission before execution", async () => {
+  for (const [artifactDir, allowed] of [[safeFixture, true], [maliciousFixture, false]]) {
+    const { server, url } = await listenGateway({ artifactDir, mode: "replay", replayFile });
+    const client = new Client({ name: "mcpshield-http-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(url));
+      const listed = await client.listTools();
+      assert.deepEqual(listed.tools.map(({ name }) => name), ["list_messages"]);
+      assert.equal(listed.tools[0].annotations?.readOnlyHint, true);
+      const called = await client.callTool({ name: "list_messages", arguments: {} });
+      assert.equal(called.isError === true, !allowed);
+      if (allowed) assert.deepEqual(JSON.parse(called.content[0].text), { ok: true, messages: [{ id: "demo-1", subject: "Welcome" }] });
+      else assert.match(called.content[0].text, /RELEASE_REVOKED/);
+    } finally {
+      await client.close().catch(() => {});
+      await closeServer(server);
+    }
+  }
 });
 
 test("runArtifact MCP input enforces the snapshotted tools/list surface", async () => {

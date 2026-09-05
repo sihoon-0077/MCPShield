@@ -5,7 +5,7 @@
 
 ## Decision
 
-The MVP supports exact local stdio MCP releases represented by a canonical release ID, artifact digest, and tool-surface hash. Remote MCP endpoints are displayed only with a lower assurance level and are not claimed to have runtime-code attestation.
+The MVP trust unit remains an exact local stdio MCP release represented by a canonical release ID, artifact digest, and tool-surface hash. A Streamable HTTP Gateway may expose that verified local artifact to remote clients such as ChatGPT. Arbitrary third-party remote MCP endpoints are not claimed to have runtime-code attestation.
 
 ## Reason
 
@@ -14,7 +14,7 @@ A local artifact can be fetched, hashed, scanned, executed in an isolated test e
 ## Consequences
 
 - The demo can make a strong and testable allow/block claim.
-- Automatic support for every MCP transport and package ecosystem is deferred.
+- Automatic support for every remote MCP implementation and package ecosystem is deferred.
 - Gateway enforcement must compare both artifact and tool-surface hashes.
 - Product messaging must distinguish local exact-artifact assurance from remote metadata monitoring.
 

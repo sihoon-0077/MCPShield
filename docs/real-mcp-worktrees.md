@@ -17,5 +17,6 @@ The original `ai블록체인해커톤` directory and its worktrees remain unchan
 3. `mail-mcp@1.0.0` completes `initialize`, `tools/list`, and `tools/call` through Gateway.
 4. The runtime `tools/list` response matches the reviewed manifest hash.
 5. `mail-mcp@1.0.1` is rejected before its process starts.
+6. The official MCP client reaches `/mcp` over Streamable HTTP, sees `list_messages` as read-only, executes `1.0.0`, and receives a tool error for revoked `1.0.1`.
 
-This iteration supports local stdio MCP only. Remote Streamable HTTP is outside the demo scope.
+The remote endpoint is a transport wrapper around the exact local artifact. It does not claim to attest arbitrary mutable remote MCP servers.

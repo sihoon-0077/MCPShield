@@ -4,6 +4,10 @@
 
 Public demo: `https://mcpshield-judge-lab-production.up.railway.app/try`
 
+ChatGPT remote MCP endpoint: `https://mcpshield-judge-lab-production.up.railway.app/mcp`
+
+The `/mcp` endpoint serves the synthetic `list_messages` tool over Streamable HTTP. The tool is marked read-only, and every call still passes the exact release admission check before the local stdio artifact can start.
+
 `http://localhost:3000/try` provides an installation-free, no-wallet judge flow over the two fixed synthetic fixtures. It runs the real Scanner, creates two EIP-712 demo-validator signatures, executes the verified safe artifact through the Gateway, and proves the revoked artifact is blocked before spawn. Sessions are isolated in memory, expire after 15 minutes, and accept no uploads or external targets.
 
 Enable the Backend route with `MCPSHIELD_JUDGE_DEMO_ENABLED=true`; the provided Compose stack enables it for loopback-only demo use. Results are explicitly labelled `LIVE DEMO` and `LOCAL_DEMO LEDGER`, not testnet evidence.

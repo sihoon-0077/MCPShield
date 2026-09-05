@@ -1,5 +1,10 @@
 FROM node:22-alpine
 WORKDIR /app
+COPY package.json package-lock.json ./
+COPY apps/dashboard/package.json ./apps/dashboard/package.json
+COPY apps/gateway/package.json ./apps/gateway/package.json
+COPY scripts/demo/package.json ./scripts/demo/package.json
+RUN npm ci --omit=dev --ignore-scripts
 COPY apps/gateway/src ./apps/gateway/src
 COPY packages/artifact-policy ./packages/artifact-policy
 COPY demo/fixtures/mail-mcp-1.0.1 /fixtures/mail-mcp-1.0.1

@@ -88,6 +88,10 @@ The admitted child uses newline-delimited JSON-RPC over stdin/stdout. The demo p
 
 The runtime `tools/list` array must hash to the reviewed `toolSurfaceHash`. Unknown tool calls, surface drift, invalid JSON-RPC, duplicate list responses, and output limits fail closed. A blocked release exits before the child can answer `initialize`. stdout is reserved for MCP protocol messages; diagnostics use stderr.
 
+## MCP Streamable HTTP runtime
+
+Remote clients connect to `POST /mcp`. The Gateway advertises the synthetic `list_messages` tool with `readOnlyHint: true`, invokes the exact local stdio release through the same admission boundary, and returns an MCP tool error if the release is not `VERIFIED`. The public demo uses no authentication and returns fake mail only; production data requires OAuth.
+
 ## Idempotency and recovery
 
 - Release operations use `register:<releaseId>`.

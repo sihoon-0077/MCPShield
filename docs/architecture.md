@@ -2,7 +2,7 @@
 
 ## Scope
 
-The MVP admits exact local stdio MCP releases. It does not create another registry, token, DAO, or universal remote attestation system.
+The MVP admits exact local stdio MCP releases and can expose an admitted release through its own Streamable HTTP Gateway. It does not create another registry, token, DAO, or universal remote attestation system.
 
 ```mermaid
 flowchart LR
@@ -21,7 +21,7 @@ flowchart LR
     end
     subgraph Data["Execution plane"]
       I --> API["Admission API"]
-      API --> G["stdio Gateway"]
+      API --> G["stdio + Streamable HTTP Gateway"]
       G -->|"ALLOW"| MCP["MCP child process"]
       G -->|"BLOCK"| D["Execution denied"]
       API --> UI["Dashboard"]
@@ -68,6 +68,7 @@ Timeout, unavailable chain truth, an unknown response, and either hash mismatch 
 - The Gateway creates its own immutable artifact snapshot, computes both hashes, checks admission, and starts only the manifest entrypoint with `shell: false`.
 - Scanner and Gateway inspect the same bounded artifact bytes with a self-contained ESM policy: executable artifact code is `.mjs` only, using allowlisted non-network `node:` built-ins or relative `.mjs` modules inside the snapshot. Gateway execution also uses Node's filesystem permission boundary, disabled string code generation and runtime egress, and a minimal child environment.
 - The stdio proxy admits the exact artifact before spawn, relays the MCP initialization lifecycle, inspects every JSON-RPC batch element, allows only manifest-declared `tools/call` names, and blocks duplicate or mismatched `tools/list` responses.
+- The public `/mcp` endpoint uses the official Streamable HTTP server transport. Its read-only wrapper invokes the same admitted stdio artifact, preserving the exact-byte pre-spawn check for ChatGPT calls.
 - API writes after an EVM receipt reconcile from chain truth, so an indexer that projects the same log first is idempotent. SQLite WAL uses a bounded busy timeout for the demo's two writers.
 - Dashboard secrets and Backend tokens remain server-side.
 

@@ -1,9 +1,9 @@
 import type { Snapshot } from "./types";
 
-const a = "8ef9cb6c1cb212b3d32ebc99f47d11028ba2db8ce15948729c0f089079bffef8";
-const b = "fc4b6f6c60517bec321002472cf8fbd646067cc1aa4ccbf2a9c8fd62197a43bc";
-const c = "01cbe916a8d67caf7e022a0fa758f63ada1a5c2ebf1fb50fa1aa645a9fab38c9";
-const d = "6c1be4f5520587dc36cc3f74273cffac6c180e612cf2c157a45941d156fb4ce3";
+const a = "a345d325671967586298ff058ad4d65a2e65a1a5cb40070289234c58cd77f422";
+const b = "b7014044a72759a20257de22b14714d588f1cda7a68d6a0caa16f1b5d4c0d020";
+const c = "861b2161cedf0f1e6552b22b9aeeaaeda7f106437b33094a7e884a85f8eabdab";
+const d = "e6b50801aa384636c2a31efea3ac6277ac5d1d6eb89d038099e068c685afa0d1";
 
 export const mockSnapshot: Snapshot = {
   schemaVersion: "1.0.0",

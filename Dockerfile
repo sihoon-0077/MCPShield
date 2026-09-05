@@ -25,11 +25,17 @@ COPY --from=builder --chown=node:node /app/packages ./packages
 COPY --from=builder --chown=node:node /app/services ./services
 COPY --from=builder --chown=node:node /app/database ./database
 COPY --from=builder --chown=node:node /app/demo/fixtures ./demo/fixtures
+COPY --from=builder --chown=node:node /app/scripts/demo/replay.json ./scripts/demo/replay.json
 
 ENV NODE_ENV=production \
     API_HOST=127.0.0.1 \
     API_PORT=3001 \
     MCPSHIELD_API_URL=http://127.0.0.1:3001 \
+    MCPSHIELD_MODE=replay \
+    MCPSHIELD_REPLAY_FILE=/app/scripts/demo/replay.json \
+    MCPSHIELD_ARTIFACT_DIR=/app/demo/fixtures/mail-mcp-1.0.0 \
+    MCPSHIELD_GATEWAY_HOST=127.0.0.1 \
+    MCPSHIELD_GATEWAY_PORT=8787 \
     MCPSHIELD_JUDGE_DEMO_ENABLED=true \
     DATABASE_PATH=/tmp/mcpshield.db \
     CORS_ALLOWLIST=https://example.invalid \
@@ -40,4 +46,4 @@ ENV NODE_ENV=production \
 USER node
 EXPOSE 3000
 
-CMD ["sh", "-c", "npm run start:api & api=$!; node apps/dashboard/server.js & web=$!; trap 'kill $api $web' TERM INT; wait -n $api $web"]
+CMD ["sh", "-c", "npm run start:api & api=$!; node apps/gateway/src/index.mjs serve & gateway=$!; node apps/dashboard/server.js & web=$!; trap 'kill $api $gateway $web' TERM INT; wait -n $api $gateway $web"]

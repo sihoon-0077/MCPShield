@@ -3,6 +3,9 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { Transform } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { toNodeHandler } from "@modelcontextprotocol/node";
+import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
+import * as z from "zod/v4";
 import { createArtifactSnapshot, toolSurfaceHash } from "./artifact.mjs";
 
 const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED"]);
@@ -273,6 +276,70 @@ export async function proxyArtifactStdio({ artifactDir, ...options }) {
   }
 }
 
+const listMessagesInput = [
+  { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "mcpshield-http-gateway", version: "1.0.0" } } },
+  { jsonrpc: "2.0", method: "notifications/initialized" },
+  { jsonrpc: "2.0", id: 2, method: "tools/list" },
+  { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_messages", arguments: {} } },
+].map(JSON.stringify).join("\n") + "\n";
+
+async function callListMessages(options) {
+  const execution = await runArtifact({ ...options, capture: true, input: listMessagesInput });
+  const responses = execution.stdout.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+  const called = responses.find(({ id }) => id === 3);
+  if (called?.error || !Array.isArray(called?.result?.content)) throw new Error("Verified MCP tool returned an invalid result");
+  return called.result;
+}
+
+export function createRemoteMcpServer(options = {}) {
+  const server = new McpServer(
+    { name: "mcpshield-mail", version: "1.0.0" },
+    { instructions: "Use list_messages to read synthetic demo mail through MCPShield's verified execution gateway." },
+  );
+  server.registerTool("list_messages", {
+    title: "List demo messages",
+    description: "Use this to read the fixed synthetic mail list after MCPShield verifies the release. It never accesses real mail.",
+    inputSchema: z.object({}).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async () => {
+    try { return await callListMessages(options); }
+    catch (error) {
+      const reason = error instanceof AdmissionBlockedError ? error.decision.reasonCode : "EXECUTION_FAILED";
+      log("remote_mcp_blocked", { reason });
+      return { isError: true, content: [{ type: "text", text: `MCPShield blocked this call: ${reason}` }] };
+    }
+  });
+  return server;
+}
+
+export function createGatewayHttpServer(options = {}) {
+  const handler = createMcpHandler(() => createRemoteMcpServer(options), {
+    onerror: (error) => log("remote_mcp_error", { message: error.message }),
+  });
+  const mcp = toNodeHandler(handler);
+  const server = createServer((request, response) => {
+    response.setHeader("cache-control", "no-store");
+    const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+    if (pathname === "/mcp") {
+      void Promise.resolve(mcp(request, response)).catch((error) => {
+        log("remote_mcp_error", { message: error.message });
+        if (!response.headersSent) { response.writeHead(500); response.end(); }
+        else response.destroy(error);
+      });
+      return;
+    }
+    if (request.method === "GET" && pathname === "/health") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ schemaVersion: "1.0.0", status: "ok", mode: (options.mode ?? process.env.MCPSHIELD_MODE ?? "live").toUpperCase(), mcpEndpoint: "/mcp" }));
+      return;
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "not_found" }));
+  });
+  server.once("close", () => void handler.close());
+  return server;
+}
+
 async function stdio() {
   const artifactDir = process.env.MCPSHIELD_ARTIFACT_DIR;
   if (!artifactDir) throw new Error("MCPSHIELD_ARTIFACT_DIR is required");
@@ -280,13 +347,15 @@ async function stdio() {
 }
 
 function serve() {
-  const port = Number(process.env.PORT ?? 8787);
+  const port = Number(process.env.MCPSHIELD_GATEWAY_PORT ?? process.env.PORT ?? 8787);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be valid");
-  createServer((request, response) => {
-    response.setHeader("cache-control", "no-store");
-    if (request.method === "GET" && request.url === "/health") { response.writeHead(200, { "content-type": "application/json" }); return response.end(JSON.stringify({ schemaVersion: "1.0.0", status: "ok", mode: (process.env.MCPSHIELD_MODE ?? "live").toUpperCase() })); }
-    response.writeHead(404, { "content-type": "application/json" }); response.end(JSON.stringify({ error: "not_found" }));
-  }).listen(port, "0.0.0.0", () => log("gateway_ready", { port }));
+  const host = process.env.MCPSHIELD_GATEWAY_HOST ?? "0.0.0.0";
+  createGatewayHttpServer({
+    artifactDir: process.env.MCPSHIELD_ARTIFACT_DIR ?? process.env.MCPSHIELD_PROBE_ARTIFACT,
+    mode: process.env.MCPSHIELD_MODE ?? "live",
+    apiBaseUrl: process.env.MCPSHIELD_API_URL,
+    replayFile: process.env.MCPSHIELD_REPLAY_FILE,
+  }).listen(port, host, () => log("gateway_ready", { host, port, mcpEndpoint: "/mcp" }));
 }
 
 function parseRun(args) {
