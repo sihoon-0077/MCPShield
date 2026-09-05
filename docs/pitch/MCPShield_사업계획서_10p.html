@@ -811,8 +811,8 @@
 
     .fusion-story {
       display: grid;
-      grid-template-columns: 1.5fr .78fr;
-      gap: 28px;
+      grid-template-columns: .92fr 1.08fr;
+      gap: 30px;
       align-items: stretch;
     }
 
@@ -821,28 +821,32 @@
     .fusion-visual img {
       display: block;
       width: 100%;
-      height: 302px;
+      height: 278px;
       object-fit: cover;
       object-position: center;
       border: 1px solid #e4e7ec;
     }
 
-    .fusion-notes {
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
+    .fusion-visual figcaption {
+      margin-top: 13px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .trust-answer {
+      padding-left: 28px;
       border-left: 1px solid var(--line);
-      padding-left: 26px;
     }
 
-    .fusion-note + .fusion-note {
-      margin-top: 24px;
-      padding-top: 24px;
-      border-top: 1px solid #e4e7ec;
-    }
-
-    .fusion-note h3 { margin-bottom: 8px; font-size: 21px; }
-    .fusion-note p { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.55; }
+    .trust-answer h3 { margin-bottom: 8px; color: var(--cobalt); font-size: 21px; }
+    .trust-answer > p { margin-bottom: 17px; color: var(--muted); font-size: 15px; line-height: 1.5; }
+    .trust-compare th:first-child { width: 25%; }
+    .trust-compare th:nth-child(2) { width: 33%; }
+    .trust-compare th:last-child { color: #175cd3; background: #eff4ff; }
+    .trust-compare td { padding: 9px 10px; font-size: 14px; line-height: 1.3; }
+    .trust-compare td:first-child { color: var(--pine); font-weight: 800; }
+    .trust-compare td:last-child { color: #175cd3; background: #f7f9ff; font-weight: 750; }
 
     .roadmap {
       position: relative;
@@ -1149,24 +1153,27 @@
     </section>
 
     <section class="slide" data-label="AI·블록체인 융합">
-      <div class="kicker">08 · AI × Blockchain</div>
-      <h2>AI가 위험 행동을 찾고,<br /><span class="accent">블록체인이 검증 결과를 모두에게 공유한다</span></h2>
+      <div class="kicker">08 · 왜 블록체인인가</div>
+      <h2>여러 회사가 같은 안전 판정을 믿어야 해서<br /><span class="accent">블록체인에 검증 이력을 남긴다</span></h2>
       <div class="fusion-story">
         <figure class="fusion-visual">
           <img src="assets/ai-blockchain-consensus.png" alt="AI 분석 증거가 세 검증자의 합의를 거쳐 분산 원장에 기록되는 추상 이미지" />
+          <figcaption>AI가 위험 증거를 만들고, 독립 검증자 2명이 같은 결론에 서명하면 모든 Gateway가 그 판정을 직접 확인한다.</figcaption>
         </figure>
-        <div class="fusion-notes">
-          <div class="fusion-note">
-            <h3>AI · 행동 분석</h3>
-            <p>description과 코드의 목적 불일치, 권한과 데이터 범위의 의미 확장을 근거와 함께 찾는다.</p>
-          </div>
-          <div class="fusion-note">
-            <h3>Blockchain · 신뢰 상태</h3>
-            <p>release·policy·report hash를 묶고, 검증자 3명 중 2명의 서명으로 VERIFIED 또는 REVOKED를 확정한다.</p>
-          </div>
+        <div class="trust-answer">
+          <h3>왜 중앙 DB가 아닌가</h3>
+          <p>중앙 DB는 운영 회사가 판정을 바꾸거나 숨기지 않았다고 믿어야 한다. 블록체인은 검증자 서명과 상태 변경 이력을 남겨 각 회사가 직접 확인하게 한다.</p>
+          <table class="trust-compare" aria-label="중앙 데이터베이스와 블록체인 비교">
+            <thead><tr><th>구분</th><th>중앙 DB</th><th>블록체인</th></tr></thead>
+            <tbody>
+              <tr><td>판정 주체</td><td>한 운영사</td><td>검증자 3명 중 2명</td></tr>
+              <tr><td>확인 방법</td><td>운영사 API를 신뢰</td><td>서명과 이력을 직접 확인</td></tr>
+              <tr><td>적합한 범위</td><td>한 조직 내부</td><td>여러 개발사와 고객사</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
-      <div class="fusion-rule"><em>AI는 증거를 만들고, 블록체인은 판정을 공유한다.</em> Gateway는 그 상태를 실행 직전에 강제한다.</div>
+      <div class="fusion-rule"><em>한 조직 내부라면 DB로 충분하다.</em> 여러 조직이 판정을 공동으로 사용하기 때문에 블록체인이 필요하다.</div>
       <div class="footer"><span>MCPShield · 블록체인 및 AI 융합 적용</span><b>08 / 10</b></div>
     </section>
 
