@@ -37,6 +37,21 @@
     a { color: inherit; text-decoration: none; }
     svg { display: block; }
     .container { width: min(1160px, calc(100% - 40px)); margin: 0 auto; }
+    .announcement {
+      min-height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 8px 20px;
+      background: #101828;
+      color: #d0d5dd;
+      font-size: 12px;
+      font-weight: 650;
+      text-align: center;
+    }
+    .announcement strong { color: #fff; }
+    .announcement span { color: #a5b4fc; }
     .nav {
       position: sticky;
       z-index: 20;
@@ -64,7 +79,11 @@
       box-shadow: 0 6px 14px rgba(16, 24, 40, .18);
     }
     .brand-mark svg { width: 18px; height: 18px; }
-    .nav-links { display: flex; align-items: center; gap: 30px; color: #475467; font-size: 14px; font-weight: 650; }
+    .nav-links { display: flex; align-items: center; gap: 28px; color: #475467; font-size: 14px; font-weight: 650; }
+    .nav-links a:hover, .footer-links a:hover { color: var(--brand); }
+    .nav-actions { display: flex; align-items: center; gap: 11px; font-size: 13px; font-weight: 700; }
+    .nav-github { padding: 8px 5px; color: #475467; }
+    .nav-button { padding: 9px 15px; border-radius: 9px; background: var(--ink); color: #fff; }
     .live { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; border: 1px solid #d0d5dd; border-radius: 999px; color: #344054; background: #fff; }
     .live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #12b76a; box-shadow: 0 0 0 4px #d1fadf; }
     .hero {
@@ -107,6 +126,22 @@
     }
     .accent { color: var(--brand); }
     .hero-copy { max-width: 615px; margin: 26px 0 32px; color: #475467; font-size: 19px; line-height: 1.72; letter-spacing: -.015em; }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 22px;
+      padding: 7px 11px;
+      border: 1px solid #c7d2fe;
+      border-radius: 999px;
+      background: #f5f7ff;
+      color: #4338ca;
+      font-size: 11px;
+      line-height: 1;
+      font-weight: 850;
+      letter-spacing: .05em;
+    }
+    .hero-badge i { width: 7px; height: 7px; border-radius: 50%; background: #12b76a; box-shadow: 0 0 0 4px #d1fadf; }
     .actions { display: flex; flex-wrap: wrap; gap: 12px; }
     .button {
       min-height: 50px;
@@ -126,6 +161,9 @@
     .button.secondary { border-color: #d0d5dd; background: #fff; color: #344054; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
     .button svg { width: 17px; height: 17px; }
     .hero-note { margin-top: 18px; color: #98a2b3; font-size: 13px; }
+    .hero-facts { display: flex; flex-wrap: wrap; gap: 14px 22px; margin-top: 24px; color: #475467; font-size: 12px; font-weight: 700; }
+    .hero-facts span { display: inline-flex; align-items: center; gap: 7px; }
+    .hero-facts span::before { content: "✓"; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; background: var(--green-soft); color: var(--green); font-size: 10px; }
     .console-shell {
       position: relative;
       padding: 12px;
@@ -303,13 +341,46 @@
     .preview-note { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px 0 0; color: #98a2b3; font-size: 12px; }
     .preview-note span { display: inline-flex; align-items: center; gap: 7px; }
     .preview-note span::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #12b76a; }
-    footer { padding: 34px 0 44px; border-top: 1px solid var(--line); }
-    .footer-inner { display: flex; align-items: center; justify-content: space-between; gap: 24px; color: #98a2b3; font-size: 12px; }
-    .footer-brand { color: #475467; font-weight: 800; }
+    .faq { padding-top: 86px; }
+    .faq-layout { display: grid; grid-template-columns: .75fr 1.25fr; gap: 80px; }
+    .faq-layout h2 { margin: 0; font-size: clamp(32px, 3.5vw, 46px); line-height: 1.2; letter-spacing: -.045em; }
+    .faq-layout > div > p { color: var(--muted); }
+    .faq-list { border-top: 1px solid var(--line); }
+    details { border-bottom: 1px solid var(--line); }
+    summary { position: relative; padding: 23px 44px 23px 0; cursor: pointer; font-size: 16px; font-weight: 750; list-style: none; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; position: absolute; right: 4px; top: 20px; color: var(--brand); font-size: 22px; font-weight: 400; }
+    details[open] summary::after { content: "–"; }
+    details p { max-width: 670px; margin: -4px 44px 22px 0; color: var(--muted); font-size: 14px; line-height: 1.75; }
+    .closing { padding: 20px 0 96px; }
+    .closing-card {
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 36px;
+      padding: 48px 52px;
+      border-radius: 20px;
+      background: linear-gradient(130deg, #4f46e5, #312e81);
+      color: #fff;
+    }
+    .closing-card::after { content: ""; position: absolute; right: -80px; top: -160px; width: 360px; height: 360px; border: 1px solid rgba(255,255,255,.15); border-radius: 50%; }
+    .closing-card h2 { position: relative; z-index: 1; max-width: 650px; margin: 0; font-size: clamp(28px, 3.5vw, 42px); line-height: 1.25; letter-spacing: -.04em; }
+    .closing-card p { position: relative; z-index: 1; margin: 10px 0 0; color: #dbeafe; }
+    .closing-card .button { position: relative; z-index: 1; flex: 0 0 auto; border-color: #fff; background: #fff; color: #312e81; }
+    footer { padding: 54px 0 34px; border-top: 1px solid var(--line); background: #fbfcfe; }
+    .footer-grid { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 60px; padding-bottom: 46px; }
+    .footer-about p { max-width: 370px; margin: 17px 0 0; color: #667085; font-size: 13px; line-height: 1.75; }
+    .footer-heading { display: block; margin-bottom: 15px; color: #344054; font-size: 12px; font-weight: 850; letter-spacing: .05em; }
+    .footer-links { display: grid; gap: 10px; color: #667085; font-size: 13px; }
+    .footer-bottom { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding-top: 26px; border-top: 1px solid var(--line); color: #98a2b3; font-size: 11px; }
+    .footer-brand { color: #101828; font-weight: 800; }
     :focus-visible { outline: 3px solid rgba(99, 102, 241, .38); outline-offset: 3px; }
 
     @media (max-width: 900px) {
-      .nav-links a:not(.live) { display: none; }
+      .nav-links { display: none; }
+      .nav-github { display: none; }
       .hero { padding-top: 68px; }
       .hero-grid, .workflow, .connect-panel { grid-template-columns: 1fr; }
       .hero-grid { gap: 52px; }
@@ -320,10 +391,15 @@
       .scenario-cell { grid-column: 1 / -1; padding: 16px 0 0; border-left: 0; border-top: 1px solid var(--line); }
       .workflow-copy { position: static; }
       .connect-copy, .setup { padding: 42px; }
+      .faq-layout { grid-template-columns: 1fr; gap: 34px; }
+      .closing-card { align-items: flex-start; flex-direction: column; }
+      .footer-grid { grid-template-columns: 1.5fr 1fr 1fr; gap: 28px; }
     }
     @media (max-width: 560px) {
       .container { width: min(100% - 28px, 1160px); }
       .nav-inner { min-height: 60px; }
+      .brand { font-size: 17px; }
+      .nav-button { padding: 8px 11px; font-size: 12px; }
       .live { padding: 7px 9px; font-size: 11px; }
       .hero { padding: 54px 0 60px; }
       h1 { font-size: 42px; }
@@ -336,7 +412,10 @@
       .scenario { padding: 20px; }
       .result-pair { grid-template-columns: 1fr; }
       .connect-copy, .setup { padding: 32px 24px; }
-      .footer-inner, .preview-note { align-items: flex-start; flex-direction: column; }
+      .closing-card { padding: 34px 25px; }
+      .footer-grid { grid-template-columns: 1fr 1fr; }
+      .footer-about { grid-column: 1 / -1; }
+      .footer-bottom, .preview-note { align-items: flex-start; flex-direction: column; }
     }
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
@@ -345,6 +424,7 @@
   </style>
 </head>
 <body>
+  <a class="announcement" href="#connect"><strong>MCPShield Public Preview</strong><span>ChatGPT에서 지금 바로 연결할 수 있습니다 →</span></a>
   <header class="nav">
     <div class="container nav-inner">
       <a class="brand" href="#top" aria-label="MCPShield 홈">
@@ -356,9 +436,13 @@
       <nav class="nav-links" aria-label="주요 메뉴">
         <a href="#product">제품</a>
         <a href="#use-cases">사용 사례</a>
-        <a href="#connect">연결 방법</a>
-        <span class="live">PUBLIC MCP LIVE</span>
+        <a href="#how">작동 방식</a>
+        <a href="#connect">개발자</a>
       </nav>
+      <div class="nav-actions">
+        <a class="nav-github" href="https://github.com/sihoon-0077/MCPShield" target="_blank" rel="noreferrer">GitHub</a>
+        <a class="nav-button" href="/try">무료 체험</a>
+      </div>
     </div>
   </header>
 
@@ -366,7 +450,7 @@
     <section class="hero">
       <div class="container hero-grid">
         <div>
-          <span class="eyebrow">AI TOOL SUPPLY-CHAIN SECURITY</span>
+          <span class="hero-badge"><i></i>PUBLIC BETA · LIVE MCP ENDPOINT</span>
           <h1>AI가 도구를 실행하기 전,<br><span class="accent">신뢰부터 확인합니다.</span></h1>
           <p class="hero-copy">메일·파일·CRM MCP가 업데이트되어도 검증된 버전만 실행합니다. 위험 판정이 난 버전은 프로세스가 시작되기 전에 Gateway가 멈춥니다.</p>
           <div class="actions">
@@ -377,6 +461,7 @@
             <a class="button secondary" href="#connect">ChatGPT 연결 방법</a>
           </div>
           <p class="hero-note">설치 · 지갑 · API 키 없이 가짜 데이터로 안전하게 체험할 수 있습니다.</p>
+          <div class="hero-facts"><span>2-of-3 독립 검증</span><span>실행 전 강제 차단</span><span>변경 이력 보존</span></div>
         </div>
 
         <div class="console-shell" aria-label="MCPShield 검증 결과 예시">
@@ -476,7 +561,7 @@
       </div>
     </section>
 
-    <section>
+    <section id="how">
       <div class="container workflow">
         <div class="workflow-copy">
           <span class="eyebrow">HOW IT WORKS</span>
@@ -531,13 +616,71 @@
         <div class="preview-note"><span>현재 mail-mcp@1.0.0 VERIFIED</span><p>Hackathon product preview · Synthetic data only</p></div>
       </div>
     </section>
+
+    <section class="faq" id="faq">
+      <div class="container faq-layout">
+        <div>
+          <span class="eyebrow">FAQ</span>
+          <h2>도입 전에<br>궁금한 점</h2>
+          <p>데모와 현재 프로토타입의 범위를 정확하게 안내합니다.</p>
+        </div>
+        <div class="faq-list">
+          <details open>
+            <summary>MCPShield는 기존 MCP 서버를 대신하나요?</summary>
+            <p>아닙니다. 기존 MCP 서버 앞에 Gateway로 놓여, 현재 실행하려는 릴리스가 검증된 상태인지 확인한 뒤 연결을 허용하거나 차단합니다.</p>
+          </details>
+          <details>
+            <summary>왜 일반 데이터베이스 대신 블록체인을 사용하나요?</summary>
+            <p>여러 검증자의 판정과 취소 이력을 한 운영자가 임의로 고치기 어렵게 만들기 위해서입니다. 민감한 원문은 올리지 않고 릴리스 지문과 판정 근거만 기록합니다.</p>
+          </details>
+          <details>
+            <summary>지금 실제 ChatGPT에 연결할 수 있나요?</summary>
+            <p>네. 위 공개 주소를 원격 MCP 앱으로 등록하면 읽기 전용 list_messages 도구를 사용할 수 있습니다. 현재 공개 데모는 가짜 메일만 반환합니다.</p>
+          </details>
+          <details>
+            <summary>현재 어디까지 구현되어 있나요?</summary>
+            <p>정적 스캔, AI 구조화 분석, 샌드박스 관찰, 2-of-3 검증, 온체인 상태, Gateway 실행 전 차단과 공개 MCP 연결까지 동작하는 해커톤 프로토타입입니다.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <section class="closing">
+      <div class="container">
+        <div class="closing-card">
+          <div>
+            <h2>AI 도구 보안, 설명보다 직접 확인해 보세요.</h2>
+            <p>정상 릴리스는 실행하고 위험한 업데이트는 시작 전에 차단합니다.</p>
+          </div>
+          <a class="button" href="/try">공개 데모 시작하기</a>
+        </div>
+      </div>
+    </section>
   </main>
 
   <footer>
-    <div class="container footer-inner">
-      <span class="footer-brand">MCPShield</span>
-      <span>AI가 도구를 믿기 전에, 도구를 먼저 검증합니다.</span>
-      <span>© 2026 MCPShield</span>
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-about">
+          <a class="brand" href="#top">
+            <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 5 6v5c0 4.5 2.8 8.1 7 10 4.2-1.9 7-5.5 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg></span>
+            MCPShield
+          </a>
+          <p>AI가 연결한 업무 도구의 업데이트를 검증하고, 위험한 릴리스를 실제 실행 전에 차단합니다.</p>
+        </div>
+        <div>
+          <span class="footer-heading">PRODUCT</span>
+          <div class="footer-links"><a href="#product">제품 소개</a><a href="#use-cases">사용 사례</a><a href="#how">작동 방식</a><a href="/try">라이브 데모</a></div>
+        </div>
+        <div>
+          <span class="footer-heading">DEVELOPERS</span>
+          <div class="footer-links"><a href="#connect">ChatGPT 연결</a><a href="https://github.com/sihoon-0077/MCPShield" target="_blank" rel="noreferrer">GitHub</a><a href="#faq">자주 묻는 질문</a></div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 MCPShield</span>
+        <span>Hackathon product preview · Synthetic data only</span>
+      </div>
     </div>
   </footer>
 </body>

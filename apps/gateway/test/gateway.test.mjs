@@ -108,6 +108,8 @@ test("browser GET renders the MCPShield product page", async () => {
     const html = await response.text();
     assert.match(html, /AI가 도구를 실행하기 전/);
     assert.match(html, /href="\/try"/);
+    assert.match(html, /MCPShield Public Preview/);
+    assert.match(html, /도입 전에/);
     assert.match(html, /mcpshield-judge-lab-production\.up\.railway\.app\/mcp/);
   } finally { await closeServer(server); }
 });
