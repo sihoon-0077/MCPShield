@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { Transform } from "node:stream";
@@ -13,6 +14,7 @@ const SOURCES = new Set(["LIVE", "MOCK", "REPLAY"]);
 const REASONS = new Set(["RELEASE_VERIFIED", "RELEASE_UNVERIFIED", "RELEASE_QUARANTINED", "RELEASE_REVOKED", "DIGEST_MISMATCH", "STATUS_UNAVAILABLE"]);
 const DECISION_KEYS = new Set(["schemaVersion", "releaseId", "decision", "releaseStatus", "reasonCode", "checkedAt", "source"]);
 const RUNTIME_GUARD = fileURLToPath(new URL("./runtime-guard.cjs", import.meta.url));
+const MCP_LANDING_PAGE = readFileSync(new URL("./mcp-landing.html", import.meta.url));
 
 export class AdmissionBlockedError extends Error {
   constructor(decision) {
@@ -321,6 +323,16 @@ export function createGatewayHttpServer(options = {}) {
     response.setHeader("cache-control", "no-store");
     const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
     if (pathname === "/mcp") {
+      if (request.method === "GET" && request.headers.accept?.includes("text/html")) {
+        response.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+        });
+        response.end(MCP_LANDING_PAGE);
+        return;
+      }
       void Promise.resolve(mcp(request, response)).catch((error) => {
         log("remote_mcp_error", { message: error.message });
         if (!response.headersSent) { response.writeHead(500); response.end(); }

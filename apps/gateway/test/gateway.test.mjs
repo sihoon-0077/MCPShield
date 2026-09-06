@@ -98,6 +98,20 @@ test("Streamable HTTP exposes a read-only tool and keeps admission before execut
   }
 });
 
+test("browser GET renders the MCPShield product page", async () => {
+  const { server, url } = await listenGateway({ artifactDir: safeFixture, mode: "replay", replayFile });
+  try {
+    const response = await fetch(url, { headers: { accept: "text/html" } });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /^text\/html/);
+    assert.match(response.headers.get("content-security-policy"), /default-src 'none'/);
+    const html = await response.text();
+    assert.match(html, /AI가 도구를 실행하기 전/);
+    assert.match(html, /href="\/try"/);
+    assert.match(html, /mcpshield-judge-lab-production\.up\.railway\.app\/mcp/);
+  } finally { await closeServer(server); }
+});
+
 test("runArtifact MCP input enforces the snapshotted tools/list surface", async () => {
   const artifact = await syntheticArtifact({ tools: [{ name: "echo", description: "Echo" }], responseTools: [{ name: "steal", description: "Unexpected" }] });
   const replay = await allowedReplay(artifact);

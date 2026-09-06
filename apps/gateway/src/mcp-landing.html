@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="MCPShield는 AI가 연결한 도구의 업데이트를 검증하고, 위험한 버전을 실행 전에 차단합니다.">
+  <title>MCPShield — AI 도구를 위한 실행 전 보안</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #101828;
+      --muted: #667085;
+      --line: #e4e7ec;
+      --soft: #f8fafc;
+      --brand: #5b5bd6;
+      --brand-dark: #3730a3;
+      --brand-soft: #eef2ff;
+      --green: #067647;
+      --green-soft: #ecfdf3;
+      --red: #b42318;
+      --red-soft: #fef3f2;
+      --shadow: 0 24px 70px rgba(16, 24, 40, .11);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: #fff;
+      color: var(--ink);
+      font-family: Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", Inter, system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.65;
+      word-break: keep-all;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    svg { display: block; }
+    .container { width: min(1160px, calc(100% - 40px)); margin: 0 auto; }
+    .nav {
+      position: sticky;
+      z-index: 20;
+      top: 0;
+      border-bottom: 1px solid rgba(228, 231, 236, .82);
+      background: rgba(255, 255, 255, .92);
+      backdrop-filter: blur(14px);
+    }
+    .nav-inner {
+      min-height: 68px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    .brand { display: inline-flex; align-items: center; gap: 11px; font-size: 19px; font-weight: 800; letter-spacing: -.03em; }
+    .brand-mark {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: var(--ink);
+      color: #fff;
+      box-shadow: 0 6px 14px rgba(16, 24, 40, .18);
+    }
+    .brand-mark svg { width: 18px; height: 18px; }
+    .nav-links { display: flex; align-items: center; gap: 30px; color: #475467; font-size: 14px; font-weight: 650; }
+    .live { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; border: 1px solid #d0d5dd; border-radius: 999px; color: #344054; background: #fff; }
+    .live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #12b76a; box-shadow: 0 0 0 4px #d1fadf; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 92px 0 76px;
+      border-bottom: 1px solid var(--line);
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      width: 640px;
+      height: 640px;
+      right: -260px;
+      top: -320px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(99, 102, 241, .13), rgba(99, 102, 241, 0) 68%);
+      pointer-events: none;
+    }
+    .hero-grid { display: grid; grid-template-columns: 1.03fr .97fr; gap: 72px; align-items: center; }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 22px;
+      color: var(--brand-dark);
+      font-size: 12px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    .eyebrow::before { content: ""; width: 22px; height: 2px; background: #6366f1; }
+    h1 {
+      max-width: 700px;
+      margin: 0;
+      font-size: clamp(42px, 5.3vw, 70px);
+      line-height: 1.08;
+      letter-spacing: -.055em;
+    }
+    .accent { color: var(--brand); }
+    .hero-copy { max-width: 615px; margin: 26px 0 32px; color: #475467; font-size: 19px; line-height: 1.72; letter-spacing: -.015em; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+    .button {
+      min-height: 50px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      padding: 0 21px;
+      border: 1px solid var(--ink);
+      border-radius: 10px;
+      background: var(--ink);
+      color: #fff;
+      font-weight: 750;
+      transition: transform .2s ease, box-shadow .2s ease;
+    }
+    .button:hover { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(16, 24, 40, .18); }
+    .button.secondary { border-color: #d0d5dd; background: #fff; color: #344054; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+    .button svg { width: 17px; height: 17px; }
+    .hero-note { margin-top: 18px; color: #98a2b3; font-size: 13px; }
+    .console-shell {
+      position: relative;
+      padding: 12px;
+      border: 1px solid #eaecf0;
+      border-radius: 22px;
+      background: linear-gradient(145deg, #f8fafc, #eef2ff);
+      box-shadow: var(--shadow);
+    }
+    .console {
+      overflow: hidden;
+      border: 1px solid #d0d5dd;
+      border-radius: 14px;
+      background: #fff;
+    }
+    .console-top {
+      min-height: 50px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid #eaecf0;
+      color: #667085;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .dots { display: flex; gap: 6px; }
+    .dots i { width: 7px; height: 7px; border-radius: 50%; background: #d0d5dd; }
+    .console-body { padding: 24px; }
+    .release-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 20px; border-bottom: 1px solid #eaecf0; }
+    .release-label { color: #98a2b3; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
+    .release-name { margin-top: 4px; font: 700 17px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: -.04em; }
+    .verified { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: var(--green-soft); color: var(--green); font-size: 11px; font-weight: 850; letter-spacing: .04em; }
+    .verified svg { width: 13px; height: 13px; }
+    .checks { display: grid; gap: 12px; padding: 20px 0; }
+    .check { display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 10px; font-size: 13px; }
+    .check-icon { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 8px; background: var(--brand-soft); color: var(--brand); font-weight: 900; }
+    .check small { color: #98a2b3; }
+    .check strong { color: #344054; font-size: 12px; }
+    .decision {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 17px 18px;
+      border: 1px solid #abefc6;
+      border-radius: 11px;
+      background: var(--green-soft);
+    }
+    .decision span { color: #087443; font-size: 12px; font-weight: 700; }
+    .decision strong { color: #05603a; font-size: 19px; letter-spacing: .04em; }
+    .endpoint-chip {
+      position: absolute;
+      right: -18px;
+      bottom: -18px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 11px 15px;
+      border: 1px solid #d0d5dd;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 10px 30px rgba(16, 24, 40, .12);
+      color: #344054;
+      font: 700 11px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    .endpoint-chip i { width: 8px; height: 8px; border-radius: 50%; background: #12b76a; box-shadow: 0 0 0 4px #d1fadf; }
+    .proof { border-bottom: 1px solid var(--line); }
+    .proof-inner { min-height: 80px; display: grid; grid-template-columns: 1.2fr repeat(4, 1fr); align-items: center; gap: 28px; }
+    .proof-label { color: #98a2b3; font-size: 12px; font-weight: 800; letter-spacing: .07em; }
+    .proof-item { display: flex; align-items: center; gap: 9px; color: #475467; font-size: 13px; font-weight: 700; }
+    .proof-item svg { width: 19px; height: 19px; color: #667085; }
+    section { padding: 96px 0; }
+    .section-head { max-width: 720px; margin-bottom: 48px; }
+    .section-head h2 { margin: 0; font-size: clamp(32px, 3.5vw, 46px); line-height: 1.2; letter-spacing: -.045em; }
+    .section-head p { margin: 16px 0 0; color: var(--muted); font-size: 17px; }
+    .promise-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+    .promise {
+      min-height: 255px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #fff;
+      transition: border-color .2s ease, transform .2s ease, box-shadow .2s ease;
+    }
+    .promise:hover { transform: translateY(-3px); border-color: #c7d2fe; box-shadow: 0 16px 36px rgba(16, 24, 40, .07); }
+    .icon-box { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; background: var(--brand-soft); color: var(--brand); }
+    .icon-box svg { width: 22px; height: 22px; }
+    .promise h3 { margin: 28px 0 10px; font-size: 20px; letter-spacing: -.025em; }
+    .promise p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.75; }
+    .scenarios { background: var(--soft); border-top: 1px solid #eef2f6; border-bottom: 1px solid #eef2f6; }
+    .scenario-list { display: grid; gap: 14px; }
+    .scenario {
+      display: grid;
+      grid-template-columns: 72px 1.05fr 1.35fr 1.35fr;
+      align-items: center;
+      gap: 24px;
+      padding: 22px 26px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .03);
+    }
+    .scenario-visual { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 14px; background: var(--brand-soft); color: var(--brand); }
+    .scenario-visual svg { width: 26px; height: 26px; }
+    .scenario-title strong { display: block; font-size: 16px; }
+    .scenario-title span { color: #98a2b3; font-size: 12px; font-weight: 700; }
+    .scenario-cell { padding-left: 22px; border-left: 1px solid var(--line); }
+    .scenario-cell small { display: block; margin-bottom: 5px; color: #98a2b3; font-size: 10px; font-weight: 850; letter-spacing: .09em; }
+    .scenario-cell p { margin: 0; color: #475467; font-size: 13px; line-height: 1.6; }
+    .scenario-cell.protect p { color: #344054; font-weight: 700; }
+    .workflow { display: grid; grid-template-columns: .82fr 1.18fr; gap: 70px; align-items: start; }
+    .workflow-copy { position: sticky; top: 110px; }
+    .workflow-copy h2 { margin: 0; font-size: clamp(32px, 3.5vw, 46px); line-height: 1.2; letter-spacing: -.045em; }
+    .workflow-copy > p { margin: 18px 0 28px; color: var(--muted); }
+    .chain-note { padding: 18px; border-left: 3px solid var(--brand); background: var(--brand-soft); color: #4338ca; font-size: 13px; line-height: 1.7; }
+    .chain-note strong { display: block; margin-bottom: 3px; color: #312e81; }
+    .steps { display: grid; }
+    .step { position: relative; display: grid; grid-template-columns: 50px 1fr; gap: 18px; padding: 0 0 38px; }
+    .step:not(:last-child)::before { content: ""; position: absolute; left: 24px; top: 50px; bottom: 0; width: 1px; background: #d0d5dd; }
+    .step-number { width: 50px; height: 50px; display: grid; place-items: center; z-index: 1; border: 1px solid #d0d5dd; border-radius: 50%; background: #fff; color: var(--brand); font-size: 12px; font-weight: 900; }
+    .step-card { padding: 24px 26px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+    .step-card h3 { margin: 0 0 7px; font-size: 18px; }
+    .step-card p { margin: 0; color: var(--muted); font-size: 14px; }
+    .result-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+    .result { padding: 13px 14px; border-radius: 9px; font-size: 12px; font-weight: 800; }
+    .result.allow { background: var(--green-soft); color: var(--green); }
+    .result.block { background: var(--red-soft); color: var(--red); }
+    .connect { padding-top: 22px; }
+    .connect-panel {
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border: 1px solid #d0d5dd;
+      border-radius: 22px;
+      background: var(--ink);
+      color: #fff;
+      box-shadow: 0 28px 80px rgba(16, 24, 40, .17);
+    }
+    .connect-copy { padding: 56px; }
+    .connect-copy .eyebrow { color: #c7d2fe; }
+    .connect-copy .eyebrow::before { background: #818cf8; }
+    .connect-copy h2 { margin: 0; font-size: clamp(31px, 3.3vw, 45px); line-height: 1.18; letter-spacing: -.045em; }
+    .connect-copy > p { margin: 18px 0 28px; color: #cbd5e1; }
+    .endpoint {
+      overflow-x: auto;
+      padding: 15px 17px;
+      border: 1px solid #344054;
+      border-radius: 10px;
+      background: #0c111d;
+      color: #a5b4fc;
+      font: 600 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+      white-space: nowrap;
+    }
+    .connect-copy .button { margin-top: 16px; border-color: #fff; background: #fff; color: var(--ink); }
+    .setup { padding: 48px 50px; background: #171f2f; }
+    .setup > span { color: #98a2b3; font-size: 11px; font-weight: 800; letter-spacing: .1em; }
+    .setup ol { display: grid; gap: 25px; margin: 24px 0 0; padding: 0; list-style: none; counter-reset: setup; }
+    .setup li { position: relative; padding-left: 44px; color: #cbd5e1; font-size: 14px; counter-increment: setup; }
+    .setup li::before {
+      content: counter(setup);
+      position: absolute;
+      left: 0;
+      top: -1px;
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #475467;
+      border-radius: 8px;
+      color: #c7d2fe;
+      font-size: 11px;
+      font-weight: 850;
+    }
+    .setup strong { display: block; margin-bottom: 3px; color: #fff; }
+    .preview-note { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px 0 0; color: #98a2b3; font-size: 12px; }
+    .preview-note span { display: inline-flex; align-items: center; gap: 7px; }
+    .preview-note span::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #12b76a; }
+    footer { padding: 34px 0 44px; border-top: 1px solid var(--line); }
+    .footer-inner { display: flex; align-items: center; justify-content: space-between; gap: 24px; color: #98a2b3; font-size: 12px; }
+    .footer-brand { color: #475467; font-weight: 800; }
+    :focus-visible { outline: 3px solid rgba(99, 102, 241, .38); outline-offset: 3px; }
+
+    @media (max-width: 900px) {
+      .nav-links a:not(.live) { display: none; }
+      .hero { padding-top: 68px; }
+      .hero-grid, .workflow, .connect-panel { grid-template-columns: 1fr; }
+      .hero-grid { gap: 52px; }
+      .proof-inner { grid-template-columns: repeat(2, 1fr); padding: 22px 0; }
+      .proof-label { grid-column: 1 / -1; }
+      .promise-grid { grid-template-columns: 1fr; }
+      .scenario { grid-template-columns: 56px 1fr; }
+      .scenario-cell { grid-column: 1 / -1; padding: 16px 0 0; border-left: 0; border-top: 1px solid var(--line); }
+      .workflow-copy { position: static; }
+      .connect-copy, .setup { padding: 42px; }
+    }
+    @media (max-width: 560px) {
+      .container { width: min(100% - 28px, 1160px); }
+      .nav-inner { min-height: 60px; }
+      .live { padding: 7px 9px; font-size: 11px; }
+      .hero { padding: 54px 0 60px; }
+      h1 { font-size: 42px; }
+      .hero-copy { font-size: 17px; }
+      .button { width: 100%; }
+      .console-body { padding: 19px; }
+      .endpoint-chip { position: static; margin-top: 12px; justify-content: center; }
+      .proof-inner { grid-template-columns: 1fr; gap: 16px; }
+      section { padding: 72px 0; }
+      .scenario { padding: 20px; }
+      .result-pair { grid-template-columns: 1fr; }
+      .connect-copy, .setup { padding: 32px 24px; }
+      .footer-inner, .preview-note { align-items: flex-start; flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="#top" aria-label="MCPShield 홈">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 5 6v5c0 4.5 2.8 8.1 7 10 4.2-1.9 7-5.5 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg>
+        </span>
+        MCPShield
+      </a>
+      <nav class="nav-links" aria-label="주요 메뉴">
+        <a href="#product">제품</a>
+        <a href="#use-cases">사용 사례</a>
+        <a href="#connect">연결 방법</a>
+        <span class="live">PUBLIC MCP LIVE</span>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <span class="eyebrow">AI TOOL SUPPLY-CHAIN SECURITY</span>
+          <h1>AI가 도구를 실행하기 전,<br><span class="accent">신뢰부터 확인합니다.</span></h1>
+          <p class="hero-copy">메일·파일·CRM MCP가 업데이트되어도 검증된 버전만 실행합니다. 위험 판정이 난 버전은 프로세스가 시작되기 전에 Gateway가 멈춥니다.</p>
+          <div class="actions">
+            <a class="button" href="/try">
+              2분 데모 체험
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            </a>
+            <a class="button secondary" href="#connect">ChatGPT 연결 방법</a>
+          </div>
+          <p class="hero-note">설치 · 지갑 · API 키 없이 가짜 데이터로 안전하게 체험할 수 있습니다.</p>
+        </div>
+
+        <div class="console-shell" aria-label="MCPShield 검증 결과 예시">
+          <div class="console">
+            <div class="console-top">
+              <div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
+              <span>MCPShield / Release Control</span>
+            </div>
+            <div class="console-body">
+              <div class="release-row">
+                <div>
+                  <div class="release-label">RELEASE</div>
+                  <div class="release-name">mail-mcp@1.0.0</div>
+                </div>
+                <span class="verified">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg>
+                  VERIFIED
+                </span>
+              </div>
+              <div class="checks">
+                <div class="check"><span class="check-icon">1</span><span>정적 보안 스캔</span><strong>PASS</strong></div>
+                <div class="check"><span class="check-icon">2</span><span>AI 행동 분석</span><strong>PASS</strong></div>
+                <div class="check"><span class="check-icon">3</span><span>독립 검증자 합의</span><small>2 / 3</small></div>
+              </div>
+              <div class="decision"><span>Gateway decision</span><strong>ALLOW</strong></div>
+            </div>
+          </div>
+          <div class="endpoint-chip"><i></i> REMOTE MCP READY</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="proof">
+      <div class="container proof-inner">
+        <span class="proof-label">BUILT FOR TRUSTED AI OPERATIONS</span>
+        <span class="proof-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12h8M12 8v8"/></svg>MCP 표준 연결</span>
+        <span class="proof-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m12 3 8 4-8 4-8-4 8-4Z"/><path d="m4 12 8 4 8-4M4 17l8 4 8-4"/></svg>온체인 검증 기록</span>
+        <span class="proof-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z"/><path d="m9 12 2 2 4-4"/></svg>실행 전 차단</span>
+        <span class="proof-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 19V8l8-5 8 5v11"/><path d="M8 19v-7h8v7M2 19h20"/></svg>기업용 감사 근거</span>
+      </div>
+    </div>
+
+    <section id="product">
+      <div class="container">
+        <div class="section-head">
+          <span class="eyebrow">WHY MCPSHIELD</span>
+          <h2>AI에게 도구를 연결하는 순간,<br>새로운 보안 경계가 생깁니다.</h2>
+          <p>MCPShield는 도구 설치 이후의 업데이트까지 확인하고, 검증 결과를 실제 실행 허용 여부로 연결합니다.</p>
+        </div>
+        <div class="promise-grid">
+          <article class="promise">
+            <span class="icon-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 2.8 8.1 7 10 4.2-1.9 7-5.5 7-10V6l-7-3Z"/><path d="M9 12h6"/></svg></span>
+            <h3>업데이트마다 다시 검증</h3>
+            <p>이름이 같은 MCP라도 코드와 도구 구성이 바뀌면 새로운 릴리스로 봅니다. 안전했던 과거 판정을 재사용하지 않습니다.</p>
+          </article>
+          <article class="promise">
+            <span class="icon-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="7" cy="8" r="3"/><circle cx="17" cy="8" r="3"/><path d="M2 20c.4-4 2.1-6 5-6s4.6 2 5 6M12 20c.4-4 2.1-6 5-6s4.6 2 5 6"/></svg></span>
+            <h3>2-of-3 독립 판정</h3>
+            <p>하나의 관리자 판단에 의존하지 않습니다. 여러 검증자의 결과를 모아 기준을 통과한 릴리스만 VERIFIED로 확정합니다.</p>
+          </article>
+          <article class="promise">
+            <span class="icon-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 3h12v6a6 6 0 0 1-12 0V3Z"/><path d="M8 21h8M12 15v6M4 6h2M18 6h2"/></svg></span>
+            <h3>실행 전에 차단</h3>
+            <p>경고만 남기지 않습니다. REVOKED 또는 변조된 릴리스는 Gateway가 프로세스를 시작하기 전에 차단합니다.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="scenarios" id="use-cases">
+      <div class="container">
+        <div class="section-head">
+          <span class="eyebrow">WHERE IT WORKS</span>
+          <h2>AI가 실제 업무 도구를 쓰는 곳이라면</h2>
+          <p>직원이 매번 코드를 확인하지 않아도, 업무 흐름 앞단에서 MCP의 행동과 권한을 통제합니다.</p>
+        </div>
+        <div class="scenario-list">
+          <article class="scenario">
+            <span class="scenario-visual"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></svg></span>
+            <div class="scenario-title"><strong>회사 메일 업무</strong><span>메일 MCP</span></div>
+            <div class="scenario-cell"><small>발생 가능한 문제</small><p>업데이트 후 메일 내용이나 비밀값을 외부로 전송</p></div>
+            <div class="scenario-cell protect"><small>MCPSHIELD</small><p>유출 행동을 탐지하고 해당 버전 실행 차단</p></div>
+          </article>
+          <article class="scenario">
+            <span class="scenario-visual"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14"/></svg></span>
+            <div class="scenario-title"><strong>개발 업무</strong><span>파일 · Git · 터미널 MCP</span></div>
+            <div class="scenario-cell"><small>발생 가능한 문제</small><p>프로젝트의 .env 또는 API 키에 몰래 접근</p></div>
+            <div class="scenario-cell protect"><small>MCPSHIELD</small><p>선언하지 않은 파일 접근과 도구 변경 차단</p></div>
+          </article>
+          <article class="scenario">
+            <span class="scenario-visual"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 20v-8a8 8 0 0 1 16 0v8"/><path d="M4 15H2v-3h2M20 15h2v-3h-2M16 20h4"/></svg></span>
+            <div class="scenario-title"><strong>고객지원 업무</strong><span>CRM · DB MCP</span></div>
+            <div class="scenario-cell"><small>발생 가능한 문제</small><p>업무에 필요한 범위보다 많은 고객정보를 조회</p></div>
+            <div class="scenario-cell protect"><small>MCPSHIELD</small><p>과도한 권한과 승인되지 않은 데이터 전송 차단</p></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="container workflow">
+        <div class="workflow-copy">
+          <span class="eyebrow">HOW IT WORKS</span>
+          <h2>검증 결과가<br>실행 허가가 되는 구조</h2>
+          <p>분석 보고서에서 끝나지 않고, 사용자가 도구를 호출하는 바로 그 순간까지 판정을 적용합니다.</p>
+          <div class="chain-note"><strong>왜 블록체인인가요?</strong>검증자들의 판정과 릴리스 상태를 변경이 어려운 공동 기록으로 남겨, 한 운영자가 몰래 결과를 바꾸거나 취소 이력을 지우지 못하게 합니다.</div>
+        </div>
+        <div class="steps">
+          <article class="step">
+            <span class="step-number">01</span>
+            <div class="step-card"><h3>MCP 릴리스 연결</h3><p>코드와 도구 목록을 하나의 고유한 릴리스 지문으로 묶습니다.</p></div>
+          </article>
+          <article class="step">
+            <span class="step-number">02</span>
+            <div class="step-card"><h3>보안 스캔과 AI 분석</h3><p>비밀값 접근, 미신고 외부 통신, 권한 변화 같은 위험 신호를 확인합니다.</p></div>
+          </article>
+          <article class="step">
+            <span class="step-number">03</span>
+            <div class="step-card"><h3>검증자 합의 기록</h3><p>독립 검증자 3명 중 2명 이상이 통과시키면 VERIFIED 상태를 온체인에 기록합니다.</p></div>
+          </article>
+          <article class="step">
+            <span class="step-number">04</span>
+            <div class="step-card">
+              <h3>Gateway가 실행 결정</h3>
+              <p>현재 릴리스 지문과 검증 상태가 모두 맞아야만 실제 MCP 프로세스를 시작합니다.</p>
+              <div class="result-pair"><span class="result allow">VERIFIED → ALLOW</span><span class="result block">REVOKED → BLOCK</span></div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="connect" id="connect">
+      <div class="container">
+        <div class="connect-panel">
+          <div class="connect-copy">
+            <span class="eyebrow">LIVE INTEGRATION</span>
+            <h2>지금 ChatGPT에<br>직접 연결해 보세요.</h2>
+            <p>공개 Streamable HTTP 엔드포인트입니다. 데모 도구는 읽기 전용이며 실제 메일이나 개인 데이터에 접근하지 않습니다.</p>
+            <div class="endpoint">https://mcpshield-judge-lab-production.up.railway.app/mcp</div>
+            <a class="button" href="https://chatgpt.com/plugins" target="_blank" rel="noreferrer">ChatGPT 앱 만들기</a>
+          </div>
+          <div class="setup">
+            <span>3-MINUTE SETUP</span>
+            <ol>
+              <li><strong>개발자 모드 켜기</strong>ChatGPT 설정의 보안 및 로그인에서 활성화합니다.</li>
+              <li><strong>원격 MCP 앱 생성</strong>위 주소를 입력하고 데모용 인증 없음으로 설정합니다.</li>
+              <li><strong>도구 스캔 후 실행</strong>읽기 전용 list_messages를 선택해 가짜 메일을 불러옵니다.</li>
+            </ol>
+          </div>
+        </div>
+        <div class="preview-note"><span>현재 mail-mcp@1.0.0 VERIFIED</span><p>Hackathon product preview · Synthetic data only</p></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container footer-inner">
+      <span class="footer-brand">MCPShield</span>
+      <span>AI가 도구를 믿기 전에, 도구를 먼저 검증합니다.</span>
+      <span>© 2026 MCPShield</span>
+    </div>
+  </footer>
+</body>
+</html>
