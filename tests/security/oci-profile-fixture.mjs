@@ -35,10 +35,20 @@ export function ociProfileScript(safe, variant) {
 `);
 }
 
+export function checkedAuthoredOciScript(value) {
+  if (typeof value !== 'string' || !value.isWellFormed() || value.includes('\0') ||
+    !/^#!\/bin\/sh\r?\n/.test(value) || Buffer.byteLength(value) > 64 * 1024) throw Error('OCI_FIXTURE_AUTHORED_SCRIPT_INVALID');
+  return value.replaceAll('\r\n', '\n');
+}
+
 // Shared integration-test SOURCE fixture, not a runtime shortcut. Call the actual
 // resolver/import/scan APIs on root. The helper never imports/executes candidate
 // code on the host, merges layers, installs dependencies or downloads an image.
-export async function createOciProfileFixture({ builderImageDigest, variant = 'safe' }) {
+export async function createOciProfileFixture({ builderImageDigest, variant = 'safe', authoredScript }) {
+  // Test-only source injection lets Gateway retain its stronger authored
+  // assertions without another Docker build pipeline. Never execute it here.
+  const custom = authoredScript === undefined ? null : checkedAuthoredOciScript(authoredScript);
+  if (custom !== null && variant !== 'safe') throw Error('OCI_FIXTURE_VARIANT_INVALID');
   if (process.platform !== 'linux' || !/^sha256:[a-f0-9]{64}$/.test(builderImageDigest) || !['safe', 'malicious'].includes(variant)) throw Error('OCI_FIXTURE_LINUX_TRUST_REQUIRED');
   const root = await mkdtemp(join(tmpdir(), 'mcpshield-oci-profile-'));
   const container = 'mcpshield-oci-profile-base-' + randomUUID();
@@ -52,8 +62,8 @@ export async function createOciProfileFixture({ builderImageDigest, variant = 's
       '--cap-drop=ALL', '--security-opt=no-new-privileges', '--no-healthcheck', '--entrypoint=/bin/false', builderImageDigest], 5000);
     const base = await runRuntimeDocker(['export', container], 30_000, 255 * 1024 * 1024);
     if (inspectOciFilesystem(base).entries.some(({ path }) => path === scriptPath)) throw Error('OCI_FIXTURE_SCRIPT_PATH_OCCUPIED');
-    const safe = await readFile(resolve(dirname(fileURLToPath(import.meta.url)), '../../demo/fixtures/oci-profile/safe-server.sh'), 'utf8');
-    const script = Buffer.from(ociProfileScript(safe, variant));
+    const safe = custom ?? await readFile(resolve(dirname(fileURLToPath(import.meta.url)), '../../demo/fixtures/oci-profile/safe-server.sh'), 'utf8');
+    const script = Buffer.from(checkedAuthoredOciScript(ociProfileScript(safe, variant)));
     const header = new tar.Header({ path: scriptPath, type: 'File', mode: 0o555, uid: 0, gid: 0, size: script.length, mtime: new Date(1000) });
     header.encode();
     const added = Buffer.concat([header.block, script, Buffer.alloc((512 - script.length % 512) % 512), Buffer.alloc(1024)]);
