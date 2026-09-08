@@ -1,10 +1,11 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { traceHeaders } from "../../../packages/telemetry/index.mjs";
 
 const FIELDS = ["schemaVersion", "keyId", "decision", "releaseId", "artifactDigest", "toolSurfaceHash", "policyHash", "validatorSetVersion", "chainId", "registryContract", "observedBlock", "blockHash", "issuedAt", "expiresAt", "status", "operationClass", "tenantId", "reasonCode", "reportUrl"].sort();
 const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED", "EXPIRED"]);
 const memory = new Map();
+const pending = new Map();
 const canonical = (value) => JSON.stringify(Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]])));
 
 export async function admissionFetch(url, options, fetchImpl, timeoutMs) {
@@ -58,7 +59,20 @@ export function verifyAdmissionSnapshot(envelope, { identity, publicKey, keyId, 
   return value;
 }
 
-export async function getSignedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, admissionMode = process.env.MCPSHIELD_ADMISSION_MODE ?? "strict",
+export async function getSignedAdmission(options) {
+  const cacheFile = options.cacheFile === undefined ? process.env.MCPSHIELD_ADMISSION_CACHE_FILE : options.cacheFile;
+  let lock;
+  // A persisted cache belongs to one wrapper. Never race another process's
+  // deny/rename or silently reclaim a lock whose owner may still be running.
+  if (cacheFile) {
+    try { lock = await open(`${cacheFile}.lock`, "wx", 0o600); }
+    catch { throw new Error("Signed cache is locked or unavailable; admission fails closed"); }
+  }
+  try { return await signedAdmission({ ...options, cacheFile }); }
+  finally { if (lock) { try { await lock.close(); } finally { await unlink(`${cacheFile}.lock`); } } }
+}
+
+async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, admissionMode = process.env.MCPSHIELD_ADMISSION_MODE ?? "strict",
   publicKey = process.env.MCPSHIELD_CACHE_PUBLIC_KEY, keyId = process.env.MCPSHIELD_CACHE_KEY_ID,
   policyHash = process.env.MCPSHIELD_POLICY_HASH, chainId = Number(process.env.MCPSHIELD_CHAIN_ID),
   registryContract = process.env.MCPSHIELD_REGISTRY_CONTRACT, validatorSetVersion = Number(process.env.MCPSHIELD_VALIDATOR_SET_VERSION),
@@ -75,10 +89,17 @@ export async function getSignedAdmission({ identity, apiBaseUrl, timeoutMs, fetc
   const context = { identity, publicKey, keyId, policyHash, chainId, registryContract, validatorSetVersion, tenantId, operationClass };
   const credentialFingerprint = createHash("sha256").update(apiToken ?? "").digest("hex");
   const cacheKey = canonical({ apiBaseUrl, releaseId: identity.releaseId, artifactDigest: identity.artifactDigest, toolSurfaceHash: identity.toolSurfaceHash, policyHash, chainId, registryContract, validatorSetVersion, keyId, tenantId, operationClass, credentialFingerprint });
+  const pendingKey = canonical({ releaseId: identity.releaseId, tenantId });
+  if (!pending.has(pendingKey) && pending.size >= 1024) throw new Error("Too many concurrent admission identities");
+  const state = pending.get(pendingKey) ?? { epoch: 0, active: 0 };
+  pending.set(pendingKey, state); state.active++;
+  const epoch = state.epoch;
+  try {
   let envelope;
   let cacheHit = false;
   let response;
-  const forget = async () => {
+  const forget = async (invalidatePending = false) => {
+    if (invalidatePending) state.epoch++;
     for (const [key, value] of memory) {
       if (value.snapshot.releaseId === identity.releaseId && value.snapshot.tenantId === tenantId) memory.delete(key);
     }
@@ -90,11 +111,13 @@ export async function getSignedAdmission({ identity, apiBaseUrl, timeoutMs, fetc
       body: JSON.stringify({ releaseId: identity.releaseId, artifactDigest: identity.artifactDigest, toolSurfaceHash: identity.toolSurfaceHash, policyHash, mode: admissionMode, operationClass }),
     }, fetchImpl, timeoutMs);
   } catch (error) {
-    if (!error || !["TypeError", "TimeoutError", "AbortError"].includes(error.name)) { await forget(); throw error; }
+    if (!error || !["TypeError", "TimeoutError", "AbortError"].includes(error.name)) { await forget(true); throw error; }
   }
   if (!response || response.status >= 500) {
     if (admissionMode !== "balanced" || !["READ_PUBLIC", "READ_PRIVATE"].includes(operationClass)) throw new Error("Admission unavailable; strict or non-read-only calls fail closed");
-    envelope = memory.get(cacheKey);
+    // The locked file is authoritative across processes. A process-local copy
+    // must not resurrect an allow after another wrapper persisted a denial.
+    envelope = cacheFile ? undefined : memory.get(cacheKey);
     if (!envelope && cacheFile) {
       const file = await readFile(cacheFile, "utf8");
       if (Buffer.byteLength(file) > 32_768) throw new Error("Signed cache file is oversized");
@@ -104,24 +127,35 @@ export async function getSignedAdmission({ identity, apiBaseUrl, timeoutMs, fetc
     if (!envelope) throw new Error("Admission unavailable and no matching signed cache exists");
     cacheHit = true;
   } else {
-    if (!response.ok) { await forget(); throw new Error(`Admission API returned ${response.status}`); }
+    if (!response.ok) { await forget(true); throw new Error(`Admission API returned ${response.status}`); }
     // Remove the previous allow before parsing: an invalid/new deny response must never resurrect it.
     await forget();
-    envelope = await response.json();
+    try { envelope = await response.json(); }
+    catch (error) { await forget(true); throw error; }
   }
-  const snapshot = verifyAdmissionSnapshot(envelope, { ...context, now: now() });
+  let snapshot;
+  try { snapshot = verifyAdmissionSnapshot(envelope, { ...context, now: now() }); }
+  catch (error) { await forget(true); throw error; }
   if (cacheHit && snapshot.decision !== "ALLOW") throw new Error("Cached admission does not allow execution");
+  if (snapshot.decision === "BLOCK") await forget(true);
+  const superseded = () => snapshot.decision === "ALLOW" && state.epoch !== epoch;
+  if (superseded()) { await forget(); throw new Error("Admission superseded by a newer denial or invalid response"); }
   if (!cacheHit && snapshot.decision === "ALLOW") {
     // ponytail: bounded process cache; persistent single-release snapshots cover one wrapper per MCP.
     if (memory.size >= 1_024) memory.delete(memory.keys().next().value);
-    memory.set(cacheKey, envelope);
+    if (!cacheFile) memory.set(cacheKey, envelope);
     if (cacheFile) {
       const temporary = `${cacheFile}.${process.pid}.tmp`;
       await writeFile(temporary, JSON.stringify({ cacheKey, envelope }), { mode: 0o600 });
       await rename(temporary, cacheFile);
     }
   }
+  // No await on the successful path after this final fence and before returning ALLOW.
+  if (superseded()) { await forget(); throw new Error("Admission superseded by a newer denial or invalid response"); }
   return { schemaVersion: "1.0.0", releaseId: snapshot.releaseId, decision: snapshot.decision, releaseStatus: snapshot.status,
     reasonCode: snapshot.reasonCode, reportUrl: snapshot.reportUrl,
     checkedAt: snapshot.issuedAt, source: "LIVE", cacheHit, expiresAt: snapshot.expiresAt, policyHash: snapshot.policyHash };
+  } finally {
+    state.active--; if (!state.active) pending.delete(pendingKey);
+  }
 }

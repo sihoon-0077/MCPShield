@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, open, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { admissionFetch, getSignedAdmission, verifyAdmissionSnapshot } from "../src/signed-admission.mjs";
 
@@ -63,4 +67,47 @@ test("balanced fallback is read-only, short-lived, and cannot resurrect allow af
     await getSignedAdmission({ ...options, fetchImpl: async () => response }).catch(() => {});
     await assert.rejects(getSignedAdmission({ ...options, fetchImpl: offline }), /no matching signed cache/);
   }
+});
+
+test("a concurrent late allow cannot return or repopulate cache after a newer denial or invalid response", async () => {
+  const options = { ...context, apiBaseUrl: "http://127.0.0.1:3102", timeoutMs: 5000, now: () => now, cacheFile: null, admissionMode: "balanced" };
+  const offline = async () => { throw new TypeError("synthetic offline"); };
+  for (const response of [json(signed({ ...base, decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED" })), json({}), json({}, 403), new Response("not json")]) {
+    let resume, started;
+    const entered = new Promise(resolve => { started = resolve; });
+    const late = getSignedAdmission({ ...options, fetchImpl: () => new Promise(resolve => { resume = () => resolve(json(signed(base))); started(); }) });
+    await entered;
+    await getSignedAdmission({ ...options, fetchImpl: async () => response }).catch(() => {});
+    const rejected = assert.rejects(late, /superseded/); resume(); await rejected;
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: offline }), /no matching signed cache/);
+  }
+  const healthy = await Promise.all(Array.from({ length: 8 }, () => getSignedAdmission({ ...options, fetchImpl: async () => json(signed(base)) })));
+  assert.ok(healthy.every(result => result.decision === "ALLOW" && !result.cacheHit), "Concurrent healthy reads must not invalidate each other");
+});
+
+test("persistent cache has one owner, never reclaims an unknown lock and respects another process's denial", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "mcpshield-signed-cache-test-"));
+  assert.equal(dirname(directory), tmpdir());
+  const cacheFile = join(directory, "admission.json");
+  const options = { ...context, apiBaseUrl: "http://127.0.0.1:3103", timeoutMs: 5000, now: () => now, cacheFile, admissionMode: "balanced" };
+  const offline = async () => { throw new TypeError("synthetic offline"); };
+  try {
+    let resume, started;
+    const entered = new Promise(resolve => { started = resolve; });
+    const first = getSignedAdmission({ ...options, fetchImpl: () => new Promise(resolve => { resume = () => resolve(json(signed(base))); started(); }) });
+    await entered;
+    let fetched = false;
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: async () => { fetched = true; return json(signed(base)); } }), /cache is locked/);
+    assert.equal(fetched, false); resume(); assert.equal((await first).decision, "ALLOW");
+    assert.equal((await getSignedAdmission({ ...options, fetchImpl: offline })).cacheHit, true);
+    const code = `import {readFileSync} from 'node:fs'; import {getSignedAdmission} from ${JSON.stringify(new URL('../src/signed-admission.mjs', import.meta.url).href)}; const x=JSON.parse(readFileSync(0,'utf8')); const result=await getSignedAdmission({...x.options,now:()=>x.now,fetchImpl:async()=>new Response(JSON.stringify(x.envelope))}); console.log(result.decision);`;
+    const result = execFileSync(process.execPath, ["--input-type=module", "-e", code], { windowsHide: true, encoding: "utf8", timeout: 10000,
+      input: JSON.stringify({ options: { ...options, now: undefined, publicKey: context.publicKey.toString() }, now,
+        envelope: signed({ ...base, decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED" }) }) });
+    assert.equal(result.trim(), "BLOCK"); assert.equal(await readFile(cacheFile, "utf8"), "null");
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: offline }), /no matching signed cache/);
+    const orphan = await open(`${cacheFile}.lock`, "wx", 0o600); await orphan.close();
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: offline }), /cache is locked/);
+    assert.equal(await readFile(`${cacheFile}.lock`, "utf8"), "", "A lock of unknown ownership must remain untouched");
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
