@@ -161,7 +161,9 @@ test("prepared source → actual Docker/AI-stub scans → independent validators
       assert.equal(JSON.parse((result.content as any[])[0].text).messages[0].subject, "Welcome");
     } finally { await client.close(); }
     const bad = await prepare("1.0.1"); await vote(bad.scan.scanId);
-    assert.equal((await admission(bad.release)).releaseStatus, "REVOKED");
+    const finalDenied = await admission(bad.release);
+    assert.deepEqual({ decision: finalDenied.decision, status: finalDenied.status, reasonCode: finalDenied.reasonCode, snapshotStatus: finalDenied.snapshot?.status },
+      { decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED", snapshotStatus: "REVOKED" });
     assert.equal((await store.get(tenantId, "release", bad.release.releaseId))?.status, "REVOKED");
     for (const agentId of ["Gateway-A", "Gateway-B"]) await assert.rejects(runArtifact({ ...gatewayContext, agentId, preparedIdentityPath: bad.file, capture: true }),
       (error: any) => error instanceof AdmissionBlockedError && error.decision.releaseStatus === "REVOKED");
