@@ -173,8 +173,8 @@ export function runRuntimeDocker(args, timeoutMs, maxBytes = 128 * 1024) {
     child.once('error', () => { clearTimeout(timer); reject(Error('RUNTIME_DOCKER_UNAVAILABLE')); });
     child.once('close', (code) => { clearTimeout(timer);
       const safeCode = /(?:^|\n)MCPSHIELD_CLOSURE_FAILURE:(TOOLCHAIN|INPUT|CACHE|INSTALL|MANIFEST):(ENOTCACHED|EUSAGE|EINTEGRITY|ENOENT|EACCES|EPERM|NPM_FAILED|FAILED)(?:\r?\n|$)/.exec(diagnostics);
-      const lockCode = /(?:^|\n)MCPSHIELD_LOCK_FAILURE:(TOOLCHAIN|INPUT|SOLVE|VERIFY)(?:\r?\n|$)/.exec(diagnostics);
-      if (failure || code !== 0) reject(failure ?? Error(safeCode ? `RUNTIME_${safeCode[1]}_${safeCode[2]}` : lockCode ? `RUNTIME_LOCK_${lockCode[1]}_FAILED` : 'RUNTIME_DOCKER_COMMAND_FAILED'));
+      const lockCode = /(?:^|\n)MCPSHIELD_LOCK_FAILURE:(TOOLCHAIN|INPUT|SOLVE|VERIFY):(E401|E403|E404|EUSAGE|ERESOLVE|ENOTFOUND|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|EINTEGRITY|EACCES|EPERM|EBADENGINE|EUNSUPPORTEDPROTOCOL|EINVALIDPACKAGENAME|EINVALIDTAGNAME|EJSONPARSE|NPM_FAILED|FAILED)(?:\r?\n|$)/.exec(diagnostics);
+      if (failure || code !== 0) reject(failure ?? Error(safeCode ? `RUNTIME_${safeCode[1]}_${safeCode[2]}` : lockCode ? `RUNTIME_LOCK_${lockCode[1]}_${lockCode[2]}` : 'RUNTIME_DOCKER_COMMAND_FAILED'));
       else resolveResult(Buffer.concat(chunks)); });
   });
 }
