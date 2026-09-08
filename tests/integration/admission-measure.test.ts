@@ -21,7 +21,8 @@ test("matrix plans exact workload and native setup cost without claiming cache h
   assert.equal(full.setupTransactions, 30_004); assert.equal(full.warmupRequests, 9 * 1025); assert.equal(full.measuredRequests, 180_000);
   const optedIn = admissionMatrixPlan({ fullMatrix: true, identities: 10_000, concurrency: 16 });
   assert.equal(optedIn.measuredRequests, 99_000); assert.equal(optedIn.requestsPerHotCell, 1000); assert.equal(optedIn.requestsPerUniformCell, 10_000);
-  assert.equal(optedIn.setupAttestationSignatures, 20_000); assert.equal(optedIn.totalBudgetMs, 1_200_000); assert.equal(pilot.totalBudgetMs, 180_000);
+  assert.equal(optedIn.setupAttestationSignatures, 20_000); assert.equal(optedIn.totalBudgetMs, 3_600_000); assert.equal(pilot.totalBudgetMs, 180_000);
+  assert.equal(optedIn.setupBudgetMs, 900_000); assert.equal(pilot.setupBudgetMs, 120_000);
   for (const options of [{ fullMatrix: true }, { fullMatrix: true, identities: 10_000, concurrency: 4 }]) assert.throws(() => admissionMatrixPlan(options));
   for (const requests of [1, 7, 40, 10_000]) for (const rate of [0, 50, 95]) {
     assert.equal(Array.from({ length: requests }, (_, index) => Number(cacheAttemptAt(index, rate))).reduce((sum, value) => sum + value, 0), Math.floor(requests * rate / 100));

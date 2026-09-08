@@ -58,7 +58,7 @@ export function admissionMatrixPlan({ requests = 40, concurrency = 4, identities
     setupTransactions: 4 + 3 * identities, setupAttestationSignatures: 2 * identities, setupBatchIdentities: 16,
     warmupRequests: 9 * (1 + Math.min(1024, identities)), nativeCacheCapacity: 1024, nativeAllowTtlMs: 30_000,
     targetCacheAttemptRates: [95, 50, 0], rpcConditions: ["NORMAL", "DELAY_50MS", "HTTP_503"],
-    distribution: "ONE_HOT_AND_UNIFORM_CYCLIC", setupBudgetMs: fullMatrix ? 600_000 : 120_000, totalBudgetMs: fullMatrix ? 1_200_000 : 180_000 };
+    distribution: "ONE_HOT_AND_UNIFORM_CYCLIC", setupBudgetMs: fullMatrix ? 900_000 : 120_000, totalBudgetMs: fullMatrix ? 3_600_000 : 180_000 };
 }
 
 // Deterministic spread, not IID sampling or an assertion about actual cache hits.

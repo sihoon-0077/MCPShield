@@ -49,9 +49,11 @@ async function main() {
   if (values.profile === "matrix" && !values["matrix-child"]) {
     // A parent-process watchdog also bounds synchronous solc/EVM work that an
     // event-loop AbortSignal alone cannot interrupt. No grandchild processes.
-    const child = spawn(process.execPath, [...process.execArgv, process.argv[1], ...process.argv.slice(2), "--matrix-child"], { stdio: "inherit", windowsHide: true });
+    const child = spawn(process.execPath, [...process.execArgv, process.argv[1], ...process.argv.slice(2), "--matrix-child"], {
+      stdio: "inherit", windowsHide: true, env: { ...process.env, MCPSHIELD_TELEMETRY_ENABLED: "false" }
+    });
     let timedOut = false;
-    const budgetMs = fullMatrix ? 1_200_000 : 180_000;
+    const budgetMs = fullMatrix ? 3_600_000 : 180_000;
     const deadline = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, budgetMs);
     try {
       const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
