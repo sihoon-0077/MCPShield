@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
@@ -103,12 +104,15 @@ function childEnvironment() {
   return env;
 }
 
-function spawnSnapshot(snapshot) {
+async function spawnSnapshot(snapshot, options) {
+  if (snapshot.prepared) return snapshot.spawn(() => admitSnapshot(snapshot, options));
   if (!process.allowedNodeEnvironmentFlags.has("--permission")) throw new Error("Node permission model is required");
-  return spawn(process.execPath, ["--permission", `--allow-fs-read=${snapshot.root}`,
+  const child = spawn(process.execPath, ["--permission", `--allow-fs-read=${snapshot.root}`,
     `--allow-fs-read=${RUNTIME_GUARD}`, "--disallow-code-generation-from-strings",
     "--require", RUNTIME_GUARD, snapshot.entrypoint],
     { cwd: snapshot.root, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: childEnvironment() });
+  await once(child, "spawn");
+  return child;
 }
 
 function terminateChild(child) {
@@ -133,17 +137,30 @@ function stderrSummary(chunk) {
 }
 
 async function admittedSnapshot(artifactDir, options) {
-  const snapshot = await createArtifactSnapshot(artifactDir);
+  let snapshot;
+  if (options.preparedIdentityPath) {
+    if (artifactDir) throw new Error("PREPARED_IDENTITY_AMBIGUOUS");
+    if ((options.mode ?? process.env.MCPSHIELD_MODE ?? "live") !== "live" || !(options.policyHash ?? process.env.MCPSHIELD_POLICY_HASH)) throw new Error("PREPARED_SIGNED_LIVE_REQUIRED");
+    const { createPreparedSnapshot } = await import("./prepared.mjs");
+    snapshot = await createPreparedSnapshot(options.preparedIdentityPath);
+  } else snapshot = await createArtifactSnapshot(artifactDir);
   try {
-    const decision = await checkedDecision(snapshot, options, "__admission__", "ADMISSION", operationClass(snapshot.tools));
-    log("admission", { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash, decision: decision.decision, status: decision.releaseStatus, source: decision.source, cacheHit: decision.cacheHit, expiresAt: decision.expiresAt });
-    if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") throw new AdmissionBlockedError(decision);
-    if (snapshot.runtimePolicyIssues.length) throw new Error(`Gateway runtime policy rejected ${snapshot.runtimePolicyIssues[0].path}: ${snapshot.runtimePolicyIssues[0].reason}`);
+    const configuredId = options.controlReleaseId ?? process.env.MCPSHIELD_CONTROL_RELEASE_ID;
+    if (snapshot.prepared && configuredId && configuredId !== snapshot.releaseId) throw new Error("PREPARED_CONTROL_RELEASE_MISMATCH");
+    const decision = await admitSnapshot(snapshot, options);
     return { snapshot, decision };
   } catch (error) {
     await snapshot.cleanup();
     throw error;
   }
+}
+
+async function admitSnapshot(snapshot, options) {
+  const decision = await checkedDecision(snapshot, options, "__admission__", "ADMISSION", operationClass(snapshot.tools));
+  log("admission", { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash, decision: decision.decision, status: decision.releaseStatus, source: decision.source, cacheHit: decision.cacheHit, expiresAt: decision.expiresAt });
+  if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") throw new AdmissionBlockedError(decision);
+  if (snapshot.runtimePolicyIssues.length) throw new Error(`Gateway runtime policy rejected ${snapshot.runtimePolicyIssues[0].path}: ${snapshot.runtimePolicyIssues[0].reason}`);
+  return decision;
 }
 
 export async function inspectArtifact({ artifactDir, rollout = "observe", ...options }) {
@@ -200,10 +217,11 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
   if (input !== undefined && (typeof input !== "string" || Buffer.byteLength(input) > 1_048_576)) {
     throw new TypeError("Child input must be a string no larger than 1048576 bytes");
   }
+  if (options.preparedIdentityPath && input === undefined) throw new Error("PREPARED_MCP_INPUT_REQUIRED");
   const { snapshot, decision } = await admittedSnapshot(artifactDir, options);
   let guarded;
   try {
-    const child = spawnSnapshot(snapshot);
+    const child = await spawnSnapshot(snapshot, options);
     let stdout = "";
     let stderr = "";
     let outputBytes = 0;
@@ -245,7 +263,9 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
 
 export async function proxyArtifactStdio({ artifactDir, ...options }) {
   const { snapshot } = await admittedSnapshot(artifactDir, options);
-  const child = spawnSnapshot(snapshot);
+  let child;
+  try { child = await spawnSnapshot(snapshot, options); }
+  catch (error) { await snapshot.cleanup(); throw error; }
   const guards = childSurfaceGuards(child, snapshot, options);
   const { requests, responses } = guards;
   let terminalError;
@@ -367,10 +387,12 @@ export function createGatewayHttpServer(options = {}) {
   return server;
 }
 
-async function stdio() {
+async function stdio(args) {
+  if (args.length && (args.length !== 2 || args[0] !== "--prepared-identity" || !args[1])) throw new Error("Unsupported stdio argument");
+  const preparedIdentityPath = args[1] ?? process.env.MCPSHIELD_PREPARED_IDENTITY;
   const artifactDir = process.env.MCPSHIELD_ARTIFACT_DIR;
-  if (!artifactDir) throw new Error("MCPSHIELD_ARTIFACT_DIR is required");
-  process.exitCode = await proxyArtifactStdio({ artifactDir });
+  if (!artifactDir && !preparedIdentityPath) throw new Error("MCPSHIELD_ARTIFACT_DIR or a local prepared identity is required");
+  process.exitCode = await proxyArtifactStdio({ artifactDir, preparedIdentityPath });
 }
 
 function serve() {
@@ -399,7 +421,7 @@ function parseRun(args, inspect = false) {
 
 async function main() {
   const [subcommand = "stdio", ...args] = process.argv.slice(2);
-  if (subcommand === "stdio") return stdio();
+  if (subcommand === "stdio") return stdio(args);
   if (subcommand === "serve") return serve();
   if (!["run", "inspect"].includes(subcommand)) throw new Error(`Unknown command: ${subcommand}`);
   const parsed = parseRun(args, subcommand === "inspect");

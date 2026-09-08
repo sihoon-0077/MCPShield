@@ -1,6 +1,6 @@
 # MCPShield Gateway
 
-The Gateway accepts an artifact directory, never a caller-provided release ID, digest, tool hash, executable, or arguments. It copies regular files into a private temporary snapshot, computes the scanner-compatible artifact and tool-surface hashes from those exact bytes, validates the `.mjs` manifest entrypoint, checks admission, and starts only that snapshotted entrypoint with the current Node executable.
+The default Gateway accepts an artifact directory, never an API caller-provided release ID, digest, tool hash, executable, or arguments. It copies regular files into a private temporary snapshot, computes the scanner-compatible artifact and tool-surface hashes from those exact bytes, validates the `.mjs` manifest entrypoint, checks admission, and starts only that snapshotted entrypoint with the current Node executable. The separate, operator-local prepared npm profile below uses a committed immutable Docker image instead of this host fixture runner.
 
 The child receives only a minimal system environment. Pass an MCP-specific variable intentionally by listing its exact name in `MCPSHIELD_CHILD_ENV_ALLOWLIST`; unrelated parent secrets are not inherited. Runtime injection variables such as `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, and `DYLD_*` are always removed. Artifact code is ESM-only: `.js`, CommonJS, dynamic, absolute, package, native, and WebAssembly module loads are rejected. Loader-shaped raw source is rejected fail-closed so regex or template syntax cannot hide a dynamic import. `.mjs` code may use only an allowlist of non-network `node:` built-ins and relative `.mjs` modules captured inside its snapshot. Node's permission model prevents reads outside that snapshot, string code generation is disabled, child output is capped, and runtime network egress is not supported by this MVP.
 
@@ -55,3 +55,30 @@ node apps/gateway/src/receipts.mjs --db C:/private/mcpshield/receipts.sqlite --f
 The batch reuses the scanner's domain-separated SHA-256 Merkle implementation: one `batch.json` plus up to 127 receipt leaves. `verifyReceiptBatch(bundle, trustedRoot)` verifies the root and sequence/hash linkage; `verifyEvidenceLeaf` can disclose only one receipt and its proof. Batches are explicitly `LOCAL_UNANCHORED`: exporting one does not submit a blockchain transaction. A chain anchor or independent transparency checkpoint is required to prove resistance to wholesale log replacement or tail truncation. `ledger.verify({expectedCheckpoint:{sequence,receiptHash}})` checks such an externally retained checkpoint; an untrusted local head alone cannot prove history was not replaced. Database backup/restore must include its WAL or use a SQLite-consistent backup, then verify the retained checkpoint before reuse.
 
 Tests exercise 4 independent processes appending 100 total receipts, SQL mutation rejection, corrupted-record detection, checkpoint-based truncation detection, individual inclusion proofs, and Gateway execution hooks with explicitly labeled synthetic REPLAY decisions.
+
+## Prepared immutable npm runtime (Linux operator host)
+
+An operator may download the control plane's prepared Gateway identity into a private regular JSON file and use it with a **local Linux Docker daemon**. This profile accepts only the server-generated envelope `{schemaVersion:"mcpshield.gateway-prepared.v1",releaseId,toolId,binding,tools}`. It is not an HTTP upload, image chooser, package installer, or host-path execution API. The existing public `/mcp` and `/try` fixture services are unchanged; their container images do not receive a Docker socket or arbitrary package execution capability.
+
+```sh
+# Configure the /v1 signed admission trust context above, then use this command as the MCP client's stdio server.
+node apps/gateway/src/index.mjs stdio --prepared-identity /private/mcpshield/gateway.json
+# Alternatively set MCPSHIELD_PREPARED_IDENTITY. Do not also set MCPSHIELD_ARTIFACT_DIR.
+```
+
+The shared Security helper recomputes the full descriptor, execution-policy and manifest digests; the shared Registry V2 helper recomputes the exact four-field release ID. The raw full tool list must match the committed tool-surface hash. A mutable image tag, changed source/policy/argv, unknown envelope field, mismatched configured control release ID, or a nonregular/oversized/symlinked identity file fails closed. A valid identity commitment alone does **not** authorize execution: `MCPSHIELD_MODE=live`, a configured policy and valid signed V2 admission are mandatory. Unsigned, MOCK and REPLAY approvals are rejected.
+
+Before creating the candidate container, Gateway inspects the exact Docker image config ID (`sha256:…`), Linux architecture, fixed non-root user and runtime-injection environment. It never pulls an image. It then creates without starting, checks actual Docker container configuration and rechecks signed admission before `docker start --attach --interactive`. Strict mode obtains fresh API proof; balanced mode retains only the documented signed, short-lived read-only fallback. Every tool call reuses the same active-session admission, private full-pagination check and configured high-risk receipt mechanism.
+
+The committed `prepared-node-network-none-v1` policy uses Node arguments `--permission --allow-fs-read=/app --disallow-code-generation-from-strings`. Docker uses user `1000:1000`, read-only root, no network, no capabilities, no-new-privileges, 128 MiB memory (no additional swap), 0.5 CPU, 64 PIDs and one bounded noexec/nosuid/nodev `/tmp` tmpfs. There are no host mounts, forwarded credentials, extra executable arguments or environment overrides. Node does not allow child processes, workers, native addons, WASI or file writes. Docker is the isolation boundary; Node's permission model is defense in depth, not a proof that malicious code is safe.
+
+This execution policy is intentionally **stricter** than observation: it removes the synthetic proxy network and `/observer`/`/home/test` reads. A tool needing network or those paths may fail here even if a restricted observation completed. The profile is not a general network-capable npm MCP launcher. Arbitrary OCI runtimes and remote execution are not enabled by this path.
+
+On denial, malformed protocol, timeout, EOF, signal or Docker/start failure, cleanup resolves only the generated UUID container name, verifies its ownership label and removes that exact container with `docker rm --force`. Killing the attached CLI alone is insufficient. If the local daemon is unavailable or ownership differs, cleanup reports failure rather than deleting an unrelated container or claiming success. An abrupt host crash/SIGKILL or compromised Docker administrator still requires operator reconciliation; no process can guarantee daemon cleanup after the host stops. Stop the wrapper or remove the prepared identity setting to disable this profile.
+
+`npm run test:gateway` covers policy/identity tampering, pre-start denial, cancellation during creation, exact-owner cleanup and the existing protocol/admission/receipt regressions. The Linux-only actual-image check reuses npm closure preparation and observed two-page MCP discovery, then exercises signed synthetic admission, isolated tool calls, revocation at each stage, timeout and stdio EOF. The test issuer is ephemeral and does **not** claim real validator quorum or blockchain confirmation:
+
+```sh
+MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_RUNTIME_BUILDER_IMAGE=sha256:<verified-local-builder-id> \
+  node --test apps/gateway/test/prepared-docker.test.mjs
+```
