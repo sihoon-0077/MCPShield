@@ -12,12 +12,12 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./package.json
 COPY apps/dashboard ./apps/dashboard
 # The Control BFF verifies prepared downloads with these shared pure modules.
-# Their external dependency (ethers) is installed from the root lock above.
+# Their external dependencies (ethers/tar) are installed from the root lock above.
 COPY packages/contracts-sdk/src/v2-identity.mjs packages/contracts-sdk/src/v2-identity.d.mts ./packages/contracts-sdk/src/
 COPY packages/artifact-policy/import-policy.mjs ./packages/artifact-policy/import-policy.mjs
 COPY apps/gateway/src/artifact.mjs ./apps/gateway/src/artifact.mjs
-COPY services/scanner/src/prepared-binding.mjs services/scanner/src/evidence.mjs ./services/scanner/src/
-COPY services/resolver/src/runtime-descriptor.mjs ./services/resolver/src/runtime-descriptor.mjs
+COPY services/scanner/src/prepared-binding.mjs services/scanner/src/oci-binding.mjs services/scanner/src/snapshot.mjs services/scanner/src/evidence.mjs ./services/scanner/src/
+COPY services/resolver/src/runtime-descriptor.mjs services/resolver/src/oci-runtime-descriptor.mjs ./services/resolver/src/
 RUN npm run build --workspace @mcpshield/dashboard
 
 FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runner
