@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import * as tar from 'tar';
 import { checkedOciConfig, hashOciRuntimeDescriptor, inspectOciFilesystem, resolveOciEntrypoint,
   ociHash, OCI_OBSERVATION_POLICY, OCI_SOURCE_BUDGET_PROFILE } from '../../services/resolver/src/oci-runtime-descriptor.mjs';
-import { inspectOciLayerBudget, importOciRuntime, inspectImportedOciRuntime } from '../../services/resolver/src/oci-runtime.mjs';
+import { inspectOciLayerBudget, importOciRuntime, inspectImportedOciRuntime, cleanupOciExport } from '../../services/resolver/src/oci-runtime.mjs';
 import { collectOciMcp, observeOciRuntime } from '../../services/scanner/src/oci-observer.mjs';
 import { runRuntimeDocker } from '../../services/resolver/src/npm-closure.mjs';
 import { removeFixtureSnapshot } from '../../services/scanner/src/snapshot.mjs';
@@ -82,6 +82,17 @@ test('OCI layers verify native diff IDs and decompression bounds without applyin
   assert.throws(() => inspectOciLayerBudget([{ bytes: gzipSync(layer), mediaType: 'application/vnd.oci.image.layer.v1.tar+gzip' }],
     { rootfs: { type: 'layers', diff_ids: [ociHash('wrong')] } }), /DIFF_ID/);
   assert.throws(() => inspectOciLayerBudget([{ bytes: layer, mediaType: 'foreign-compression' }], config), /MEDIA_UNSUPPORTED/);
+});
+
+test('OCI export cleanup failure is fail-closed with exact task-owned target and no raw Docker error disclosure', async () => {
+  const container = 'mcpshield-oci-inspect-' + randomUUID(), calls = [];
+  await cleanupOciExport(container, async (...args) => calls.push(args));
+  assert.deepEqual(calls, [[['rm', '-f', '-v', container], 5000]]);
+  await assert.rejects(() => cleanupOciExport(container, async () => { throw Error('UNTRUSTED_PRIVATE_DOCKER_OUTPUT'); }),
+    (error) => error.message === 'OCI_EXPORT_CLEANUP_FAILED');
+  for (const value of ['all', '--force', container + '/outside', 'mcpshield-unrelated-' + randomUUID()]) {
+    await assert.rejects(() => cleanupOciExport(value, async () => { assert.fail('invalid target must not run'); }), /TARGET_INVALID/);
+  }
 });
 
 async function copiedFile(container, path) {
