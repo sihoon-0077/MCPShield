@@ -73,6 +73,12 @@ jobs:
         env:
           MCPSHIELD_DOCKER_TESTS: "1"
         run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/security/npm-closure.test.mjs
+      - name: Exercise isolated prepared npm Gateway and per-call revocation
+        if: matrix.node == 22
+        timeout-minutes: 5
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --test apps/gateway/test/prepared-docker.test.mjs
       - name: Retain failed builder security evidence without publishing its image
         if: failure() && matrix.node == 22
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -162,7 +168,7 @@ jobs:
       - name: Exercise actual PostgreSQL control plane
         env:
           MCPSHIELD_POSTGRES_TEST_URL: postgresql://mcpshield:mcpshield_ci_only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/mcpshield_ci
-        run: node --import tsx --test tests/api/control-plane.test.ts
+        run: node --import tsx --test tests/api/control-plane.test.ts tests/api/preparations.test.ts
       - name: Back up and restore into a separate empty database
         env:
           PG_CONTAINER: ${{ job.services.postgres.id }}
