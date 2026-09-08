@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { receiptEvidenceSummary, validReceiptWriter } from "../../../../lib/receipt-summary";
 
 export const dynamic = "force-dynamic";
 const COOKIE = "mcpshield_control";
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
 const routes = {
-  GET: [/^session$/, /^operations$/, /^releases$/, /^releases\/[^/]+\/(history|appeals)$/, /^scans$/, /^scans\/[^/]+(?:\/evidence)?$/, /^policies$/, /^chain\/actions(?:\/[^/]+)?$/],
-  POST: [/^releases\/resolve$/, /^releases\/[^/]+\/(appeals|register)$/, /^appeals\/[^/]+\/resolve$/, /^scans$/, /^scans\/[^/]+\/retry$/, /^policies$/, /^policies\/[^/]+\/(deprecate|publish)$/, /^admission\/check$/],
+  GET: [/^session$/, /^operations$/, /^releases$/, /^releases\/[^/]+\/(history|appeals)$/, /^scans$/, /^scans\/[^/]+(?:\/evidence)?$/, /^policies$/, /^chain\/actions(?:\/[^/]+)?$/, /^receipt-ledgers(?:\/[^/]+(?:\/batches)?)?$/, /^receipt-batches\/[^/]+(?:\/evidence)?$/],
+  POST: [/^releases\/resolve$/, /^releases\/[^/]+\/(appeals|register)$/, /^appeals\/[^/]+\/resolve$/, /^scans$/, /^scans\/[^/]+\/retry$/, /^policies$/, /^policies\/[^/]+\/(deprecate|publish)$/, /^admission\/check$/, /^receipt-ledgers$/],
 };
 
 type Context = { params: Promise<{ path: string[] }> };
@@ -66,6 +67,10 @@ async function handle(request: NextRequest, context: Context) {
       const parsed = await boundedJson(request.body, 65_536);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
       if (login) token = (parsed as { token?: string }).token;
+      if (route === "receipt-ledgers") {
+        const key = request.headers.get("idempotency-key");
+        if (Object.keys(parsed).length !== 1 || !validReceiptWriter((parsed as { writer?: unknown }).writer) || !key?.trim() || key.length > 256) return json({ error: "0이 아닌 공개 writer 주소(0x + 40자리 hex)와 재시도 식별키가 필요합니다. 개인키는 입력하지 마세요." }, 400);
+      }
       body = JSON.stringify(parsed);
     } catch (error) { return json({ error: "요청 JSON이 잘못되었거나 제한 크기·시간을 초과했습니다." }, error instanceof Error && error.message === "BODY_TOO_LARGE" ? 413 : 400); }
   }
@@ -84,7 +89,7 @@ async function handle(request: NextRequest, context: Context) {
       body: login ? undefined : body, cache: "no-store", signal: controller.signal, redirect: "error",
     });
     const payload = await boundedJson(upstream.body, 4 * 1024 * 1024);
-    const response = json(payload, upstream.status);
+    const response = json(upstream.ok && /^receipt-batches\/[^/]+\/evidence$/.test(route) ? receiptEvidenceSummary(payload) : payload, upstream.status);
     if (login && upstream.ok) response.cookies.set(COOKIE, token, cookieOptions);
     if (upstream.status === 401) response.cookies.set(COOKIE, "", { ...cookieOptions, maxAge: 0 });
     return response;

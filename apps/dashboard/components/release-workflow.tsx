@@ -43,7 +43,7 @@ export function ReleaseWorkflow({ release, scans, policies, actions, manage, onR
   useEffect(() => { if (!admission?.snapshot) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [admission]);
   const releaseActions = actions.filter((item) => item.releaseId === release.releaseId);
   const attestationActions = releaseActions.filter((item) => item.kind === "ATTEST");
-  const visibleActions = actions.filter((item) => item.releaseId === release.releaseId || item.releaseId === null);
+  const visibleActions = actions.filter((item) => item.releaseId === release.releaseId || (item.releaseId === null && ["PUBLISH_POLICY", "DEPRECATE_POLICY"].includes(item.kind)));
   const ready = scan?.status === "COMPLETED" && scan.result?.state === "READY_FOR_VALIDATORS";
   async function perform(work: () => Promise<void>) {
     setBusy(true); setError(""); setMessage("");

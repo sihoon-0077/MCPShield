@@ -9,9 +9,9 @@ const scan: Scan = { scanId: "synthetic-scan", releaseId: release.releaseId, pol
 const action: ChainAction = { actionId: "synthetic-action", releaseId: release.releaseId, kind: "ATTEST", status: "SUBMITTED", txHash: `0x${"6".repeat(64)}`, errorCode: null, chainId: 31337, registryAddress: `0x${"7".repeat(40)}`, createdAt: scan.createdAt, updatedAt: scan.updatedAt };
 
 test("workflow renders real API stages without turning READY, submitted attestations or historical chain state into allow", () => {
-  const html = renderToStaticMarkup(<ReleaseWorkflow release={release} scans={[scan]} policies={[{ policyHash: release.policyHash!, alias: "test", deprecatedAt: null }]} actions={[action, { ...action, actionId: "another" }]} manage={false} onRefresh={async () => {}} />);
+  const html = renderToStaticMarkup(<ReleaseWorkflow release={release} scans={[scan]} policies={[{ policyHash: release.policyHash!, alias: "test", deprecatedAt: null }]} actions={[action, { ...action, actionId: "another" }, { ...action, actionId: "receipt-only", releaseId: null, kind: "ANCHOR_RECEIPTS" }]} manage={false} onRefresh={async () => {}} />);
   for (const value of ["READY", "ABSTAIN", "INCONCLUSIVE", "REPLAY 아님", "SUBMITTED", "영수증 대기", "quorum 아님", "체인 증빙 없음", "직접 조회 필요"]) assert.ok(html.includes(value), value);
-  assert.doesNotMatch(html, /관리자 · 온체인 등록 요청|API: ALLOW|type="password"/);
+  assert.doesNotMatch(html, /관리자 · 온체인 등록 요청|API: ALLOW|type="password"|ANCHOR_RECEIPTS|receipt-only/);
   const unavailable = { ...release, chainUnavailable: true, chain: { chainId: 31337, registryContract: action.registryAddress, observedBlock: 42, blockHash: `0x${"8".repeat(64)}`, txHash: action.txHash } };
   const admin = renderToStaticMarkup(<ReleaseWorkflow release={unavailable} scans={[scan]} policies={[]} actions={[]} manage onRefresh={async () => {}} />);
   assert.match(admin, /현재 조회 불가/); assert.match(admin, /이전 기록/); assert.match(admin, /온체인 등록 요청/); assert.match(admin, /type="checkbox" required=""/);

@@ -15,6 +15,18 @@ Roll back by selecting MOCK/REPLAY or stopping the dashboard container.
 
 ## Tenant operations console
 
+### High-risk receipt checkpoints
+
+The optional receipt panel loads tenant ledger and batch metadata on demand. `LOCAL_UNANCHORED`, `SUBMITTED`, `CONFIRMED` (configured confirmation threshold) and `ORPHANED` (canonical reorg invalidated the prior observation) remain separate from the outbox queue status. It displays API-provided chain ID, registry, transaction hash, confirmation count, observation time, root, sequence range and LIVE/MOCK/REPLAY source. A confirmed checkpoint does **not** prove a tool actually executed. A failed refresh hides previous confirmed rows instead of falling back to cached or REPLAY success. Receipt actions are excluded from the release-policy transaction list.
+
+Readers can list metadata. Admins alone may register a nonzero public writer address after acknowledging the target and gas cost; the browser and BFF reject other fields and private-key-length inputs. Address syntax is not proof of ownership. An uncertain response retains the same idempotency key for retry in the current page; after a reload, check existing ledgers before registering again. Actual local-ledger verification, batch upload and writer signing remain in `apps/validator/src/receipt-writer.ts`; the BFF does not expose upload, attestation or anchor submission routes. This panel has no private-key, raw-argument or extra API-key entry field.
+
+Operator/admin evidence queries receive only a BFF-projected root, evidence-file count, verification label and query time. The API decrypts and verifies the Merkle bundle and receipt sequence; raw receipts never reach the browser through this route. The UI says **the API verified the evidence root**, not that the browser independently verified it, and rejects a root mismatch. Unconfigured `CONTROL_RECEIPT_*` returns an error; an empty ledger list does not prove the optional feature is configured. Disable anchoring on the API to stop mutations; closing the panel does not cancel an already queued transaction.
+
+`npm run test:dashboard` includes a real local Ganache → receipt registry → API → BFF test: admin-only idempotent registration, direct writer CLI signing, 1/2 vs 2/2 confirmations, canonical reorg, tenant isolation, reader evidence rejection, summary-only browser responses and RPC outage. SSR tests cover labels and stale-state hiding; they are not interactive browser QA. No real keys or external chain writes are used.
+
+### Connection and existing release workflow
+
 `/console` uses only the additive `/v1` control plane. Configure `MCPSHIELD_API_URL` and the exact `MCPSHIELD_PUBLIC_ORIGIN` on the dashboard, and `CONTROL_PLANE_CREDENTIALS` on the API. Sign in using a token assigned to your tenant and reader/operator/admin role; tokens are exchanged for an HttpOnly SameSite=Strict session cookie, never placed in localStorage or URLs. Production requires an explicit HTTPS public origin and uses a Secure cookie. Forwarded headers do not determine the trusted origin. Existing demo `/`, `/try`, and MCP `/mcp` remain separately available.
 
 For a loopback-only production-build preview, explicitly set `MCPSHIELD_CONTROL_ALLOW_LOOPBACK_HTTP=true` with e.g. `MCPSHIELD_PUBLIC_ORIGIN=http://127.0.0.1:3000`. This exception accepts only `127.0.0.1`, `localhost`, or `[::1]`; it never permits a public HTTP origin. Bind the preview port to loopback and do not use real credentials. Backend HTTP is likewise restricted to loopback unless its exact private hostname is listed in `MCPSHIELD_API_HTTP_HOSTS` (e.g. `backend` for `http://backend:3001` on a private Compose network).

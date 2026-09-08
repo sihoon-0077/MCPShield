@@ -75,6 +75,9 @@ test("console login to real resolver, worker, evidence and appeal keeps incomple
     const unconfigured = await request(`releases/${release.releaseId}/register`, cookie, {});
     assert.equal(unconfigured.status, 503);
     assert.match(await unconfigured.text(), /V2_RELAYER_NOT_CONFIGURED/);
+    const receiptsDisabled = await request("receipt-ledgers", cookie, { writer: `0x${"1".repeat(40)}` });
+    assert.equal(receiptsDisabled.status, 503); assert.match(await receiptsDisabled.text(), /RECEIPT_ANCHOR_NOT_CONFIGURED/);
+    assert.deepEqual((await (await request("receipt-ledgers", readerCookie)).json()).items, []);
     const admissionBody = { releaseId: release.releaseId, policyHash: policies[0].policyHash, artifactDigest: release.artifactDigest, toolSurfaceHash: release.toolSurfaceHash, mode: "strict", operationClass: "READ_PRIVATE" };
     const admission = await request("admission/check", readerCookie, admissionBody);
     assert.equal(admission.status, 200);
