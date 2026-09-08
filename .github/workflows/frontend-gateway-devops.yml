@@ -21,7 +21,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -67,7 +67,7 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --read-only -e TRIVY_CACHE_DIR=/cache -v "$PWD/runtime-builder-temp:/tmp" -v "$PWD/runtime-builder-cache:/cache" -v "$PWD/runtime-builder-artifact:/input:ro" -v "$PWD/runtime-builder-artifact/reports:/reports" aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 image --input /input/image.tar.gz --scanners vuln --format json --output /reports/image-scan.json
           sha256sum -c runtime-builder-artifact/SHA256SUMS
           node scripts/ops/check-image-report.mjs runtime-builder-artifact/reports/image-scan.json runtime-builder-artifact/image-id.txt "$GITHUB_SHA" --runtime-builder
-      - name: Exercise real supplied-lock preparation and immutable closure image
+      - name: Exercise supplied and isolated generated locks with immutable closure scans
         if: matrix.node == 22
         timeout-minutes: 5
         env:
@@ -79,6 +79,12 @@ jobs:
         env:
           MCPSHIELD_DOCKER_TESTS: "1"
         run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --test apps/gateway/test/prepared-docker.test.mjs
+      - name: Exercise prepared Docker scans and single-key validators through V2 and both Gateways
+        if: matrix.node == 22
+        timeout-minutes: 11
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/api/prepared-fullcycle.test.ts
       - name: Retain failed builder security evidence without publishing its image
         if: failure() && matrix.node == 22
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
