@@ -13,6 +13,26 @@
 가중 요구사항별로 계산한 완료율이 아닌 구현 진척 추정치였다. 이를 검증 완료율이나
 공개 배포 완료율로 사용하지 않는다. 전체 목표는 아직 완료되지 않았다.
 
+### 현재 검증 경계
+
+- `59a7fe1`까지 통합. `e5987e4`의 OCI inventory/오프라인 Trivy 단계와 `0dc93c9`의
+  원본/파생 identity·고정 실행 정책·OCI 전용 analyzer/critic 계약은 구현됐다.
+  binding 생성과 phase COMPLETE만으로 PASS/READY 또는 Gateway 실행을 허용하지 않는다.
+  Main OCI portable 10개 통과·Linux 4개 명시 skip, OCI binding 4개 통과,
+  prepared/measurement 회귀 11개 통과. 실제 Trivy CLI 검증은 `1f7deb5`의 새 CI 단계로 확인한다.
+- [Linux CI 34270393788](https://github.com/sihoon-0077/MCPShield/actions/runs/34270393788),
+  `105f12f`: Node 24·PostgreSQL 완료 성공, Node 22는 Docker Compose E2E까지 성공하고
+  Grafana/exporter 검증을 진행 중이다. 이 실행에는 위 새 OCI review/binding 코드는 없다.
+  전체 CI·10회 반복·signed-image가 통과했다고 아직 주장하지 않는다.
+- `f6bdc69`·`59a7fe1`: 부하 실험의 외부 fallback/telemetry 상속을 차단하고 자원 표본을 기록한다.
+  명시적 1만 key 실험은 setup 15분/전체 60분의 watchdog으로 제한한다.
+  별도 clean backend `9dccfd0`에서 실제 10,000개 등록·20,000건 PASS 서명·30,004건 transaction
+  검사를 끝내고 99,000요청 행렬 측정 중이다. 최종 결과 파일 전에는 성공률·p95를 확정하지 않는다.
+  서명은 명시적 TEST_ONLY이고 공유 Windows 개발 PC의 Ganache 실험이지 독립 검증기관이나 운영 SLO가 아니다.
+- break-glass는 별도 Gateway 브랜치에서 교차 리뷰 중이며 Main에 아직 통합되지 않았다.
+
+### 이전 체크포인트 이력 (해당 커밋 당시 상태)
+
 - `624b702`·`b598271`·`a10b75d`: 누락된 npm lock을 격리된 native npm과
   메타데이터 전용 broker로 생성하고 기존 SRI 검증·오프라인 설치·전체 스캔에 연결.
   원본 identity 불변, 후보 코드·설치 스크립트 미실행. 새 builder CID의 Linux 실측은 대기.
@@ -146,8 +166,9 @@
   JSON/기본 Accept의 GET `/mcp`는 405이며 서버 코드의 MCP transport/HTML 분기와 일치한다.
   이는 기존 공개 경로의 HTTP 확인이며 새 master 배포나 MCP 도구 호출 성공 증거는 아니다.
 
-명시적으로 남은 구현/검증은 범용 OCI 전체 검사·독립 서명·Gateway 연결, legacy 독립 재실행의
-실제 Linux 검증, 새 fallback의 최신 전체 회귀 및 서명된 break-glass 감사, 전체 부하·평가 행렬이다.
+명시적으로 남은 구현/검증은 범용 OCI 전체 검사·독립 서명·Gateway 연결, 새 fallback의 최신
+전체 회귀 및 서명된 break-glass 감사, 전체 부하·평가 행렬이다. legacy 독립 재실행은 위
+`db5469a`의 실제 Linux 회귀가 통과했으며, 이후 변경의 검증 범위는 커밋별로 구분한다.
 실제 AI·Base Sepolia·비공개 S3/KMS·독립 기관·운영 Linux 호스트와 최신 전체 버전 공개 배포는
 설정 및 실측이 필요한 별도 미완료 항목이다. 기존 Railway 공개 데모는 보존했다.
 
@@ -184,7 +205,7 @@
 
 | ID | 내용 | 담당 | 현재 Main 구현 / 남은 증거 |
 |---|---|---|---|
-| FR-001–003 | npm/tarball/OCI 수집, 불변 버전, 출처 | Security / Backend | bounded npm/tar·OCI blob 검증·공개 OCI API 입력. supplied-lock npm closure의 digest-pinned offline 설치 구현, Linux 실제 검증 진행. 실행 관측·Gateway 연결과 lock 없는 npm·범용 OCI 실행은 진행 중 |
+| FR-001–003 | npm/tarball/OCI 수집, 불변 버전, 출처 | Security / Backend | supplied/generated-lock npm closure의 격리 설치·전체 스캔·검증자·Gateway와 100MiB OCI native import/외부 MCP 관측은 `db5469a` Linux 통과. OCI inventory/Trivy/binding 추가 구현; OCI 전체 PASS·독립 서명·Gateway 연결 및 최신 코드 실검증은 미완료 |
 | FR-004–006 | artifact·manifest·전체 tool surface hash | Security / Gateway | JCS·Unicode/변조 벡터, Docker 내부 전체 MCP pagination 수집, Gateway private 전체 pagination·중복/cursor/drift 거부·실제 2페이지 stdio 통과 |
 | FR-007–008 | 스캔 중복 방지·자동 기준선 | Backend / Security | 다른 key 유효 결과 재사용·이전 VERIFIED 자동 기준선·명시적 비교 버전·원자적 tenant quota 구현. 실제 PostgreSQL·Linux 회귀 `5cabc48` 통과 |
 | FR-101–104 | 메타데이터·코드·변경점·SBOM | Security | schema/annotation/dependency/install diff, SBOM·metadata 규칙 구현. 외부 MCPTox 485 poisoned-tool records의 static review recall 실측 126/485=25.98%; 목표 미달 |
@@ -277,9 +298,10 @@
 
 ## 아직 완료로 표시할 수 없는 영역
 
-1. 최신 prepared npm closure·Grafana·전체 exporter trace의 Linux/PostgreSQL 통합 회귀.
-2. npm prepared image의 실제 관측·최종 release identity·validator·Gateway까지의 통합,
-   lock 없는 package의 격리 lock 생성, OCI runtime 실행.
+1. 최신 전체 변경의 Linux/PostgreSQL 회귀, Grafana·전체 exporter trace 실검증.
+   앞선 npm prepared/독립 validator 및 실제 PostgreSQL 성공과 최신 HEAD 검증을 구분한다.
+2. OCI 전체 inventory/취약점/AI 검사·독립 서명·Gateway 실행 연결. 100MiB import/외부 관측 성공은
+   전체 바이너리 안전성이나 무제한 source semantic coverage 증거가 아니다.
 3. 고위험 receipt UI와 오래된 앵커 reorg 복구, 모든 운영 UI 세부 항목.
 4. 실제 외부 LLM·Base Sepolia·비공개 S3/KMS/보존 정책·독립 validator 운영 검증.
 5. hot/uniform·cache/RPC 장애 smoke 측정의 큰 표본 반복/운영 환경 검증, 다중 크기 scan 처리량·10회 전체 데모,
