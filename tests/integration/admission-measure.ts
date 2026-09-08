@@ -22,6 +22,32 @@ export function latencySummary(samples: number[]) {
   return { samples: sorted.length, p50Ms: percentile(0.5), p95Ms: percentile(0.95), p99Ms: percentile(0.99), maxMs: percentile(1) };
 }
 
+const expectedFailures = {
+  OFFLINE_STRICT_OR_WRITE: "Admission unavailable; strict or non-read-only calls fail closed",
+  EXPIRED_CACHE: "Signed admission expired or has an invalid lifetime",
+  EMPTY_CACHE: "Admission unavailable and no matching signed cache exists",
+  // Only used after the injected RPC outage's actual HTTP response is independently checked below.
+  RPC_UNAVAILABLE_UNSIGNED: "Invalid signed admission snapshot fields",
+} as const;
+type ExpectedFailure = keyof typeof expectedFailures;
+type MeasuredDecision = { outcome: "ALLOW" | "BLOCK" | "FAIL_CLOSED_ERROR"; cacheHit: boolean; releaseStatus?: string; reasonCode?: string; failureCode?: ExpectedFailure };
+
+export async function measuredDecision(run: () => Promise<any>, expectedFailure?: ExpectedFailure): Promise<MeasuredDecision> {
+  try {
+    const result = await run();
+    assert.ok(["ALLOW", "BLOCK"].includes(result.decision), "Unexpected admission decision");
+    return { outcome: result.decision, cacheHit: result.cacheHit, releaseStatus: result.releaseStatus, reasonCode: result.reasonCode };
+  } catch (error) {
+    if (!expectedFailure || !(error instanceof Error) || error.name !== "Error" || error.message !== expectedFailures[expectedFailure]) throw error;
+    return { outcome: "FAIL_CLOSED_ERROR", cacheHit: false, failureCode: expectedFailure };
+  }
+}
+
+export function assertFreshRevocation(result: MeasuredDecision) {
+  assert.deepEqual({ outcome: result.outcome, releaseStatus: result.releaseStatus, reasonCode: result.reasonCode, cacheHit: result.cacheHit },
+    { outcome: "BLOCK", releaseStatus: "REVOKED", reasonCode: "RELEASE_REVOKED", cacheHit: false }, "A fresh signed revocation is required; any other error is not revocation propagation");
+}
+
 // Integration measurement, not a production SLO: actual local EVM, SQL, HTTP and
 // signature checks; only the stated outage conditions and scan reports are synthetic.
 export async function measureAdmission({ requests = 40, concurrency = 4, identities = 4 } = {}) {
@@ -73,42 +99,47 @@ export async function measureAdmission({ requests = 40, concurrency = 4, identit
       chainDecision: async (release, policyDocument) => { if (rpcFault) throw Error("INJECTED_RPC_OUTAGE"); return reader!(release, policyDocument); },
     } });
     await app.listen({ host: "127.0.0.1", port: 0 });
-    const base = { apiBaseUrl: `http://127.0.0.1:${(app.server.address() as any).port}`, timeoutMs: 5000, fetchImpl: fetch,
+    const base = { apiBaseUrl: `http://127.0.0.1:${(app.server.address() as any).port}`, timeoutMs: 5000, fetchImpl: fetch, admissionMode: "strict", cacheFile: null,
       publicKey: key.publicKey.export({ type: "spki", format: "pem" }).toString(), keyId: "benchmark", policyHash, chainId: 1337,
       registryContract: deployment.releaseRegistry.address, validatorSetVersion: 1, tenantId: "benchmark", apiToken: token, operationClass: "READ_PRIVATE" };
-    const phases: Array<ReturnType<typeof latencySummary> & { name: string; elapsedMs: number; throughputQps: number; allowed: number; blocked: number; cacheHits: number }> = [];
-    const measure = async (name: string, run: (index: number) => Promise<{ allowed: boolean; cacheHit?: boolean }>, expectedAllow: boolean) => {
-      const latencies: number[] = []; let next = 0, allowed = 0, cacheHits = 0;
+    const phases: Array<ReturnType<typeof latencySummary> & { name: string; elapsedMs: number; throughputQps: number; allowed: number; blocked: number; failClosedErrors: number; deniedTotal: number; failureCodes: Partial<Record<ExpectedFailure, number>>; cacheHits: number }> = [];
+    const measure = async (name: string, run: (index: number) => Promise<MeasuredDecision>, expectedOutcome: MeasuredDecision["outcome"]) => {
+      const latencies: number[] = [], failureCodes: Partial<Record<ExpectedFailure, number>> = {}; let next = 0, allowed = 0, blocked = 0, failClosedErrors = 0, cacheHits = 0;
       const start = performance.now();
       await Promise.all(Array.from({ length: Math.min(concurrency, requests) }, async () => {
         while (next < requests) {
           const index = next++, begin = performance.now(), result = await run(index);
-          latencies.push(performance.now() - begin); allowed += Number(result.allowed); cacheHits += Number(result.cacheHit === true);
-          assert.equal(result.allowed, expectedAllow, `${name} decision mismatch`);
+          latencies.push(performance.now() - begin); allowed += Number(result.outcome === "ALLOW"); blocked += Number(result.outcome === "BLOCK");
+          failClosedErrors += Number(result.outcome === "FAIL_CLOSED_ERROR"); cacheHits += Number(result.cacheHit === true);
+          if (result.failureCode) failureCodes[result.failureCode] = (failureCodes[result.failureCode] ?? 0) + 1;
+          assert.equal(result.outcome, expectedOutcome, `${name} decision mismatch`);
         }
       }));
       const elapsedMs = performance.now() - start;
-      phases.push({ name, ...latencySummary(latencies), elapsedMs: Number(elapsedMs.toFixed(3)), throughputQps: Number((requests * 1000 / elapsedMs).toFixed(2)), allowed, blocked: requests - allowed, cacheHits });
+      phases.push({ name, ...latencySummary(latencies), elapsedMs: Number(elapsedMs.toFixed(3)), throughputQps: Number((requests * 1000 / elapsedMs).toFixed(2)), allowed, blocked, failClosedErrors, deniedTotal: blocked + failClosedErrors, failureCodes, cacheHits });
     };
-    const check = async (index: number, options: Record<string, any> = {}) => {
-      try {
-        const result = await getSignedAdmission({ ...base, identity: releases[index % identities], ...options });
-        return { allowed: result.decision === "ALLOW", cacheHit: result.cacheHit };
-      } catch { return { allowed: false, cacheHit: false }; }
-    };
-    await measure("actual_http_evm_strict_hot_key", () => check(0), true);
-    await measure("actual_http_evm_strict_uniform_keys", (index) => check(index), true);
-    for (let index = 0; index < identities; index++) assert.equal((await check(index)).allowed, true);
+    const check = (index: number, options: Record<string, any> = {}, expectedFailure?: ExpectedFailure) =>
+      measuredDecision(() => getSignedAdmission({ ...base, identity: releases[index % identities], controlReleaseId: releases[index % identities].releaseId, ...options }), expectedFailure);
+    await measure("actual_http_evm_strict_hot_key", () => check(0), "ALLOW");
+    await measure("actual_http_evm_strict_uniform_keys", (index) => check(index), "ALLOW");
+    for (let index = 0; index < identities; index++) assert.equal((await check(index)).outcome, "ALLOW");
     // Explicit fast network-failure injection. Its latency is not a real TCP timeout measurement.
     const offline = async () => { throw new TypeError("INJECTED_API_OFFLINE"); };
-    await measure("injected_api_offline_balanced_read_signed_cache", (index) => check(index, { admissionMode: "balanced", fetchImpl: offline }), true);
-    await measure("injected_api_offline_strict_read", (index) => check(index, { fetchImpl: offline }), false);
-    await measure("injected_api_offline_balanced_write", (index) => check(index, { admissionMode: "balanced", operationClass: "WRITE_EXTERNAL", fetchImpl: offline }), false);
-    await measure("injected_api_offline_expired_signed_cache", (index) => check(index, { admissionMode: "balanced", fetchImpl: offline, now: () => Date.now() + 60000 }), false);
+    await measure("injected_api_offline_balanced_read_signed_cache", async (index) => { const result = await check(index, { admissionMode: "balanced", fetchImpl: offline }); assert.equal(result.cacheHit, true); return result; }, "ALLOW");
+    await measure("injected_api_offline_strict_read", (index) => check(index, { fetchImpl: offline }, "OFFLINE_STRICT_OR_WRITE"), "FAIL_CLOSED_ERROR");
+    await measure("injected_api_offline_balanced_write", (index) => check(index, { admissionMode: "balanced", operationClass: "WRITE_EXTERNAL", fetchImpl: offline }, "OFFLINE_STRICT_OR_WRITE"), "FAIL_CLOSED_ERROR");
+    await measure("injected_api_offline_expired_signed_cache", (index) => check(index, { admissionMode: "balanced", fetchImpl: offline, now: () => Date.now() + 60000 }, "EXPIRED_CACHE"), "FAIL_CLOSED_ERROR");
     rpcFault = true;
-    await measure("actual_http_injected_rpc_failure", (index) => check(index, { admissionMode: "balanced" }), false);
+    const rpcUnavailableFetch: typeof fetch = async (input, options) => {
+      const response = await fetch(input, options); assert.equal(response.status, 200);
+      const body = await response.clone().json();
+      assert.deepEqual({ decision: body.decision, status: body.status, reasonCode: body.reasonCode, source: body.source, snapshot: body.snapshot, signature: body.signature },
+        { decision: "BLOCK", status: "UNVERIFIED", reasonCode: "STATUS_UNAVAILABLE", source: "EVM", snapshot: undefined, signature: undefined }, "Injected RPC failure must produce the expected unsigned outage response");
+      return response;
+    };
+    await measure("actual_http_injected_rpc_failure", (index) => check(index, { admissionMode: "balanced", fetchImpl: rpcUnavailableFetch }, "RPC_UNAVAILABLE_UNSIGNED"), "FAIL_CLOSED_ERROR");
     rpcFault = false;
-    assert.equal((await check(0)).allowed, true);
+    assert.equal((await check(0)).outcome, "ALLOW");
     // Existing approvals cannot be replaced mid-round. Quarantine first, then
     // attest a genuinely newer scan round, exactly as the incident flow requires.
     const incidentAt = Number((await provider.getBlock("latest"))!.timestamp);
@@ -124,13 +155,15 @@ export async function measureAdmission({ requests = 40, concurrency = 4, identit
       receipt = await mined("failAttestation", registry.submitAttestation(payload, signature));
     }
     const propagationStart = performance.now(), blocked = await check(0);
-    assert.equal(blocked.allowed, false);
+    assertFreshRevocation(blocked);
     const propagationMs = performance.now() - propagationStart;
-    assert.equal((await check(0, { admissionMode: "balanced", fetchImpl: offline })).allowed, false, "fresh revoke must invalidate older signed allow");
+    await measure("actual_http_evm_revoked_signed_block", async () => { const result = await check(0); assertFreshRevocation(result); return result; }, "BLOCK");
+    const staleCache = await check(0, { admissionMode: "balanced", fetchImpl: offline }, "EMPTY_CACHE");
+    assert.equal(staleCache.failureCode, "EMPTY_CACHE", "fresh revoke must invalidate older signed allow");
     return { status: "MEASURED", measuredAt: started, environment: { chain: "LOCAL_GANACHE_EVM", database: "SQLITE_WAL", http: "LOOPBACK", node: process.version, platform: process.platform, logicalProcessors: availableParallelism() },
       inputs: { requestsPerPhase: requests, concurrency, identities, confirmations: 1 }, phases,
       gas: Object.fromEntries(Object.entries(gas).map(([kind, values]) => [kind, { samples: values.length, min: Math.min(...values), max: Math.max(...values), mean: Math.round(values.reduce((a, b) => a + b, 0) / values.length) }])),
-      revocation: { actualEvm: true, blockNumber: receipt!.blockNumber, receiptToNextCheckBlockedMs: Number(propagationMs.toFixed(3)), staleCacheResurrection: false },
+      revocation: { actualEvm: true, blockNumber: receipt!.blockNumber, receiptToNextCheckBlockedMs: Number(propagationMs.toFixed(3)), status: blocked.releaseStatus, reasonCode: blocked.reasonCode, cacheHit: blocked.cacheHit, staleCacheResurrection: false, subsequentOfflineFailure: staleCache.failureCode },
       limitations: ["Synthetic scan reports; this benchmark does not measure scanner detection.", "Local single-host closed-loop measurements are not production load capacity or a Base Sepolia SLO.",
         "API and RPC outages are explicitly injected; separate transport tests cover slow/stalled networks.", "No proactive notification latency claim: revocation is measured at the next admission check.", "p99 from small samples is a smoke measurement; use larger repeated trials for capacity planning."] };
   } finally {
