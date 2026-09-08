@@ -42,10 +42,11 @@ test("prepared npm image → observed identity → signed Gateway: full tools, i
     await writeFile(join(root, "server.js"), [
       "const assert=require('node:assert/strict'),fs=require('node:fs'),readline=require('node:readline');",
       `const tools=${JSON.stringify(tools)};`,
-      "function check(){ assert.equal(process.getuid(),1000); assert.throws(()=>fs.readFileSync('/etc/passwd'),{code:'ERR_ACCESS_DENIED'});",
+      // The observer uses the non-root host UID for mount ownership; Gateway pins 1000.
+      "function check(){ assert.ok(process.getuid()>0); assert.throws(()=>fs.readFileSync('/etc/passwd'),{code:'ERR_ACCESS_DENIED'});",
       "assert.throws(()=>fs.writeFileSync('/app/should-not-exist','synthetic'),{code:'ERR_ACCESS_DENIED'});",
       "assert.throws(()=>require('node:child_process').spawnSync('/bin/false'),{code:'ERR_ACCESS_DENIED'});",
-      "if(process.execArgv.includes('--disallow-code-generation-from-strings')){assert.throws(()=>eval('1+1'),EvalError); assert.deepEqual(Object.keys(require('node:os').networkInterfaces()),['lo']);}",
+      "if(process.execArgv.includes('--disallow-code-generation-from-strings')){assert.equal(process.getuid(),1000); assert.throws(()=>eval('1+1'),EvalError); assert.deepEqual(Object.keys(require('node:os').networkInterfaces()),['lo']);}",
       "assert.equal(process.env.MCPSHIELD_CONTROL_TOKEN,undefined); return 'SYNTHETIC_ISOLATION_OK'; }",
       "readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(!Object.hasOwn(m,'id'))return;let result;",
       "if(m.method==='initialize')result={protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'synthetic-gateway-fixture',version:'1.0.0'}};",
@@ -63,8 +64,8 @@ test("prepared npm image → observed identity → signed Gateway: full tools, i
         { scenarioId: "adversarial-second", kind: "ADVERSARIAL", goal: "Exercise synthetic permission boundaries.", toolName: "second", argumentsJson: "{}" },
       ] } });
     assert.deepEqual(observed.report.issues, []);
-    assert.equal(observed.report.checks.normalToolCallsSucceeded, true);
-    assert.equal(observed.report.checks.adversarialToolCallsSucceeded, true);
+    assert.equal(observed.report.checks.normalToolCallsSucceeded, true, 'SYNTHETIC_NORMAL_ISOLATION_CHECK_FAILED');
+    assert.equal(observed.report.checks.adversarialToolCallsSucceeded, true, 'SYNTHETIC_ADVERSARIAL_ISOLATION_CHECK_FAILED');
     assert.equal(observed.report.steps.discovery.pages, 2);
     assert.equal(observed.report.ready, false); // Observation itself does not approve a release.
     assert.equal(verifyEvidenceBundle(observed.bundle, observed.bundle.manifest.root), true);
@@ -93,8 +94,14 @@ test("prepared npm image → observed identity → signed Gateway: full tools, i
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
     const apiBaseUrl = `http://127.0.0.1:${server.address().port}`;
     const options = { ...context, apiBaseUrl, mode: "live", admissionMode: "strict", preparedIdentityPath: identityFile, capture: true };
+    // Independent synthetic deployments per case: do not erase terminal revocation.
+    let scenario = 0;
+    const freshOptions = () => {
+      requests = 0; context.registryContract = `0x${(++scenario).toString(16).padStart(40, "0")}`;
+      return { ...options, registryContract: context.registryContract };
+    };
     const input = wire({ id: 1, method: "tools/list" }, { id: 2, method: "tools/list", params: { cursor: "second" } }, call("second", 3));
-    const safe = await runArtifact({ ...options, input });
+    const safe = await runArtifact({ ...freshOptions(), input });
     assert.equal(safe.code, 0); assert.equal(safe.decision.source, "LIVE"); assert.equal(safe.decision.cacheHit, false); assert.equal(requests, 3);
     const output = safe.stdout.trim().split("\n").map(JSON.parse);
     assert.deepEqual(output.map(value => value.id), [1, 2, 3]); assert.equal(output[1].result.tools[0].name, "second");
@@ -103,14 +110,14 @@ test("prepared npm image → observed identity → signed Gateway: full tools, i
     assert.deepEqual(await ownedContainers(), before);
     for (const when of [1, 2, 3]) {
       requests = 0; revokeAt = when;
-      await assert.rejects(runArtifact({ ...options, input: wire(call("first")) }), error => error instanceof AdmissionBlockedError && error.decision.releaseStatus === "REVOKED");
+      await assert.rejects(runArtifact({ ...freshOptions(), input: wire(call("first")) }), error => error instanceof AdmissionBlockedError && error.decision.releaseStatus === "REVOKED");
       assert.equal(requests, when); assert.deepEqual(await ownedContainers(), before);
     }
     requests = 0; revokeAt = Infinity; unsigned = true;
-    await assert.rejects(runArtifact({ ...options, input }), /invalid proof metadata/);
+    await assert.rejects(runArtifact({ ...freshOptions(), input }), /invalid proof metadata/);
     assert.equal(requests, 1); assert.deepEqual(await ownedContainers(), before); unsigned = false;
     requests = 0;
-    await assert.rejects(runArtifact({ ...options, input: wire(call("first", 1, { linger: true })), executionTimeoutMs: 2000 }), /timed out/);
+    await assert.rejects(runArtifact({ ...freshOptions(), input: wire(call("first", 1, { linger: true })), executionTimeoutMs: 2000 }), /timed out/);
     assert.deepEqual(await ownedContainers(), before);
     // The real stdio CLI also removes a still-running container on EOF and on a later denied call.
     const env = { ...process.env, MCPSHIELD_MODE: "live", MCPSHIELD_PREPARED_IDENTITY: identityFile, MCPSHIELD_API_URL: apiBaseUrl,
