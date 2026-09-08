@@ -87,11 +87,15 @@ const docker = (...args) => execFileSync('docker', args, { encoding: 'utf8', tim
 const env = ['ADMIN_API_TOKEN', 'SCANNER_API_TOKEN'].flatMap(key => ['-e', `${key}=${randomBytes(32).toString('hex')}`]);
 let container, client;
 try {
-  container = docker('run', '--detach', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--memory', '1g', '--pids-limit', '128',
+  // Match the user's Free-plan envelope conservatively: 0.5 GB, one CPU, no swap.
+  // This is a bounded demo smoke, not a sustained-load or billing guarantee.
+  container = docker('run', '--detach', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--memory', '500000000', '--memory-swap', '500000000', '--cpus', '1', '--pids-limit', '128',
     '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m', '-p', '127.0.0.1::3000', '-e', 'HOSTNAME=0.0.0.0', '-e', 'PORT=3000', ...env, image);
   assert.match(container, /^[a-f0-9]{64}$/);
   const state = JSON.parse(docker('inspect', container))[0];
   assert.equal(state.Config.User, 'node', 'Release must not run as root');
+  assert.equal(state.HostConfig.Memory, 500000000); assert.equal(state.HostConfig.MemorySwap, 500000000);
+  assert.equal(state.HostConfig.NanoCpus, 1000000000);
   const port = state.NetworkSettings.Ports['3000/tcp'][0].HostPort;
   const origin = `http://127.0.0.1:${port}`;
   let ready = false;
@@ -119,7 +123,7 @@ try {
   const stopped = JSON.parse(docker('inspect', container))[0].State;
   assert.equal(stopped.Running, false); assert.equal(stopped.OOMKilled, false);
   assert.ok([0, 143].includes(stopped.ExitCode), `Release did not terminate gracefully: ${stopped.ExitCode}`);
-  console.log(JSON.stringify({ image, web: 'PASS', mcpLegacy: 'PASS', mcpModern: 'PASS', mcpData: 'SYNTHETIC_REPLAY', judge, lifecycle: 'PASS' }));
+  console.log(JSON.stringify({ image, web: 'PASS', mcpLegacy: 'PASS', mcpModern: 'PASS', mcpData: 'SYNTHETIC_REPLAY', judge, lifecycle: 'PASS', resourceEnvelope: { memoryBytes: 500000000, cpus: 1, swapBytes: 0, sustainedLoadMeasured: false } }));
 } finally {
   await client?.close().catch(() => {});
   if (container && /^[a-f0-9]{64}$/.test(container)) docker('rm', '--force', container);

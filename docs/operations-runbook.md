@@ -165,6 +165,13 @@ shrinkwrap이 npm install 때 root lock에 끼워 넣은 `extraneous` 항목만 
 
 배포 전 unit/integration/실제 Docker 테스트, production dependency audit, secret scan을 수행한다.
 공개 `/mcp`와 `/try`는 합성 데이터 데모를 유지한다. 운영 credential·evidence API를 익명 데모에 노출하지 않는다.
+
+Railway Free의 현재 한도는 서비스당 0.5 GB RAM·1 vCPU이며, 무제한 무료 상시 운영을 뜻하지 않는다.
+release-image smoke는 500,000,000 bytes·1 CPU·swap 없음에서 웹/MCP/9단계 Judge API와 종료를 검증한다.
+이는 Docker에서 실제 통과한 커밋에 한해 짧은 데모 동작 증거이며 동시 사용자 부하·월간 비용·Railway 배포 성공 보증이 아니다.
+격리 설치·스캔용 Docker daemon과 사설 DB/검증자 운영을 공개 데모 컨테이너에 몰아넣지 않는다.
+근거: [Railway 요금제·리소스 한도](https://docs.railway.com/pricing/plans).
+
 DB migration은 추가 방식으로 적용하고, 백업을 확인한 후 새 버전을 배포한다.
 실패 시 이전 이미지로 롤백한다. 데이터 삭제나 기존 schema 재설계는 롤백 수단으로 쓰지 않는다.
 
