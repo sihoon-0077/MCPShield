@@ -5,6 +5,7 @@ import { policyVerdict, validPolicy } from "../../api/src/control-policy.js";
 import { hash } from "../../api/src/control-plane.js";
 import { attestationV2Domain, attestationV2Types, bytes32, createReleaseRegistryV2, exactReleaseIdentity, quarantineV2Types } from "../../../packages/contracts-sdk/src/v2.js";
 import { boundedServiceRequest, checkedServiceUrl, v2RpcRequest } from "../../../packages/contracts-sdk/src/transport.js";
+import { traceHeaders, withSpan } from "../../../packages/telemetry/index.mjs";
 // @ts-expect-error Scanner evidence is shared ESM JavaScript.
 import { verifyEvidenceBundle } from "../../../services/scanner/src/evidence.mjs";
 
@@ -52,10 +53,12 @@ export async function runValidatorFanout(options: { apiUrl: string; token: strin
   if (wallets.length < 2 || wallets.length > 3 || new Set(wallets.map((wallet) => wallet.address)).size !== wallets.length) throw new Error("TWO_OR_THREE_UNIQUE_VALIDATORS_REQUIRED");
   const base = checkedServiceUrl(options.apiUrl), provider = new JsonRpcProvider(v2RpcRequest(options.rpcUrl), undefined, { batchMaxCount: 1 });
   const registry = createReleaseRegistryV2(options.registryAddress, provider);
+  let scanTraceparent: string | undefined;
   const request = async (path: string, body?: any) => {
     const response = await boundedServiceRequest(new URL(path, base).href, { method: body ? "POST" : "GET",
-      headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json", ...traceHeaders() }, body: body ? JSON.stringify(body) : undefined });
     if (response.statusCode < 200 || response.statusCode >= 300) throw new Error(`VALIDATOR_API_HTTP_${response.statusCode}`);
+    if (path === `/v1/scans/${options.scanId}` && !scanTraceparent) scanTraceparent = response.headers.traceparent;
     return JSON.parse(response.body.toString());
   };
   const settle = async (actionId: string, calldata: string) => {
@@ -74,26 +77,29 @@ export async function runValidatorFanout(options: { apiUrl: string; token: strin
   };
   try {
     if ((await provider.getNetwork()).chainId !== BigInt(options.chainId)) throw new Error("CHAIN_ID_MISMATCH");
+    await request(`/v1/scans/${options.scanId}`);
+    return await withSpan("validator.fanout", { "mcpshield.scan_id": options.scanId, "mcpshield.chain_id": options.chainId }, async () => {
     const operations: Record<string, any>[] = [];
     for (let index = 0; index < 2; index++) {
       const wallet = wallets[index], { scan } = await request(`/v1/scans/${options.scanId}`), evidence = await request(`/v1/scans/${options.scanId}/evidence`);
       const policy = (await request("/v1/policies")).items.find((item: any) => item.policyHash === options.policyHash && !item.deprecatedAt)?.document;
       const validators = new Contract(await registry.validators(), ["function version() view returns(uint32)", "function isActiveValidator(address,uint32) view returns(bool)"], provider);
-      const submit = async (quarantine = false) => {
+      const submit = async (quarantine = false) => withSpan("validator.attest", { "mcpshield.scan_id": options.scanId, "mcpshield.validator_id": wallet.address }, async () => {
         const version = Number(await validators.version());
         if (!await validators.isActiveValidator(wallet.address, version)) throw new Error("NOT_VALIDATOR");
         const template = await request(`/v1/scans/${options.scanId}/${quarantine ? "quarantine" : "attestation"}?validator=${wallet.address}`);
-        const checked = checkedValidatorPayload(template, { ...options, scan, evidence, policy, identity: await registry.releases(scan.releaseId),
-          validatorSetVersion: version, nonce: Number(await registry.nonces(wallet.address)) }, quarantine);
+        const checked = await withSpan("validator.verify", { "mcpshield.scan_id": options.scanId }, async () => checkedValidatorPayload(template, { ...options, scan, evidence, policy, identity: await registry.releases(scan.releaseId),
+          validatorSetVersion: version, nonce: Number(await registry.nonces(wallet.address)) }, quarantine));
         // Never sign server-supplied domain/types: only the pinned local definitions and reconstructed payload survive.
-        const signature = await wallet.signTypedData(checked.domain, checked.types, checked.payload);
+        const signature = await withSpan("validator.sign", { "mcpshield.validator_id": wallet.address }, () => wallet.signTypedData(checked.domain, checked.types, checked.payload));
         const { action } = await request(`/v1/validator/${quarantine ? "quarantines" : "attestations"}`, { scanId: options.scanId, payload: checked.payload, signature });
         operations.push(await settle(action.actionId, registry.interface.encodeFunctionData(quarantine ? "quarantineBySignature" : "submitAttestation", [checked.payload, signature])));
-      };
+      });
       if (index === 0 && options.quarantineFirst && scan.result?.verdict === "FAIL") await submit(true);
       await submit();
     }
     return { mode: "SINGLE_INSTITUTION_DEMO", validators: wallets.slice(0, 2).map((wallet) => wallet.address), operations };
+    }, { traceparent: scanTraceparent });
   } finally { provider.destroy(); }
 }
 async function main() {

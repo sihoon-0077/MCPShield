@@ -73,7 +73,8 @@ async function fullCycle(realDocker: boolean) {
     const template = (await app.inject({ url: `/v1/scans/${scanId}/${quarantine ? "quarantine" : "attestation"}?validator=${validator.address}`, headers: auth })).json();
     assert.ok(template.payload, JSON.stringify(template));
     const signature = await validator.signTypedData(template.domain, template.types, template.payload);
-    const response = await post(`/v1/validator/${quarantine ? "quarantines" : "attestations"}`, { scanId, payload: template.payload, signature });
+    const response = await post(`/v1/validator/${quarantine ? "quarantines" : "attestations"}`, { scanId, payload: template.payload, signature },
+      { traceparent: `00-${"f".repeat(32)}-${"e".repeat(16)}-01`, baggage: "authorization=synthetic-trace-poison" });
     await settle(response.action.actionId);
     assert.equal((await post(`/v1/validator/${quarantine ? "quarantines" : "attestations"}`, { scanId, payload: template.payload, signature })).action.actionId, response.action.actionId);
     return { template, signature };
@@ -124,11 +125,27 @@ async function fullCycle(realDocker: boolean) {
       assert.equal(JSON.parse((result.content as any[])[0].text).messages[0].subject, "Welcome");
     } finally { await client.close(); }
     await indexV2(store, relayer, { deploymentBlock: deployment.releaseRegistry.blockNumber, confirmations: 1 });
+    const scanTrace = (await store.scan("test-team", safe.scan.scanId))!.traceId;
+    const tracedActions = await store.query("SELECT trace_parent,submission_trace_parent,tx_hash FROM cp_chain_actions WHERE release_id = ? AND kind = 'ATTEST'", [safe.release.releaseId]);
+    assert.equal(tracedActions.length, 2);
+    for (const action of tracedActions) {
+      assert.equal(action.trace_parent.split("-")[1], scanTrace);
+      assert.equal(action.submission_trace_parent.split("-")[1], scanTrace);
+      assert.notEqual(action.trace_parent, action.submission_trace_parent);
+    }
+    const indexedVotes = (await store.events("test-team", safe.release.releaseId)).filter((event) => event.eventName.startsWith("chain.") && tracedActions.some((action) => action.tx_hash === event.payload.txHash));
+    assert.ok(indexedVotes.length >= 2); assert.ok(indexedVotes.every((event) => event.traceId === scanTrace));
     const snapshot = await chain.provider.request({ method: "evm_snapshot", params: [] });
     const bad = await prepareRelease("1.0.1");
     await vote(bad.scan.scanId, validators[0], true);
     assert.equal((await gateway(bad.release, "Gateway-A")).releaseStatus, "QUARANTINED");
     await vote(bad.scan.scanId, validators[0]); await vote(bad.scan.scanId, validators[1]);
+    const badScanTrace = (await store.scan("test-team", bad.scan.scanId))!.traceId;
+    for (const action of await store.query("SELECT trace_parent,submission_trace_parent FROM cp_chain_actions WHERE release_id = ? AND kind IN ('ATTEST','QUARANTINE')", [bad.release.releaseId])) {
+      assert.equal(action.trace_parent.split("-")[1], badScanTrace);
+      assert.equal(action.submission_trace_parent.split("-")[1], badScanTrace);
+      assert.doesNotMatch(JSON.stringify(action), /synthetic-trace-poison|authorization/);
+    }
     for (const agent of ["Gateway-A", "Gateway-B"]) {
       const denied = await gateway(bad.release, agent); assert.equal(denied.decision, "BLOCK"); assert.equal(denied.releaseStatus, "REVOKED");
       await assert.rejects(runArtifact({ ...gatewayOptions(bad.release, agent), artifactDir: (await store.get("test-team", "release", bad.release.releaseId))!.artifactDir, capture: true }), (error: any) => error instanceof AdmissionBlockedError && error.decision.releaseStatus === "REVOKED");

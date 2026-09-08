@@ -1,6 +1,13 @@
 import type { ControlStore } from "../../api/src/control-store.js";
 import type { V2Relayer } from "../../api/src/chain-outbox.js";
 import { v2ChainReader } from "../../api/src/registry-v2-client.js";
+import { currentTraceId, withSpan } from "../../../packages/telemetry/index.mjs";
+
+async function indexedTransaction<T>(store: ControlStore, client: V2Relayer, txHash: string, blockNumber: number, execute: () => Promise<T>) {
+  const [action] = await store.query("SELECT submission_trace_parent,trace_parent FROM cp_chain_actions WHERE chain_id = ? AND registry_address = ? AND tx_hash = ? LIMIT 1", [client.chainId, client.registryAddress.toLowerCase(), txHash]);
+  return withSpan("indexer.observe", { "mcpshield.chain_id": client.chainId, "mcpshield.block_number": blockNumber }, execute,
+    { traceparent: action?.submission_trace_parent ?? action?.trace_parent ?? undefined });
+}
 
 export async function indexV2(store: ControlStore, client: V2Relayer, { deploymentBlock = 0, confirmations = 2 } = {}) {
   const chainId = client.chainId, registry = client.registryAddress.toLowerCase();
@@ -14,7 +21,8 @@ export async function indexV2(store: ControlStore, client: V2Relayer, { deployme
     const releases = await store.query("SELECT tenant_id,document FROM cp_records WHERE kind = 'release'");
     for (const event of orphaned) for (const row of releases) {
       const release = JSON.parse(row.document);
-      if (release.releaseId === event.release_id) await store.event(row.tenant_id, event.release_id, "chain.event.orphaned", { txHash: event.transaction_hash, blockHash: event.block_hash, chainId });
+      if (release.releaseId === event.release_id) await indexedTransaction(store, client, event.transaction_hash, saved.block_number,
+        () => store.event(row.tenant_id, event.release_id, "chain.event.orphaned", { txHash: event.transaction_hash, blockHash: event.block_hash, chainId }, currentTraceId()));
     }
     await store.query("DELETE FROM cp_v2_events WHERE chain_id = ? AND registry_address = ? AND block_number >= ?", [chainId, registry, saved.block_number]);
     await store.query("DELETE FROM cp_v2_blocks WHERE chain_id = ? AND registry_address = ? AND block_number >= ?", [chainId, registry, saved.block_number]);
@@ -31,13 +39,15 @@ export async function indexV2(store: ControlStore, client: V2Relayer, { deployme
       const event = client.registry.interface.parseLog(log); if (!event) continue;
       const payload = Object.fromEntries(event.fragment.inputs.map((input, index) => [input.name, typeof event.args[index] === "bigint" ? event.args[index].toString() : event.args[index]]));
       const releaseId = payload.releaseId ?? null;
+      await indexedTransaction(store, client, log.transactionHash, log.blockNumber, async () => {
       const inserted = await store.query(`INSERT INTO cp_v2_events(chain_id,registry_address,block_number,block_hash,transaction_hash,log_index,release_id,event_name,payload)
         VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(chain_id,registry_address,transaction_hash,log_index) DO NOTHING RETURNING log_index`,
         [chainId, registry, log.blockNumber, log.blockHash, log.transactionHash, log.index, releaseId, event.name, JSON.stringify(payload)]);
       if (inserted.length) {
         observed++;
-        for (const entry of tenants.filter((entry) => entry.release.releaseId === releaseId)) await store.event(entry.tenantId, releaseId, `chain.${event.name}`, { ...payload, blockNumber: log.blockNumber, blockHash: log.blockHash, txHash: log.transactionHash, chainId });
+        for (const entry of tenants.filter((entry) => entry.release.releaseId === releaseId)) await store.event(entry.tenantId, releaseId, `chain.${event.name}`, { ...payload, blockNumber: log.blockNumber, blockHash: log.blockHash, txHash: log.transactionHash, chainId }, currentTraceId());
       }
+      });
     }
     // Keep every observed block hash: rewind can find a precise common ancestor even across empty blocks.
     for (let number = from; number <= to; number++) {

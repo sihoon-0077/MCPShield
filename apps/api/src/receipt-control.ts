@@ -9,6 +9,7 @@ import { chainActionId, chainActions, enqueueChainAction } from "./chain-outbox.
 import { hash, loadEvidence, saveEvidence, type ControlOptions, type Credential } from "./control-plane.js";
 import type { ControlStore } from "./control-store.js";
 import type { ReceiptRelayer } from "./receipt-relayer.js";
+import { currentTraceId } from "../../../packages/telemetry/index.mjs";
 
 const fail = (code: string, statusCode = 400) => Object.assign(new Error(code), { statusCode });
 const exact = (value: any, keys: string[]) => value && !Array.isArray(value) && typeof value === "object" && Object.keys(value).sort().join() === [...keys].sort().join();
@@ -27,7 +28,7 @@ export async function refreshReceipt(store: ControlStore, client: ReceiptRelayer
     if (ledger) await transaction.put(tenantId, "receipt-ledger", recordId, current, true);
     else await transaction.query("UPDATE cp_receipt_batches SET document = ? WHERE tenant_id = ? AND batch_id = ?", [JSON.stringify(current), tenantId, recordId]);
     if (current.assurance !== previous.assurance) await transaction.event(tenantId, null, `receipt.${ledger ? "ledger" : "batch"}.${current.assurance.toLowerCase()}`,
-      { recordId, txHash: current.txHash, blockHash: current.observedBlockHash ?? null, chainId: client.chainId, registryAddress: client.registryAddress });
+      { recordId, txHash: current.txHash, blockHash: current.observedBlockHash ?? null, chainId: client.chainId, registryAddress: client.registryAddress }, currentTraceId());
     return current;
   });
 }

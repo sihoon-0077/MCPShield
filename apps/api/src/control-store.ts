@@ -40,12 +40,16 @@ export class ControlStore {
     }
     const migration = (name: string) => readFileSync(fileURLToPath(new URL(`../../../database/migrations/${name}.sql`, import.meta.url)), "utf8");
     const schema = [migration("002_control_plane"), migration(`003_scan_audit.${store.pool ? "pg" : "sqlite"}`), migration("004_chain_outbox"), migration("006_scan_request_keys"), migration("007_receipt_anchors")].join("\n");
-    const domain = migration("005_chain_action_domain");
+    const extensions = [
+      { column: "registry_address", sql: migration("005_chain_action_domain") },
+      { column: "submission_trace_parent", sql: migration("008_submission_trace") },
+    ];
     if (store.sqlite) {
       store.sqlite.exec("BEGIN IMMEDIATE");
       try {
         store.sqlite.exec(schema);
-        if (!store.sqlite.prepare("PRAGMA table_info(cp_chain_actions)").all().some((column) => column.name === "registry_address")) store.sqlite.exec(domain);
+        const columns = store.sqlite.prepare("PRAGMA table_info(cp_chain_actions)").all();
+        for (const extension of extensions) if (!columns.some((column) => column.name === extension.column)) store.sqlite.exec(extension.sql);
         store.sqlite.exec("COMMIT");
       } catch (error) { store.sqlite.exec("ROLLBACK"); store.sqlite.close(); throw error; }
     } else {
@@ -54,7 +58,7 @@ export class ControlStore {
         await client.query("BEGIN"); await client.query("SELECT pg_advisory_xact_lock(hashtext('mcpshield-control-migrations'))");
         await client.query(schema);
         const columns = (await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'cp_chain_actions'")).rows;
-        if (!columns.some((column) => column.column_name === "registry_address")) await client.query(domain);
+        for (const extension of extensions) if (!columns.some((column) => column.column_name === extension.column)) await client.query(extension.sql);
         await client.query("COMMIT");
       } catch (error) { await client.query("ROLLBACK"); throw error; }
       finally { client.release(); }

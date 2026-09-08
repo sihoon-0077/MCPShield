@@ -233,6 +233,16 @@ The signing inputs come from local receipts and pinned direct RPC, never API tem
 It reports queued status only; poll the batch endpoint for confirmation. Local tests
 use synthetic single-institution keys, not independently operated external writers.
 
+Scan detail responses carry a W3C `traceparent` header. The validator continues it
+through `validator.fanout/attest/verify/sign`, sends only `traceparent` on API calls,
+and API `validator.accept` accepts a child parent only within that scan's trace.
+Outbox migration 008 persists `submission_trace_parent` for `chain.submit`; V2 and
+receipt indexers follow the actual transaction's scoped parent and reuse its trace ID
+in audit events. Shared telemetry's fixed attribute allowlist still excludes bodies,
+signatures, tokens, private keys, baggage and raw exceptions. The real V2 regression
+checks these durable trace IDs with exports disabled; collector verification of the
+combined exported scan-to-admission trace is a separate integration gate.
+
 `tests/contracts/receipt-anchor.test.ts` measures local Ganache gas (not money prices);
 `tests/api/receipt-anchors.test.ts` exercises real EVM/API/outbox/indexer/CLI, tenant ACL,
 signature binding, AES-GCM storage, N-depth, actual snapshot/revert and raw-tx recovery.

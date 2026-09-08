@@ -144,9 +144,12 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       return reply.code(202).send({ ...result, scan: publicScan(result.scan), links: { self: `/v1/scans/${result.scan.scanId}` } });
     });
     api.get("/scans", async (request) => ({ items: (await store.scans(authenticate(request.headers.authorization).tenantId)).map(publicScan) }));
-    api.get("/scans/:scanId", async (request) => {
+    api.get("/scans/:scanId", async (request, reply) => {
       const scan = await store.scan(authenticate(request.headers.authorization).tenantId, (request.params as any).scanId);
-      if (!scan) throw err("SCAN_NOT_FOUND", 404); return { scan: publicScan(scan) };
+      if (!scan) throw err("SCAN_NOT_FOUND", 404);
+      return withSpan("scan.read", { "mcpshield.scan_id": scan.scanId }, async () => {
+        reply.headers(traceHeaders()); return { scan: publicScan(scan) };
+      }, { traceparent: scan.request.traceparent });
     });
     api.post("/scans/:scanId/retry", async (request) => {
       const user = authenticate(request.headers.authorization); authorize(user, "operator");

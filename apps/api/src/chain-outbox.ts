@@ -3,7 +3,7 @@ import { AbiCoder, Contract, JsonRpcProvider, TypedDataEncoder, Wallet, keccak25
 import { attestationV2Domain, attestationV2Types, bytes32, createReleaseRegistryV2, quarantineV2Types } from "../../../packages/contracts-sdk/src/v2.js";
 import { ControlStore } from "./control-store.js";
 import { hash } from "./control-plane.js";
-import { traceHeaders, withSpan } from "../../../packages/telemetry/index.mjs";
+import { currentTraceId, traceHeaders, withSpan } from "../../../packages/telemetry/index.mjs";
 import { v2RpcRequest } from "../../../packages/contracts-sdk/src/transport.js";
 
 export type ChainActionKind = "REGISTER_RELEASE" | "PUBLISH_POLICY" | "DEPRECATE_POLICY" | "ATTEST" | "QUARANTINE" | "SYNC_EXPIRY" | "REGISTER_RECEIPT_LEDGER" | "ANCHOR_RECEIPTS";
@@ -95,6 +95,7 @@ export async function runChainActionOnce(store: ControlStore, relayer: ChainRela
   const payload = JSON.parse(action.payload);
   try {
     await withSpan("chain.submit", { "mcpshield.chain_id": relayer.chainId }, async () => {
+      await store.query("UPDATE cp_chain_actions SET submission_trace_parent = ? WHERE action_id = ? AND lease_owner = ?", [traceHeaders().traceparent ?? null, action.action_id, owner]);
       if (action.state === "NEW" && await relayer.alreadyApplied(action.kind, payload)) {
         await store.query("UPDATE cp_chain_actions SET state = 'COMPLETED', updated_at = ? WHERE action_id = ? AND lease_owner = ?", [new Date().toISOString(), action.action_id, owner]); return;
       }
@@ -129,7 +130,7 @@ export async function runChainActionOnce(store: ControlStore, relayer: ChainRela
         const state = receipt.status === 1 ? "COMPLETED" : "FAILED";
         await store.query("UPDATE cp_chain_actions SET state = ?, error_code = ?, updated_at = ? WHERE action_id = ? AND lease_owner = ?",
           [state, state === "FAILED" ? "TRANSACTION_REVERTED" : null, new Date().toISOString(), action.action_id, owner]);
-        await store.event(action.tenant_id, action.release_id, "chain.action.completed", { actionId: action.action_id, txHash: action.tx_hash, status: state });
+        await store.event(action.tenant_id, action.release_id, "chain.action.completed", { actionId: action.action_id, txHash: action.tx_hash, status: state }, currentTraceId());
       }
     }, { traceparent: action.trace_parent ?? undefined });
   } catch (error: any) {

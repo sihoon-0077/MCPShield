@@ -5,12 +5,20 @@ import { chainActionId, chainActions, enqueueChainAction, type V2Relayer } from 
 import { ControlStore } from "./control-store.js";
 import { hash, loadEvidence, type ControlOptions, type Credential } from "./control-plane.js";
 import { policyVerdict } from "./control-policy.js";
+import { withSpan } from "../../../packages/telemetry/index.mjs";
 
 const failure = (message: string, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 export async function registerChainRoutes(api: FastifyInstance, store: ControlStore, options: ControlOptions,
   authenticate: (header: string | undefined) => Credential, authorize: (identity: Credential, role: "operator" | "admin") => void) {
   const relayer = options.v2Relayer;
   const enabled = (): V2Relayer => { if (!relayer) throw failure("V2_RELAYER_NOT_CONFIGURED", 503); return relayer; };
+  const signedAction = (tenantId: string, kind: "ATTEST" | "QUARANTINE", payload: any, scan: any, incoming: unknown) => {
+    // Continue the validator's child span only when it belongs to this scan's trace; never import baggage.
+    const traceparent = typeof incoming === "string" && /^00-(?!0{32})[0-9a-f]{32}-(?!0{16})[0-9a-f]{16}-0[01]$/.test(incoming)
+      && incoming.split("-")[1] === scan.traceId ? incoming : scan.request.traceparent;
+    return withSpan("validator.accept", { "mcpshield.scan_id": scan.scanId, "mcpshield.chain_id": enabled().chainId },
+      () => enqueueChainAction(store, enabled(), tenantId, kind, payload), { traceparent });
+  };
   const prepare = async (tenantId: string, scanId: string, validator: string) => {
     const client = enabled(), scan = await store.scan(tenantId, scanId);
     if (!scan?.result || scan.status !== "COMPLETED") throw failure("SCAN_NOT_READY", 409);
@@ -66,7 +74,7 @@ export async function registerChainRoutes(api: FastifyInstance, store: ControlSt
     const { deadline, ...received } = body.payload;
     if (hash(expected) !== hash(received) || !Number.isSafeInteger(deadline) || deadline < Math.floor(Date.now() / 1000) || deadline > prepared.payload.validUntil
       || deadline > Math.floor(Date.now() / 1000) + 3600) throw failure("ATTESTATION_BINDING_MISMATCH");
-    return reply.code(202).send({ action: await enqueueChainAction(store, client, user.tenantId, "ATTEST", actionPayload, prepared.scan.request.traceparent) });
+    return reply.code(202).send({ action: await signedAction(user.tenantId, "ATTEST", actionPayload, prepared.scan, request.headers.traceparent) });
   });
   api.get("/scans/:scanId/quarantine", async (request) => {
     const user = authenticate(request.headers.authorization); authorize(user, "operator");
@@ -95,6 +103,6 @@ export async function registerChainRoutes(api: FastifyInstance, store: ControlSt
       && ["CANARY_EXFILTRATION", "HOST_ESCAPE_ATTEMPT", "DIGEST_MISMATCH"].includes(finding.code) && id(finding.code) === q.reasonCode);
     if (!allowed || q.releaseId !== prepared.scan.releaseId || q.policyHash !== prepared.scan.policyHash || q.evidenceHash !== prepared.scan.result!.reportRoot
       || !Number.isSafeInteger(q.expiresAt) || q.expiresAt <= now || q.expiresAt > now + 86400 || !Number.isSafeInteger(q.deadline) || q.deadline < now || q.deadline > now + 3600) throw failure("QUARANTINE_BINDING_MISMATCH");
-    return reply.code(202).send({ action: await enqueueChainAction(store, client, user.tenantId, "QUARANTINE", actionPayload, prepared.scan.request.traceparent) });
+    return reply.code(202).send({ action: await signedAction(user.tenantId, "QUARANTINE", actionPayload, prepared.scan, request.headers.traceparent) });
   });
 }
