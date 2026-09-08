@@ -54,6 +54,33 @@ jobs:
           docker compose -f docker-compose.yml -f compose.observability.yml config --quiet
           node scripts/ops/init-control.mjs
           docker compose --env-file .env.master.local -f docker-compose.yml -f compose.control.yml config --quiet
+      - name: Build and inspect the trusted offline npm runtime builder
+        if: matrix.node == 22
+        timeout-minutes: 5
+        run: |
+          mkdir -p runtime-builder-artifact/reports runtime-builder-cache runtime-builder-temp
+          chmod 700 runtime-builder-cache runtime-builder-temp
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -f services/resolver/Dockerfile.builder -t "mcpshield-runtime-builder:$GITHUB_SHA" .
+          docker image inspect "mcpshield-runtime-builder:$GITHUB_SHA" --format '{{.Id}}' > runtime-builder-artifact/image-id.txt
+          docker save "mcpshield-runtime-builder:$GITHUB_SHA" | gzip -n > runtime-builder-artifact/image.tar.gz
+          sha256sum runtime-builder-artifact/image.tar.gz > runtime-builder-artifact/SHA256SUMS
+          docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --read-only -e TRIVY_CACHE_DIR=/cache -v "$PWD/runtime-builder-temp:/tmp" -v "$PWD/runtime-builder-cache:/cache" -v "$PWD/runtime-builder-artifact:/input:ro" -v "$PWD/runtime-builder-artifact/reports:/reports" aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 image --input /input/image.tar.gz --scanners vuln --format json --output /reports/image-scan.json
+          sha256sum -c runtime-builder-artifact/SHA256SUMS
+          node scripts/ops/check-image-report.mjs runtime-builder-artifact/reports/image-scan.json runtime-builder-artifact/image-id.txt "$GITHUB_SHA" --runtime-builder
+      - name: Exercise real supplied-lock preparation and immutable closure image
+        if: matrix.node == 22
+        timeout-minutes: 5
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/security/npm-closure.test.mjs
+      - name: Retain failed builder security evidence without publishing its image
+        if: failure() && matrix.node == 22
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-builder-scan-failure-${{ github.sha }}
+          path: runtime-builder-artifact/reports/image-scan.json
+          retention-days: 1
+          if-no-files-found: ignore
       - name: Exercise actual Linux sandbox isolation
         if: matrix.node == 22
         timeout-minutes: 5

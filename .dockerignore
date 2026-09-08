@@ -17,6 +17,9 @@ data
 release-artifact
 trivy-cache
 trivy-temp
+runtime-builder-artifact
+runtime-builder-cache
+runtime-builder-temp
 .codex
 .railway
 .env

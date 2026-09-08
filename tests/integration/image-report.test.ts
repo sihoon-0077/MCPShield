@@ -24,3 +24,14 @@ test('CycloneDX evidence must contain the actual application dependencies', () =
   assert.throws(() => checkImageSbom({ bomFormat: 'CycloneDX', components: components.slice(1) }), /Missing SBOM/);
   assert.throws(() => checkImageSbom({ bomFormat: 'CycloneDX', components: [] }), /Missing SBOM/);
 });
+test('runtime builder scans require the trusted global toolchain rather than release-app packages', () => {
+  const npmPackage = { Name: 'npm', Version: '12.0.2', FilePath: 'usr/local/lib/node_modules/npm/package.json' };
+  const builder = { ...report(), Results: [report().Results[0], { Class: 'lang-pkgs', Type: 'node-pkg', Packages: [
+    npmPackage,
+    { Name: 'tar', Version: '7.5.22', FilePath: 'usr/local/lib/node_modules/npm/node_modules/tar/package.json' },
+  ] }] };
+  assert.equal(checkImageReport(builder, imageId, revision, 'runtime-builder').highCritical, 0);
+  assert.throws(() => checkImageReport(builder, imageId, revision), /application dependency coverage/);
+  npmPackage.Version = '0.0.0';
+  assert.throws(() => checkImageReport(builder, imageId, revision, 'runtime-builder'), /Wrong trusted npm/);
+});

@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const requiredPackages = ['fastify', 'next', '@modelcontextprotocol/server', '@aws-sdk/client-s3'];
-export function checkImageReport(report, expectedImageId, revision) {
+export function checkImageReport(report, expectedImageId, revision, profile = 'release') {
+  assert.ok(['release', 'runtime-builder'].includes(profile), 'Unknown image coverage profile');
   assert.match(expectedImageId, /^sha256:[a-f0-9]{64}$/);
   assert.equal(report.ArtifactType, 'container_image', 'Missing container image scan');
   assert.equal(report.Metadata?.ImageID, expectedImageId, 'Scanned image does not match the build');
@@ -11,10 +12,13 @@ export function checkImageReport(report, expectedImageId, revision) {
   assert.equal(report.Metadata?.OS?.Family, 'alpine', 'Missing OS identification');
   assert.ok(report.Results?.some(r => r.Class === 'os-pkgs' && r.Type === 'alpine' && r.Packages?.length), 'Missing OS package coverage');
   const packages = report.Results?.filter(r => r.Class === 'lang-pkgs' && r.Type === 'node-pkg').flatMap(r => r.Packages ?? []) ?? [];
-  for (const name of requiredPackages) assert.ok(packages.some(p => p.Name === name && /^app\/(?:.*\/)?node_modules\//.test(p.FilePath ?? '')), `Missing application dependency coverage: ${name}`);
+  const names = profile === 'release' ? requiredPackages : ['npm', 'tar'];
+  const path = profile === 'release' ? /^app\/(?:.*\/)?node_modules\// : /^usr\/local\/lib\/node_modules\/npm\//;
+  for (const name of names) assert.ok(packages.some(p => p.Name === name && path.test(p.FilePath ?? '')), `Missing application dependency coverage: ${name}`);
+  if (profile === 'runtime-builder') assert.ok(packages.some(p => p.Name === 'npm' && p.Version === '12.0.2'), 'Wrong trusted npm version');
   const severe = report.Results.flatMap(r => r.Vulnerabilities ?? []).filter(v => ['HIGH', 'CRITICAL'].includes(v.Severity));
   assert.equal(severe.length, 0, `Image HIGH/CRITICAL vulnerability gate failed: ${severe.length}`);
-  return { imageId: expectedImageId, revision, applicationPackages: packages.length, highCritical: 0 };
+  return { imageId: expectedImageId, revision, profile, applicationPackages: packages.length, highCritical: 0 };
 }
 export function checkImageSbom(sbom) {
   assert.equal(sbom.bomFormat, 'CycloneDX');
@@ -29,7 +33,8 @@ export function checkImageSbom(sbom) {
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   const [scanPath, imageIdPath, revision, sbomPath] = process.argv.slice(2);
   assert.match(revision ?? '', /^[a-f0-9]{40}$/);
-  const result = checkImageReport(JSON.parse(readFileSync(scanPath, 'utf8')), readFileSync(imageIdPath, 'utf8').trim(), revision);
-  if (sbomPath) checkImageSbom(JSON.parse(readFileSync(sbomPath, 'utf8')));
-  console.log(JSON.stringify({ ...result, sbomChecked: Boolean(sbomPath), licenseInventoryIsLegalApproval: false }));
+  const builder = sbomPath === '--runtime-builder';
+  const result = checkImageReport(JSON.parse(readFileSync(scanPath, 'utf8')), readFileSync(imageIdPath, 'utf8').trim(), revision, builder ? 'runtime-builder' : 'release');
+  if (sbomPath && !builder) checkImageSbom(JSON.parse(readFileSync(sbomPath, 'utf8')));
+  console.log(JSON.stringify({ ...result, sbomChecked: Boolean(sbomPath && !builder), licenseInventoryIsLegalApproval: false }));
 }
