@@ -23,6 +23,13 @@ test("admission timeout covers a stalled response body and bounds response size"
   await assert.rejects(admissionFetch("http://127.0.0.1", {}, async () => new Response("x".repeat(65_537)), 100), /exceeds 65536/);
 });
 
+test("signed credentials cannot be sent to public HTTP or redirected endpoints", async () => {
+  let called = false;
+  await assert.rejects(getSignedAdmission({ ...context, apiBaseUrl: "http://public.example", timeoutMs: 100, fetchImpl: async () => { called = true; return json(signed(base)); } }), /requires HTTPS/);
+  assert.equal(called, false);
+  await admissionFetch("http://127.0.0.1", {}, async (_url, options) => { assert.equal(options.redirect, "error"); return json({}); }, 100);
+});
+
 test("signed admission binds every trust coordinate and rejects stale, tampered, unsigned proof", () => {
   const envelope = signed(base);
   assert.equal(verifyAdmissionSnapshot(envelope, { ...context, now }).decision, "ALLOW");

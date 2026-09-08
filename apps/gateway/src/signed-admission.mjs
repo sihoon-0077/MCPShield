@@ -15,7 +15,7 @@ export async function admissionFetch(url, options, fetchImpl, timeoutMs) {
     timer = setTimeout(() => { const error = new DOMException("Admission request timed out", "TimeoutError"); controller.abort(error); reject(error); }, timeoutMs);
   });
   const receive = async () => {
-    const response = await fetchImpl(url, { ...options, headers: { ...options.headers, ...traceHeaders() }, signal: controller.signal });
+    const response = await fetchImpl(url, { ...options, headers: { ...options.headers, ...traceHeaders() }, signal: controller.signal, redirect: "error" });
     controller.signal.throwIfAborted();
     if (!response.body) return response;
     reader = response.body.getReader();
@@ -65,6 +65,10 @@ export async function getSignedAdmission({ identity, apiBaseUrl, timeoutMs, fetc
   operationClass = "WRITE_EXTERNAL", cacheFile = process.env.MCPSHIELD_ADMISSION_CACHE_FILE, now = Date.now,
   apiToken = process.env.MCPSHIELD_CONTROL_TOKEN, tenantId = process.env.MCPSHIELD_TENANT_ID, controlReleaseId = process.env.MCPSHIELD_CONTROL_RELEASE_ID }) {
   if (!["strict", "balanced"].includes(admissionMode)) throw new Error("Admission mode must be strict or balanced");
+  const endpoint = new URL(apiBaseUrl);
+  const allowedHttp = new Set(["127.0.0.1", "localhost", "[::1]", ...(process.env.MCPSHIELD_API_HTTP_HOSTS ?? "").split(",").map((host) => host.trim()).filter(Boolean)]);
+  if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/" ||
+    (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && allowedHttp.has(endpoint.hostname)))) throw new Error("Signed admission requires HTTPS or an explicitly trusted private HTTP hostname");
   if (!["READ_PUBLIC", "READ_PRIVATE", "WRITE_EXTERNAL", "DESTRUCTIVE", "FINANCIAL"].includes(operationClass)) throw new Error("Invalid operation class");
   identity = { ...identity, releaseId: controlReleaseId ?? identity.releaseId };
   if (!/^0x[0-9a-f]{64}$/i.test(identity.releaseId)) throw new Error("MCPSHIELD_CONTROL_RELEASE_ID must pin the exact /v1 release ID");

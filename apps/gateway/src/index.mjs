@@ -2,12 +2,13 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { Transform } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import { createArtifactSnapshot, toolSurfaceHash } from "./artifact.mjs";
+import { createArtifactSnapshot } from "./artifact.mjs";
+import { runtimeSurfaceGuards } from "./protocol-guard.mjs";
+export { runtimeSurfaceGuards, ToolSurfaceDriftError } from "./protocol-guard.mjs";
 import { admissionFetch, getSignedAdmission } from "./signed-admission.mjs";
 import { currentTraceId, recordAdmission, withSpan } from "../../../packages/telemetry/index.mjs";
 
@@ -23,15 +24,6 @@ export class AdmissionBlockedError extends Error {
     super(`MCPShield blocked ${decision.releaseId}: ${decision.reasonCode} (${decision.releaseStatus})${decision.reportUrl ? `; report: ${decision.reportUrl}` : ""}`);
     this.name = "AdmissionBlockedError";
     this.decision = decision;
-  }
-}
-
-export class ToolSurfaceDriftError extends Error {
-  constructor(expected, observed) {
-    super(`Runtime tools/list drift: expected ${expected}, observed ${observed}`);
-    this.name = "ToolSurfaceDriftError";
-    this.expected = expected;
-    this.observed = observed;
   }
 }
 
@@ -119,88 +111,6 @@ function spawnSnapshot(snapshot) {
     { cwd: snapshot.root, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: childEnvironment() });
 }
 
-function lineTransform(onMessage) {
-  let pending = Buffer.alloc(0);
-  const inspect = async (line) => {
-    const text = line.toString("utf8").trim();
-    if (!text) return;
-    let message;
-    try { message = JSON.parse(text); } catch { throw new Error("MCP stdio emitted invalid newline-delimited JSON-RPC"); }
-    await onMessage(message);
-  };
-  return new Transform({
-    transform(chunk, _encoding, callback) {
-      const processChunk = async () => {
-        pending = Buffer.concat([pending, Buffer.from(chunk)]);
-        if (pending.byteLength > 1024 * 1024) throw new Error("MCP JSON-RPC line exceeds 1 MiB");
-        let newline;
-        while ((newline = pending.indexOf(0x0a)) !== -1) {
-          const line = pending.subarray(0, newline + 1);
-          pending = pending.subarray(newline + 1);
-          await inspect(line);
-          this.push(line);
-        }
-      };
-      processChunk().then(() => callback(), callback);
-    },
-    flush(callback) {
-      const finish = async () => { if (pending.length) { await inspect(pending); this.push(pending); } };
-      finish().then(() => callback(), callback);
-    },
-  });
-}
-
-const idKey = (id) => `${typeof id}:${JSON.stringify(id)}`;
-
-async function eachMessage(value, inspect) {
-  if (!Array.isArray(value)) return inspect(value);
-  if (!value.length) throw new Error("Empty JSON-RPC batches are not allowed");
-  for (const message of value) await inspect(message);
-}
-
-export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall) {
-  const listRequests = new Map();
-  let surfaceChanged = false;
-  const allowedTools = new Set(tools.map(({ name }) => name));
-  const makeRoom = () => {
-    if (listRequests.size < 1_024) return;
-    const completed = [...listRequests].find(([, state]) => state === "COMPLETE");
-    if (completed) listRequests.delete(completed[0]);
-    else throw new Error("Too many pending tools/list requests");
-  };
-  const requests = lineTransform((value) => eachMessage(value, async (message) => {
-    if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("JSON-RPC batch contains an invalid request");
-    if (message.jsonrpc !== "2.0") return;
-    if (message.method === "tools/call" && !allowedTools.has(message.params?.name)) {
-      throw new Error(`Undeclared runtime tool call: ${String(message.params?.name)}`);
-    }
-    if (message.method === "tools/call" && surfaceChanged) throw new ToolSurfaceDriftError(expectedHash, "TOOLS_LIST_CHANGED_REQUIRES_RECHECK");
-    if (message.method === "tools/call" && beforeCall) await beforeCall(message);
-    if (Object.hasOwn(message, "id")) {
-      const key = idKey(message.id);
-      if (message.method === "tools/list") {
-        if (listRequests.get(key) === "PENDING") throw new Error("Duplicate pending tools/list request id");
-        if (!listRequests.has(key)) makeRoom();
-        listRequests.set(key, "PENDING");
-      } else if (listRequests.get(key) === "COMPLETE") listRequests.delete(key);
-    }
-  }));
-  const responses = lineTransform((value) => eachMessage(value, (message) => {
-    if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("JSON-RPC batch contains an invalid response");
-    if (message.method === "notifications/tools/list_changed") { surfaceChanged = true; return; }
-    const key = Object.hasOwn(message, "id") ? idKey(message.id) : undefined;
-    if (!key || !listRequests.has(key)) return;
-    if (listRequests.get(key) === "COMPLETE") throw new Error("Duplicate tools/list response");
-    listRequests.set(key, "COMPLETE");
-    if (message.error) throw new ToolSurfaceDriftError(expectedHash, "TOOLS_LIST_ERROR");
-    if (!Array.isArray(message.result?.tools)) throw new ToolSurfaceDriftError(expectedHash, "INVALID_TOOLS_LIST");
-    const observed = toolSurfaceHash(message.result.tools);
-    if (observed !== expectedHash) throw new ToolSurfaceDriftError(expectedHash, observed);
-    surfaceChanged = false;
-  }));
-  return { requests, responses };
-}
-
 function terminateChild(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill("SIGTERM");
@@ -208,6 +118,18 @@ function terminateChild(child) {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   }, 500);
   force.unref();
+}
+
+function childSurfaceGuards(child, snapshot, options) {
+  return runtimeSurfaceGuards(snapshot.toolSurfaceHash, snapshot.tools, recheckSession(snapshot, options), {
+    sendInternal: (message) => new Promise((resolve, reject) => child.stdin.write(`${JSON.stringify(message)}\n`, (error) => error ? reject(error) : resolve())),
+  });
+}
+
+function stderrSummary(chunk) {
+  const text = chunk.toString("utf8");
+  const category = /ERR_ACCESS_DENIED|permission/i.test(text) ? "PERMISSION_DENIED" : /Code generation from strings disallowed|EvalError/.test(text) ? "CODE_GENERATION_DENIED" : /runtime egress is disabled/.test(text) ? "EGRESS_DENIED" : "CHILD_DIAGNOSTIC";
+  return `${JSON.stringify({ event: "child_stderr_suppressed", bytes: chunk.length, category })}\n`;
 }
 
 async function admittedSnapshot(artifactDir, options) {
@@ -249,10 +171,12 @@ function recheckSession(snapshot, options) {
 }
 
 export async function runArtifact({ artifactDir, capture = false, executionTimeoutMs = 15_000, input, ...options }) {
+  if (!Number.isSafeInteger(executionTimeoutMs) || executionTimeoutMs < 1 || executionTimeoutMs > 120_000) throw new TypeError("Execution timeout must be between 1 and 120000ms");
   if (input !== undefined && (typeof input !== "string" || Buffer.byteLength(input) > 1_048_576)) {
     throw new TypeError("Child input must be a string no larger than 1048576 bytes");
   }
   const { snapshot, decision } = await admittedSnapshot(artifactDir, options);
+  let guarded;
   try {
     const child = spawnSnapshot(snapshot);
     let stdout = "";
@@ -266,10 +190,11 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
         terminateChild(child);
         return;
       }
-      if (capture) target === "stdout" ? stdout += chunk : stderr += chunk;
-      else target === "stdout" ? process.stdout.write(chunk) : process.stderr.write(chunk);
+      const safeChunk = target === "stderr" ? stderrSummary(chunk) : chunk;
+      if (capture) target === "stdout" ? stdout += safeChunk : stderr += safeChunk;
+      else target === "stdout" ? process.stdout.write(safeChunk) : process.stderr.write(safeChunk);
     };
-    const guarded = input === undefined ? undefined : runtimeSurfaceGuards(snapshot.toolSurfaceHash, snapshot.tools, recheckSession(snapshot, options));
+    guarded = input === undefined ? undefined : childSurfaceGuards(child, snapshot, options);
     const failOutput = (error) => { outputError ??= error; terminateChild(child); };
     child.stdin.once("error", failOutput);
     if (guarded) {
@@ -290,32 +215,45 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
       child.once("close", (code, signal) => finish(() => outputError ? reject(outputError) : timeoutError ? reject(timeoutError) : signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve({ code: code ?? 1, stdout, stderr })));
     });
     return { decision, identity: { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash }, ...result };
-  } finally { await snapshot.cleanup(); }
+  } finally { guarded?.close(); await snapshot.cleanup(); }
 }
 
 export async function proxyArtifactStdio({ artifactDir, ...options }) {
   const { snapshot } = await admittedSnapshot(artifactDir, options);
   const child = spawnSnapshot(snapshot);
-  const { requests, responses } = runtimeSurfaceGuards(snapshot.toolSurfaceHash, snapshot.tools, recheckSession(snapshot, options));
+  const guards = childSurfaceGuards(child, snapshot, options);
+  const { requests, responses } = guards;
   let terminalError;
   let cleaned = false;
+  let disconnectTimer;
+  let stderrBytes = 0;
   const cleanup = (signal = "SIGTERM") => {
     if (cleaned) return;
     cleaned = true;
+    clearTimeout(disconnectTimer);
     process.stdin.unpipe(requests);
     requests.unpipe(child.stdin);
     child.stdout.unpipe(responses);
     responses.unpipe(process.stdout);
-    child.stderr.unpipe(process.stderr);
+    child.stderr.removeListener("data", diagnostic);
+    process.stdout.removeListener("close", cleanup);
+    guards.close();
     if (child.exitCode === null && child.signalCode === null) terminateChild(child);
   };
   const fail = (error) => { terminalError ??= error; log("gateway_runtime_blocked", { releaseId: snapshot.releaseId, error: error.message }); cleanup(); };
+  const diagnostic = (chunk) => {
+    stderrBytes += chunk.length;
+    if (stderrBytes > 1_048_576) { fail(new Error("Child stderr exceeded 1 MiB")); return; }
+    process.stderr.write(stderrSummary(chunk));
+  };
   requests.once("error", fail);
   responses.once("error", fail);
   child.stdin.once("error", fail);
   process.stdin.pipe(requests).pipe(child.stdin);
   child.stdout.pipe(responses).pipe(process.stdout);
-  child.stderr.pipe(process.stderr);
+  child.stderr.on("data", diagnostic);
+  requests.once("finish", () => { disconnectTimer = setTimeout(() => cleanup(), 500); });
+  process.stdout.once("close", cleanup);
   const handlers = new Map();
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) { const handler = () => cleanup(signal); handlers.set(signal, handler); process.once(signal, handler); }
   try {
