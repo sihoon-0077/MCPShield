@@ -188,19 +188,27 @@ export async function readPreparedClosure({ descriptor, expectedDescriptorDigest
   const container = `mcpshield-review-${randomUUID()}`;
   const deadline = Date.now() + 30_000;
   const run = (args, size) => docker(args, Math.max(1, deadline - Date.now()), size);
+  let stage = 'IMAGE_INSPECT';
   try {
     const info = JSON.parse(await run(['image', 'inspect', descriptor.finalImageDigest, '--format', '{{json .}}']));
     if (info.Id !== descriptor.finalImageDigest || info.Os !== descriptor.platform.os || info.Architecture !== descriptor.platform.architecture) throw Error('RUNTIME_IMAGE_IDENTITY_MISMATCH');
+    stage = 'CONTAINER_CREATE';
     await run(['create', '--pull=never', '--name', container, '--network=none', '--read-only', '--user=1000:1000',
       '--cap-drop=ALL', '--security-opt=no-new-privileges', '--entrypoint=/usr/local/bin/node', descriptor.finalImageDigest, '--version']);
+    stage = 'REPORT_EXPORT';
     const { value: report } = closureReport(await run(['cp', `${container}:/mcpshield-closure-report.json`, '-'], 4 * 1024 * 1024));
+    stage = 'CLOSURE_EXPORT';
     const closure = inspectClosureArchive(await run(['cp', `${container}:/app/.`, '-'], CLOSURE_LIMITS.archiveBytes), { includeContents: true });
+    stage = 'REPORT_BINDING';
     const original = { ...descriptor, stage: 'PREFLIGHT', finalImageDigest: null, toolSurfaceHash: null };
     if (report.digest !== closure.digest || report.sourceDescriptorDigest !== hashPreparedRuntimeDescriptor(original) ||
       report.installScripts !== false || report.installNetwork !== 'NONE' || report.npmVersion !== '12.0.2' ||
       report.toolchainPatches !== 'brace-expansion@5.0.9,ip-address@10.3.1,tar@7.5.22' ||
       closure.entries.find(({ path }) => path === descriptor.entrypoint.path)?.digest !== descriptor.entrypoint.digest) throw Error('CLOSURE_REPORT_MISMATCH');
     return { ...closure, report, source: 'LIVE_DOCKER_IMAGE_EXPORT', candidateExecutionPerformed: false };
+  } catch (error) {
+    // Only our fixed stage/error vocabulary is returned, never daemon output.
+    throw Object.assign(Error(errorCode(error)), { diagnostics: { stage } });
   } finally { try { await docker(['rm', '-f', container], 5000); } catch { /* exact task-owned unstarted container */ } }
 }
 
@@ -257,6 +265,9 @@ export async function prepareNpmClosure(options, acquisitionOptions) {
     const finalImageDigest = (await run(['image', 'inspect', runtimeTag, '--format', '{{.Id}}'])).toString('utf8').trim();
     if (!digestPattern.test(finalImageDigest)) throw Error('RUNTIME_FINAL_IMAGE_DIGEST_INVALID');
     const descriptor = { ...acquired.descriptor, stage: 'CLOSURE_PREPARED', finalImageDigest };
+    stage = 'FINAL_CLOSURE_VERIFY';
+    const finalClosure = await readPreparedClosure({ descriptor, expectedDescriptorDigest: hashPreparedRuntimeDescriptor(descriptor) });
+    if (finalClosure.digest !== verified.digest) throw Error('CLOSURE_FINAL_IMAGE_MISMATCH');
     success = true;
     return { status: 'INCONCLUSIVE', ready: false, phase: 'CLOSURE_PREPARED', candidateExecutionPerformed: false,
       descriptor, descriptorDigest: hashPreparedRuntimeDescriptor(descriptor), acquisition: acquired.acquisition,
@@ -266,7 +277,8 @@ export async function prepareNpmClosure(options, acquisitionOptions) {
       cleanup: () => docker(['image', 'rm', runtimeTag], 5000) };
   } catch (error) {
     return { status: 'INCONCLUSIVE', ready: false, phase: 'FAILED', candidateExecutionPerformed: false,
-      issues: [errorCode(error)], diagnostics: { stage } };
+      issues: [errorCode(error)], diagnostics: { stage, ...(['IMAGE_INSPECT', 'CONTAINER_CREATE', 'REPORT_EXPORT', 'CLOSURE_EXPORT', 'REPORT_BINDING']
+        .includes(error?.diagnostics?.stage) ? { inspectionStage: error.diagnostics.stage } : {}) } };
   } finally {
     for (const args of [['rm', '-f', container], ['volume', 'rm', volume], ['image', 'rm', builderTag], ...(!success ? [['image', 'rm', runtimeTag]] : [])]) {
       try { await docker(args, 5000); } catch { /* exact task-owned resource, best effort cleanup */ }

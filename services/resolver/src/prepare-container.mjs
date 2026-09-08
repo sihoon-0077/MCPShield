@@ -1,4 +1,4 @@
-import { chmod, cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { inspectClosure } from './closure-files.mjs';
 
@@ -7,7 +7,7 @@ const deadline = Date.now() + 100_000;
 let stage = 'TOOLCHAIN';
 function npm(args, cwd = '/work') {
   const result = spawnSync('/usr/local/bin/node', ['/usr/local/lib/node_modules/npm/bin/npm-cli.js', ...args,
-    '--ignore-scripts', '--offline', '--audit=false', '--fund=false', '--bin-links=false', '--cache=/work/cache',
+    '--ignore-scripts', '--ignore-extension', '--offline', '--audit=false', '--fund=false', '--bin-links=false', '--cache=/work/cache',
     '--userconfig=/work/user.npmrc', '--globalconfig=/work/global.npmrc', '--loglevel=error'], {
     cwd, env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/work/home', NODE_ENV: 'production' },
     timeout: Math.max(1, deadline - Date.now()), maxBuffer: 64 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
@@ -35,6 +35,14 @@ try {
   // Do not read package-owned project configuration or previously installed dependencies.
   await rm('/work/app/.npmrc', { force: true });
   await rm('/work/app/node_modules', { recursive: true, force: true });
+  // npm 12 ci hashes these even with --ignore-extension. The resolver's graph
+  // deliberately excludes arbitrary extension code. Keep exact source bytes for
+  // the final closure/review, but outside the private installation project.
+  const extensions = [];
+  for (const file of ['.npm-extension.cjs', '.npm-extension.mjs']) {
+    try { await rename(`/work/app/${file}`, `/work/${file}`); extensions.push(file); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
   const supplied = JSON.parse(await readFile('/input/preparation.json'));
   if (supplied.lockFile === 'npm-shrinkwrap.json') await rm('/work/app/package-lock.json', { force: true });
   else if (supplied.lockFile !== 'package-lock.json') throw Error('LOCK_FILE_INVALID');
@@ -45,6 +53,7 @@ try {
   }
   stage = 'INSTALL';
   npm(['ci', '--omit=dev'], '/work/app');
+  for (const file of extensions) await rename(`/work/${file}`, `/work/app/${file}`);
   stage = 'MANIFEST';
   const manifest = await inspectClosure('/work/app', true);
   await writeFile('/work/closure-report.json', JSON.stringify({ ...manifest, installScripts: false, installNetwork: 'NONE',

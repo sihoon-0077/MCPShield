@@ -39,7 +39,12 @@ export async function scanPreparedRuntime({ descriptor, expectedDescriptorDigest
     closure = await readPreparedClosure({ descriptor, expectedDescriptorDigest });
     review = inspectPreparedSources(closure);
     issues.push(...review.issues);
-  } catch { issues.push('PREPARED_CLOSURE_REVIEW_INCOMPLETE'); }
+  } catch (error) {
+    issues.push('PREPARED_CLOSURE_REVIEW_INCOMPLETE');
+    if (['IMAGE_INSPECT', 'CONTAINER_CREATE', 'REPORT_EXPORT', 'CLOSURE_EXPORT', 'REPORT_BINDING'].includes(error?.diagnostics?.stage)) {
+      issues.push(`PREPARED_CLOSURE_REVIEW_${error.diagnostics.stage}_FAILED`);
+    }
+  }
   const preparation = { ...descriptor, toolSurfaceHash: null };
   const observed = await observePreparedRuntime({ descriptor: preparation, expectedDescriptorDigest: hashPreparedRuntimeDescriptor(preparation),
     probePlan, ai: probePlan ? undefined : ai, timeoutMs });

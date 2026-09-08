@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as tar from 'tar';
-import { acquireNpmClosure, inspectClosureArchive, prepareNpmClosure } from '../../services/resolver/src/npm-closure.mjs';
+import { acquireNpmClosure, inspectClosureArchive, prepareNpmClosure, readPreparedClosure } from '../../services/resolver/src/npm-closure.mjs';
 import { inspectClosure } from '../../services/resolver/src/closure-files.mjs';
 import { artifactDigest } from '../../services/scanner/src/scanner.mjs';
 import { removeFixtureSnapshot } from '../../services/scanner/src/snapshot.mjs';
@@ -113,13 +113,15 @@ test('closure manifest covers node_modules and rejects tar path/link/permission 
     }
     const bytes = Buffer.concat([...blocks, Buffer.alloc(1024)]);
     assert.equal(inspectClosureArchive(bytes).digest, first.digest);
+    const rootEntry = new tar.Header({ path: './', type: 'Directory', size: 0, mode: 0o555 }); rootEntry.encode();
+    assert.equal(inspectClosureArchive(Buffer.concat([rootEntry.block, bytes])).digest, first.digest);
     await chmod(join(root, 'node_modules/fixture/index.js'), 0o600);
     await writeFile(join(root, 'node_modules/fixture/index.js'), 'changed dependency bytes');
     const changed = await inspectClosure(root, true);
     assert.notEqual(changed.digest, first.digest);
     assert.ok(first.entries.some((entry) => entry.path === 'node_modules/fixture/index.js'));
     for (const [path, type, linkpath, mode] of [['../outside', 'File', '', 0o444], ['/absolute', 'Directory', '', 0o555],
-      ['/', 'Directory', '', 0o555], ['linked', 'SymbolicLink', '/outside', 0o555], ['file', 'File', '', 0o644]]) {
+      ['/', 'Directory', '', 0o555], ['./', 'Directory', '', 0o755], ['linked', 'SymbolicLink', '/outside', 0o555], ['file', 'File', '', 0o644]]) {
       const header = new tar.Header({ path, type, linkpath, size: 0, mode }); header.encode();
       assert.throws(() => inspectClosureArchive(Buffer.concat([header.block, Buffer.alloc(1024)])), /CLOSURE_ARCHIVE_ENTRY_INVALID/);
     }
@@ -161,6 +163,7 @@ test('actual Linux isolated native npm generates a missing lock via metadata-onl
 }, async () => fixture(async ({ root, options, bytes, integrity }) => {
   await unlink(join(root, 'package-lock.json'));
   await writeFile(join(root, '.npm-extension.cjs'), "throw Error('CANDIDATE_EXTENSION_MUST_NOT_RUN');");
+  await writeFile(join(root, '.npm-extension.mjs'), "throw Error('SECOND_CANDIDATE_EXTENSION_MUST_NOT_RUN');");
   const pkg = JSON.parse(await readFile(join(root, 'package.json')));
   pkg.dependencies.fixture = '^1.0.0';
   await writeFile(join(root, 'package.json'), JSON.stringify(pkg));
@@ -183,6 +186,13 @@ test('actual Linux isolated native npm generates a missing lock via metadata-onl
     assert.equal(prepared.phase, 'CLOSURE_PREPARED', JSON.stringify({ issues: prepared.issues, diagnostics: prepared.diagnostics }));
     assert.equal(prepared.descriptor.lockOrigin, 'RESOLVER_GENERATED');
     assert.equal(prepared.descriptor.sourceTreeDigest, original);
+    const final = await readPreparedClosure({ descriptor: prepared.descriptor, expectedDescriptorDigest: prepared.descriptorDigest });
+    assert.equal(final.digest, prepared.closure.digest);
+    for (const file of ['.npm-extension.cjs', '.npm-extension.mjs']) {
+      assert.equal(final.contents.find(({ path }) => path === file)?.bytes.equals(await readFile(join(root, file))), true,
+        'disabled installer extensions must remain exact bytes in the final reviewed closure');
+    }
+    assert.equal(await artifactDigest(root), original);
   } finally { await prepared.cleanup?.(); }
 }));
 

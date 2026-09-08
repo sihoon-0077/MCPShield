@@ -109,6 +109,8 @@ test('lock preflight rejects missing locks, identity/range mismatch, weak SRI an
     [(value) => ({ ...value, version: '2.0.0' }), 'RUNTIME_LOCK_IDENTITY_MISMATCH'],
     [(value) => ({ ...value, packages: { ...value.packages, '': { ...value.packages[''], dependencies: { fixture: '^2.0.0' } } } }), 'RUNTIME_LOCK_MANIFEST_MISMATCH'],
     [(value) => ({ ...value, packages: { '': value.packages[''] } }), 'RUNTIME_LOCK_DEPENDENCY_MISSING'],
+    [(value) => ({ ...value, npmExtensionHash: 'synthetic-provenance' }), 'RUNTIME_LOCK_EXTENSION_UNSUPPORTED'],
+    [(value) => ({ ...value, packageExtensionsHash: 'synthetic-provenance' }), 'RUNTIME_LOCK_EXTENSION_UNSUPPORTED'],
   ];
   for (const [change, issue] of cases) {
     await writeFile(join(root, 'package-lock.json'), JSON.stringify(change(lock(manifest))));
@@ -122,6 +124,9 @@ test('lock preflight rejects missing locks, identity/range mismatch, weak SRI an
     ['resolved', 'file:/host/secret', 'RUNTIME_LOCK_REGISTRY_INVALID'],
     ['link', true, 'RUNTIME_LOCK_ENTRY_UNSUPPORTED'],
     ['version', 'v1.0.0', 'RUNTIME_LOCK_ENTRY_UNSUPPORTED'],
+    ['npmExtensionApplied', { extensionPoint: 'transformManifest' }, 'RUNTIME_LOCK_EXTENSION_UNSUPPORTED'],
+    ['packageExtensionsApplied', { selector: 'fixture@1.0.0' }, 'RUNTIME_LOCK_EXTENSION_UNSUPPORTED'],
+    ['patched', { path: 'private.patch' }, 'RUNTIME_LOCK_EXTENSION_UNSUPPORTED'],
   ]) {
     const value = lock(manifest);
     value.packages['node_modules/fixture'][field] = bad;
@@ -165,6 +170,11 @@ test('lock preflight rejects missing locks, identity/range mismatch, weak SRI an
       await writeFile(join(noLock, 'package.json'), JSON.stringify({ ...manifest, bin: 'server.js', dependencies }));
       const rejected = await preflightNpmRuntime({ root: noLock, sourceDigest: digest, sourceTreeDigest: await artifactDigest(noLock), platform, builderImageDigest });
       assert.ok(rejected.issues.includes('RUNTIME_DEPENDENCY_SPEC_UNSUPPORTED'));
+    }
+    for (const field of ['packageExtensions', 'patchedDependencies']) {
+      await writeFile(join(noLock, 'package.json'), JSON.stringify({ ...manifest, bin: 'server.js', [field]: {} }));
+      const rejected = await preflightNpmRuntime({ root: noLock, sourceDigest: digest, sourceTreeDigest: await artifactDigest(noLock), platform, builderImageDigest });
+      assert.deepEqual(rejected.issues, ['RUNTIME_DEPENDENCY_LAYOUT_UNSUPPORTED']);
     }
   } finally { await removeFixtureSnapshot(noLock); }
 }));
