@@ -160,11 +160,29 @@ async function dockerCleanup(containerNames, networkName) {
   try { await run('docker', ['network', 'rm', networkName], { timeoutMs: 5_000 }); } catch { /* best effort */ }
 }
 
-async function waitForSink(containerName, timeoutMs = 5_000) {
+export function sinkFailureCode(stderr, state = {}) {
+  if (state.OOMKilled) return 'OOM_KILLED';
+  if (/\b(?:EACCES|EPERM)\b/.test(stderr)) return 'PERMISSION_DENIED';
+  if (/proxy allowlist only accepts|EGRESS_ALLOWLIST_INVALID/.test(stderr)) return 'EGRESS_ALLOWLIST_INVALID';
+  if (/\b(?:EADDRINUSE|EADDRNOTAVAIL)\b/.test(stderr)) return 'PORT_UNAVAILABLE';
+  if (/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND/.test(stderr)) return 'MODULE_NOT_FOUND';
+  if (/SyntaxError/.test(stderr)) return 'SYNTAX_ERROR';
+  if (/sink token is required|SINK_TOKEN_REQUIRED/.test(stderr)) return 'SINK_TOKEN_REQUIRED';
+  return 'UNCLASSIFIED';
+}
+
+async function waitForSink(containerName, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const logs = await run('docker', ['logs', containerName], { timeoutMs: 1_000 });
-    if (logs.stdout.includes('READY')) return;
+    if (/^READY http:\/\//m.test(logs.stdout)) return;
+    const inspected = await run('docker', ['inspect', '--format', '{{json .State}}', containerName], { timeoutMs: 1_000 });
+    let state;
+    try { state = JSON.parse(inspected.stdout); } catch { state = {}; }
+    if (state.Status === 'exited' || state.Status === 'dead' || state.OOMKilled) {
+      const fingerprint = createHash('sha256').update(logs.stderr).digest('hex').slice(0, 16);
+      throw new Error(`Docker exfil sink exited before readiness (${sinkFailureCode(logs.stderr, state)}; exit=${Number(state.ExitCode) || 0}; logHash=${fingerprint})`);
+    }
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
   throw new Error('Docker exfil sink startup timed out');
