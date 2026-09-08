@@ -83,4 +83,7 @@ export async function retryPreparation(store: ControlStore, tenant: string, prep
     return (await preparations(tx, tenant, preparationId))[0];
   });
 }
-export function publicPreparation({ tenantId: _tenant, request: _request, leaseOwner: _owner, leaseExpiresAt: _lease, configHash: _config, ...job }: PreparationJob) { return job; }
+export function publicPreparation({ tenantId: _tenant, request: _request, leaseOwner: _owner, leaseExpiresAt: _lease, configHash: _config, result, ...job }: PreparationJob) {
+  if (!result) return job;
+  const { evidenceKey: _key, ...safeResult } = result; return { ...job, result: safeResult };
+}

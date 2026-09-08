@@ -29,6 +29,8 @@ export interface ControlOptions {
   v2Relayer?: V2Relayer;
   receiptRelayer?: ReceiptRelayer;
   preparedRuntime?: PreparedConfig;
+  prepareRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
+  scanPreparedRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
   scannerOptions?: { sandbox?: "docker"; allowRemoteAi: boolean; aiProvider?: "custom" | "openai"; aiModel?: string; aiUrl?: string; aiToken?: string; aiTimeoutMs?: number };
 }
 export const canonical = (value: any): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
@@ -140,6 +142,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       const policy = await get(user.tenantId, "policy", body.policyHash);
       if (policy.deprecatedAt) throw err("POLICY_DEPRECATED", 409);
       if ((release.runtimeProfile === preparedPolicy.profile) !== (policy.document.profile === preparedPolicy.profile)) throw err("SCAN_PROFILE_MISMATCH", 409);
+      if (release.runtimeProfile === preparedPolicy.profile && body.baselineReleaseId) throw err("PREPARED_BASELINE_UNSUPPORTED");
       if (body.requestedTiers && (!Array.isArray(body.requestedTiers) || [...body.requestedTiers].sort().join() !== [...policy.document.requiredTiers].sort().join())) throw err("REQUIRED_TIERS_MISSING");
       if (body.baselineReleaseId && (await get(user.tenantId, "release", body.baselineReleaseId)).toolId !== release.toolId) throw err("BASELINE_TOOL_MISMATCH");
       const idempotencyKey = request.headers["idempotency-key"];
@@ -256,7 +259,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
   return store;
 }
 
-function publicRelease({ artifactDir: _path, metadata: _metadata, ...release }: Record<string, any>) { return release; }
+function publicRelease({ artifactDir: _path, metadata: _metadata, preparedEvidenceKey: _key, preparedReportRoot: _root, runtimeTag: _tag, ...release }: Record<string, any>) { return release; }
 function publicScan({ tenantId: _tenant, leaseOwner: _owner, request, result, ...scan }: ScanJob) {
   const baselineReleaseId = request.baselineReleaseId ?? null;
   if (!result) return { ...scan, baselineReleaseId };

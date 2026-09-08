@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { buildApp } from "../../apps/api/src/app.js";
 import { ControlStore } from "../../apps/api/src/control-store.js";
 import { hash, type ControlOptions } from "../../apps/api/src/control-plane.js";
@@ -8,6 +12,14 @@ import { controlConfig } from "../../apps/api/src/control-config.js";
 import { preparedTrust } from "../../apps/api/src/prepared-config.js";
 import { claimPreparation, failPreparation, preparations } from "../../apps/api/src/preparation-store.js";
 import { exactReleaseIdentity } from "../../packages/contracts-sdk/src/v2.js";
+import { runPreparationWorkerOnce } from "../../apps/api/src/preparation-worker.js";
+import { checkedPreparedEvidence } from "../../apps/api/src/prepared-evidence.js";
+// @ts-expect-error Shared ESM binding helper.
+import { createPreparedReleaseBinding, preparedExecutionPolicy } from "../../services/scanner/src/prepared-binding.mjs";
+// @ts-expect-error Shared ESM evidence helper.
+import { createEvidenceBundle } from "../../services/scanner/src/evidence.mjs";
+// @ts-expect-error Shared ESM surface identity helper.
+import { toolSurfaceHash } from "../../services/scanner/src/scanner.mjs";
 
 const tenant = "prepared-test", token = "prepared-test-operator-token-0001", other = "prepared-other-operator-token-0001", reader = "prepared-test-reader-token-0001";
 const auth = { authorization: `Bearer ${token}` };
@@ -116,4 +128,87 @@ test("prepared policy and environment refuse weakening, implicit Docker or mutab
   assert.throws(() => controlConfig({ ...env, CONTROL_SANDBOX_MODE: "" }), /PREPARED_DOCKER_REQUIRED/);
   assert.throws(() => controlConfig({ ...env, CONTROL_PREPARED_BUILDER_DIGEST: "node:latest" }), /INVALID_PREPARED_CONFIG/);
   assert.throws(() => controlConfig({ ...env, CONTROL_PREPARED_ARCHITECTURE: "unknown" }), /INVALID_PREPARED_CONFIG/);
+});
+
+function syntheticPreparedOutput(input: any, cleanup: () => Promise<void>) {
+  const tools = [{ name: "private_synthetic_tool", description: "synthetic-private-tool-description", inputSchema: { type: "object" } }];
+  const descriptor = { schemaVersion: "mcpshield.prepared-runtime.v1", stage: "CLOSURE_PREPARED", profile: "npm-closure-v1",
+    sourceDigest: source.artifactDigest, sourceTreeDigest: source.artifactDigest, lockDigest: source.artifactDigest, lockOrigin: "SUPPLIED",
+    builderImageDigest: input.trusted.builderImageDigest, platform: input.preparation.platform, finalImageDigest: `sha256:${"e".repeat(64)}`, toolSurfaceHash: toolSurfaceHash(tools),
+    entrypoint: { path: "server.mjs", digest: source.artifactDigest }, argv: ["/usr/local/bin/node", "/app/server.mjs"],
+    policy: { acquisitionNetwork: "REGISTRY_ONLY_SEPARATE", installNetwork: "NONE", installScripts: "DISABLED", executionNetwork: "INTERNAL_SYNTHETIC_PROXY", user: "NON_ROOT", rootFilesystem: "READ_ONLY" } };
+  const binding = createPreparedReleaseBinding({ sourceReleaseId: source.releaseId, descriptor,
+    executionPolicy: preparedExecutionPolicy({ collectorDigest: input.trusted.collectorDigest, observerDigest: input.trusted.observerDigest, egressAllowHosts: ["mail-api.local"] }) });
+  const result = { schemaVersion: "1.0.0", scanId: input.scanId, releaseId: source.legacyReleaseId, artifactDigest: binding.artifactDigest,
+    toolSurfaceHash: binding.toolSurfaceHash, scanStatus: "INCONCLUSIVE", findings: [], evidenceHash: `0x${"1".repeat(64)}`, source: "MOCK" };
+  const analysis = { profile: preparedPolicy.profile, verdict: "ABSTAIN", issues: ["SYNTHETIC_CONTRACT_TEST_NOT_LIVE_DOCKER"] };
+  return { binding, result, analysis, cleanup, runtimeTag: `mcpshield-runtime-${randomUUID()}:local`,
+    bundle: createEvidenceBundle({ "report.json": { ...result, scope: "RESTRICTED_NODE_DOCKER_V1" }, "prepared/binding.json": binding,
+      "runtime/tools.json": tools, "runtime/descriptor.json": descriptor, "runtime/execution-policy.json": binding.executionPolicy, "prepared/policy-review.json": analysis }) };
+}
+test("prepared worker atomically creates a distinct identity and encrypted scan without granting PASS", async () => {
+  const f = await setup(), dir = await mkdtemp(join(tmpdir(), "mcpshield-prepared-worker-")); let cleaned = 0;
+  f.options.evidencePath = dir;
+  try {
+    f.options.prepareRuntime = async (input) => {
+      assert.equal(input.preparation.root, source.artifactDir); assert.equal(input.sourceReleaseId, source.releaseId);
+      return syntheticPreparedOutput(input, async () => { cleaned++; });
+    };
+    const jobId = (await f.request("execute")).json().preparation.preparationId;
+    assert.equal(await runPreparationWorkerOnce(f.store, f.options), true);
+    const [job] = await preparations(f.store, tenant, jobId); assert.equal(job.status, "COMPLETED", JSON.stringify(job.lastError));
+    assert.equal(job.result?.verdict, "ABSTAIN"); assert.notEqual(job.result?.releaseId, source.releaseId); assert.equal(cleaned, 0);
+    const scan = await f.store.scan(tenant, job.result!.scanId); assert.equal(scan?.status, "COMPLETED"); assert.equal(scan?.result?.scanResult.scanId, scan?.scanId);
+    assert.equal(scan?.result?.state, "REVIEW_REQUIRED"); assert.equal((await f.store.scanUsage(tenant)).today, 1);
+    assert.deepEqual(await f.store.get(tenant, "release", source.releaseId), source);
+    const releaseId = job.result!.releaseId;
+    const release = await f.app.inject({ url: `/v1/releases/${releaseId}`, headers: auth });
+    assert.equal(release.json().release.status, "UNVERIFIED");
+    const exported = await f.app.inject({ url: `/v1/releases/${releaseId}/gateway-config`, headers: auth });
+    assert.equal(exported.statusCode, 200); assert.equal(exported.json().schemaVersion, "mcpshield.gateway-prepared.v1");
+    assert.equal(exported.json().tools[0].name, "private_synthetic_tool"); assert.equal(exported.headers["cache-control"], "no-store");
+    for (const bearer of [reader, other]) assert.equal((await f.app.inject({ url: `/v1/releases/${releaseId}/gateway-config`, headers: { authorization: `Bearer ${bearer}` } })).statusCode, bearer === reader ? 403 : 404);
+    const evidence = await f.app.inject({ url: `/v1/preparations/${jobId}/evidence`, headers: auth }); assert.equal(evidence.statusCode, 200);
+    const bound = checkedPreparedEvidence(evidence.json().bundle); assert.equal(bound.identity.releaseId, releaseId);
+    for (const path of ["/v1/releases", "/v1/scans", "/v1/preparations"]) {
+      const body = (await f.app.inject({ url: path, headers: { authorization: `Bearer ${reader}` } })).body;
+      for (const privateValue of ["synthetic-private-tool-description", "runtimeTag", "preparedEvidenceKey", "evidenceKey", "collectorDigest"]) assert.ok(!body.includes(privateValue), `${path} ${privateValue}`);
+    }
+    assert.equal((await f.app.inject({ url: `/v1/preparations/${jobId}/evidence`, headers: { authorization: `Bearer ${reader}` } })).statusCode, 403);
+    await f.request("duplicate-image"); await runPreparationWorkerOnce(f.store, f.options); assert.equal(cleaned, 1);
+  } finally { await f.app.close(); await rm(dir, { recursive: true, force: true }); }
+});
+test("prepared worker fails closed on no discovery, changed config/source and stale lease; only its own image is cleaned", async () => {
+  for (const mode of ["no-binding", "config-changed", "source-changed", "stale-lease", "binding-tampered", "uncertain-commit"] as const) {
+    const f = await setup(), dir = await mkdtemp(join(tmpdir(), "mcpshield-prepared-fence-")); f.options.evidencePath = dir; let cleaned = 0, calls = 0;
+    try {
+      const jobId = (await f.request(mode)).json().preparation.preparationId;
+      if (mode === "config-changed") f.options.preparedRuntime!.builderImageDigest = `sha256:${"f".repeat(64)}`;
+      f.options.prepareRuntime = async (input) => {
+        calls++;
+        const output = syntheticPreparedOutput(input, async () => { cleaned++; });
+        if (mode === "no-binding") return { result: null, binding: null, bundle: null, analysis: { issues: ["PREPARED_DISCOVERY_REQUIRED"] }, cleanup: output.cleanup };
+        if (mode === "source-changed") await f.store.put(tenant, "release", source.releaseId, { ...source, artifactDigest: `sha256:${"f".repeat(64)}` }, true);
+        if (mode === "stale-lease") await f.store.query("UPDATE cp_preparations SET lease_expires_at=? WHERE preparation_id=?", [new Date(Date.now() - 1).toISOString(), jobId]);
+        if (mode === "binding-tampered") output.binding.manifestDigest = source.artifactDigest;
+        return output;
+      };
+      if (mode === "uncertain-commit") {
+        const original = f.store.forTenant.bind(f.store);
+        f.store.forTenant = async (tenantId, callback) => {
+          const result = await original(tenantId, callback);
+          if (result && typeof result === "object" && "transferred" in result) throw new Error("TRANSIENT_COMMIT_UNCERTAIN");
+          return result;
+        };
+      }
+      await runPreparationWorkerOnce(f.store, f.options);
+      const [job] = await preparations(f.store, tenant, jobId), scans = await f.store.scans(tenant);
+      assert.equal(calls, mode === "config-changed" ? 0 : 1);
+      if (mode === "uncertain-commit") { assert.equal(job.status, "COMPLETED"); assert.equal(scans.length, 1); assert.equal(cleaned, 0); }
+      else { assert.equal(scans.length, 0); assert.equal(cleaned, mode === "config-changed" ? 0 : 1); }
+      if (mode === "no-binding") { assert.equal(job.result?.outcome, "INCONCLUSIVE"); assert.equal(job.status, "COMPLETED"); }
+      else if (mode === "stale-lease") assert.equal(job.status, "RUNNING");
+      else if (mode !== "uncertain-commit") assert.equal(job.status, "DEAD_LETTER");
+    } finally { await f.app.close(); await rm(dir, { recursive: true, force: true }); }
+  }
 });

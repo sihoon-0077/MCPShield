@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { ControlOptions, Credential } from "./control-plane.js";
+import { loadEvidence, type ControlOptions, type Credential } from "./control-plane.js";
 import type { ControlStore } from "./control-store.js";
 import { preparedPolicy, validPolicy } from "./control-policy.js";
 import { preparedTrust } from "./prepared-config.js";
 import { enqueuePreparation, preparations, publicPreparation, retryPreparation } from "./preparation-store.js";
 import { currentTraceId, traceHeaders, withSpan } from "../../../packages/telemetry/index.mjs";
 import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2.js";
+import { checkedPreparedEvidence } from "./prepared-evidence.js";
 
 const failure = (message: string, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 export function sourceIdentity(source: Record<string, any>) {
@@ -47,5 +48,24 @@ export function registerPreparationRoutes(api: FastifyInstance, store: ControlSt
     const user = authenticate(request.headers.authorization); authorize(user, "operator");
     if (request.body !== undefined && (!request.body || Array.isArray(request.body) || Object.keys(request.body as any).length)) throw failure("INVALID_PREPARATION_REQUEST");
     return { preparation: publicPreparation(await retryPreparation(store, user.tenantId, (request.params as any).preparationId, enabled())) };
+  });
+  api.get("/preparations/:preparationId/evidence", async (request) => {
+    const user = authenticate(request.headers.authorization); authorize(user, "operator");
+    const [job] = await preparations(store, user.tenantId, (request.params as any).preparationId);
+    if (!job) throw failure("PREPARATION_NOT_FOUND", 404);
+    if (!job.result?.evidenceKey) throw failure("EVIDENCE_NOT_READY", 409);
+    await store.event(user.tenantId, job.sourceReleaseId, "evidence.accessed", { preparationId: job.preparationId, role: user.role }, job.traceId);
+    return { bundle: await loadEvidence(options, user.tenantId, job.result.evidenceKey, job.result.reportRoot), reportRoot: job.result.reportRoot };
+  });
+  api.get("/releases/:releaseId/gateway-config", async (request, reply) => {
+    const user = authenticate(request.headers.authorization); authorize(user, "operator");
+    const release = await store.get(user.tenantId, "release", (request.params as any).releaseId);
+    if (!release) throw failure("RELEASE_NOT_FOUND", 404);
+    if (release.runtimeProfile !== preparedPolicy.profile || !release.preparedEvidenceKey) throw failure("PREPARED_RELEASE_REQUIRED", 409);
+    const { binding, tools } = checkedPreparedEvidence(await loadEvidence(options, user.tenantId, release.preparedEvidenceKey, release.preparedReportRoot), release);
+    await store.event(user.tenantId, release.releaseId, "prepared.config.exported", { role: user.role });
+    reply.header("cache-control", "no-store");
+    // Private operator export only; this commitment is not admission or a registry-pull capability.
+    return { schemaVersion: "mcpshield.gateway-prepared.v1", releaseId: release.releaseId, toolId: release.toolId, binding, tools };
   });
 }

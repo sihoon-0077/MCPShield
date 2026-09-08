@@ -169,9 +169,9 @@ export class ControlStore {
         const usage = await transaction.scanUsage(tenantId);
         if (usage.today >= policy.maxDailyScans || usage.queued >= policy.maxQueuedScans) throw Object.assign(new Error("SCAN_QUOTA_EXCEEDED"), { statusCode: 429 });
         let baselineReleaseId = request.baselineReleaseId;
-        if (!baselineReleaseId) {
+        if (!baselineReleaseId && !release.runtimeProfile) {
           const [baseline] = await transaction.query(`SELECT id FROM cp_records WHERE tenant_id = ? AND kind = 'release' AND id <> ?
-            AND ${field("document", "toolId")} = ? AND ${field("document", "status")} = 'VERIFIED'
+            AND ${field("document", "toolId")} = ? AND ${field("document", "status")} = 'VERIFIED' AND ${field("document", "runtimeProfile")} IS NULL
             AND ${field("document", "validUntil")} > ? AND created_at <= ? ORDER BY created_at DESC LIMIT 1`,
             [tenantId, request.releaseId, release.toolId, now, release.createdAt ?? now]);
           baselineReleaseId = baseline?.id;

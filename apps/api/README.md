@@ -296,5 +296,17 @@ share tenant queue/daily quotas; a completed preparation's child scan is counted
 `COMPLETED` means the job finished, not PASS, READY, or VERIFIED. These image IDs
 are local Docker-daemon config IDs, not publicly pullable registry digests. Source
 records remain unchanged and the legacy policy never approves prepared evidence.
-This queue checkpoint does not yet dispatch preparation jobs: worker/strict-policy
-integration is the next checkpoint. No production capability is claimed by a queued job.
+The preparation worker stores a distinct release plus completed scan atomically only
+after evidence/identity checks and a live ownership lease. Missing discovery creates
+an INCONCLUSIVE result with no invented release identity. Successful new rows own
+their exact local runtime tag; stale leases, validation failures and duplicate-image
+jobs clean up only their own tag. An uncertain database commit preserves the image
+until ownership is resolved, rather than deleting a possibly committed runtime.
+
+Operators can fetch private evidence at `GET /v1/preparations/:id/evidence` and the
+Gateway envelope at `GET /v1/releases/:releaseId/gateway-config`. Both use tenant
+AES-GCM evidence and independently recheck commitments. Reader lists never expose
+raw tools, descriptors, image tags or evidence storage keys. An export is not admission.
+This checkpoint keeps prepared policy verdicts ABSTAIN-only and does not enable CLI
+dispatch until the independently verified runtime policy is integrated. Synthetic
+worker tests prove transactions, ACL and failure handling, not actual Docker execution.
