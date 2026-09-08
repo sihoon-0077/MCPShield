@@ -45,6 +45,10 @@ jobs:
         run: npm test
       - name: Build backend types and dashboard
         run: npm run build
+      - name: Verify native POST fallback on the built console
+        env:
+          MCPSHIELD_FORM_HTTP_TESTS: '1'
+        run: node --import tsx --test apps/dashboard/test/forms.test.mts
       - name: Measure local EVM admission and injected failure matrix
         if: matrix.node == 22
         timeout-minutes: 4
@@ -239,7 +243,7 @@ jobs:
       - name: Exercise actual PostgreSQL control plane
         env:
           MCPSHIELD_POSTGRES_TEST_URL: postgresql://mcpshield:mcpshield_ci_only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/mcpshield_ci
-        run: node --import tsx --test tests/api/control-plane.test.ts tests/api/preparations.test.ts
+        run: node --import tsx --test tests/api/control-plane.test.ts tests/api/preparations.test.ts tests/api/appeals.test.ts
       - name: Back up and restore into a separate empty database
         env:
           PG_CONTAINER: ${{ job.services.postgres.id }}

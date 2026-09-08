@@ -15,23 +15,40 @@
 
 ### 현재 검증 경계
 
-- 후속 코드 리뷰에서 `ad7b74f`의 새 scoped AI 입력 모듈(아직 Main 미통합)에
-  metadata 분할 우회를 실제 재현했다. 동일한 source/baseline을 두고 도구 description/title에
-  각각 소스의 절반을 넣으면 `scopeComplete:true`, `sourceChars:0`인데 전체 원문이 복원됐다.
-  정확한 전송 union 검사와 HTTP 0회 회귀를 담당 파트에 요청했다. 제한된 snippet 모듈만으로
-  2.5.4.3의 프라이버시 요구가 완료됐다고 표시하지 않는다. 기존 legacy analyzer/critic,
-  prepared/OCI 및 probe/benchmark 전송 caller의 일관된 versioned 전환도 아직 남아 있다.
-  UC-07/FR-406은 기존 appeal 접수/종결과 fresh rescan 간 연결이 부족함을 확인했다.
-  기존 `/v1/scans`에 검증된 OPEN appeal 연결을 추가하고 history·원본 판정을 보존하는
-  Backend 계약 및 기존 admin resolution UI를 병렬 구현 중이다. 신고 해결은 chain 승인이나
-  REVOKED 해제를 의미하지 않는다.
+- `0ccad18` 통합: UC-07/FR-406 OPEN appeal을 같은 tool의 변경 digest/정책에 대한 새 검사에
+  연결한다. 서버가 검증한 요청만 기존 완료 결과 캐시를 건너뛰며, tenant quota·정책·idempotency는
+  유지한다. 원본 판정/증거를 보존하고 enqueue/link/history와 worker 정상 완료·catch 실패를
+  각각 같은 transaction으로 기록한다. 관리자 종결은 1회 원자적 처리, 동일 문구 재요청은
+  중복 제거, 다른 결론 덮어쓰기는 409. UI는 원문/결론/시각을 escaped plain text로 표시한다.
+  작업자 비정상 종료 후 재시도 한도를 소진하는 WORKER_LOST 경로의 원본 appeal 실패 이력
+  누락을 별도로 재현해 보완 중이다. 새 재검사 연결 UI도 진행 중이다. 종결은 실행 승인이 아니다.
+- `0ccad18` Main focused 35 PASS / PostgreSQL·native·선택 HTTP 4 skip,
+  `npm run build` 성공. 빌드 후 `MCPSHIELD_FORM_HTTP_TESTS=1` 실제 로컬 Next HTTP 검사는
+  3 PASS: 로그인 포함 native POST 값이 URL/redirect/cookie/응답 원문에 노출되지 않고,
+  BFF가 URL-encoded/foreign-origin 요청을 upstream 호출 없이 거부한다. 브라우저 hydration
+  또는 시각 QA의 대체 증거는 아니다. CI에 실제 PostgreSQL appeal concurrency와 built HTTP를 추가했다.
+- `c0c01da`는 앞서 재현한 scoped metadata 분할 source 유출을 모든 key/value/array와 선택
+  snippet의 합집합 예산으로 거부한다. Main 실제 HTTP 포함 scoped 회귀 7 PASS, 상한 초과는
+  provider 호출 0회. 알려지지 않은 인코딩/고객 데이터까지 판별하는 정보흐름 증명은 아니며
+  helper 자체 승인 결과는 ABSTAIN이다. 기존 실제 analyzer/critic/probe 전송 caller의
+  일관된 전환은 아직 남아 있다. 새 v2 execution policy에 disclosure/role/tier/출처를 digest로
+  고정하는 별도 프로필을 승인했으며, 원본 v1 승인을 재사용하지 않고 단계적으로 연결한다.
 - 새 통합 `391a7825ec7dc0f49f11bc543c4bbf9e994b8d86`의
   [CI 34279690606](https://github.com/sihoon-0077/MCPShield/actions/runs/34279690606)를 dispatch했다.
-  최초 확인은 pending(작업 배정 전)이며 성공/실패 결과는 아직 없다. 앞선 push 검증과 같은
-  concurrency 그룹을 사용하므로 중복 실행 결과를 합산하지 않는다. `391a782`는 OCI UI가
-  참조하는 pure binding/descriptor/snapshot 3파일을 standalone dashboard 이미지에도 포함한다.
-  `a38ef4a`는 AI 출처 미제공·모델 품질 미측정을 합성 응답 사용으로 추정하지 않도록 수정했고
-  실제 API/BFF 및 SSR 회귀 1개 통과. 새 공개 배포·서명된 최종 산출물은 아직 아니다.
+  현재 **종료·전체 실패**를 GitHub API로 재확인했다. Node 24·PostgreSQL 성공.
+  Node 22의 실제 OCI Gateway 격리/캐시/RPC/폐기 검사는 39초 성공, 실제 offline Trivy/
+  CycloneDX 1.7 검사는 18초 성공했다. 그러나 composed OCI는 private Trivy 문서 미생성,
+  지원 safe fixture와 API fullcycle는 `OCI_UNSUPPORTED_FILESYSTEM_ENTRY`에 따른
+  ABSTAIN으로 실패했다. API fullcycle는 독립 validator 실행 전 실패이므로 quorum 성공이 아니다.
+  `254280d`는 민감한 path/source 없이 entry 종류·mode·base 일치 여부와 Trivy 실패 단계를
+  제한된 진단에 추가했다. 검사를 건너뛰거나 unsupported 판정을 허용으로 바꾸지 않았다.
+  `53a6bba`는 private Trivy container/workspace 정리가 실패하면 INCONCLUSIVE 및 private
+  evidence null로 처리한다. portable 정리 실패 회귀 성공, 실제 native 실패 주입은 미검증이다.
+  signed-image는 `MCP_LANDING`에서 running=true/OOM=false/ECONNREFUSED로 실패했다.
+  `a333d8f`는 독립적으로 시작되는 MCP 서버에 읽기 전용 GET 준비 확인을 추가했다
+  (단일 총 20초/시도 2초/본문 1MiB, redirect 거부). stateful judge/tool 재시도는 없다.
+  Main readiness 8 PASS이며 실제 이미지 재검증은 후속 CI에서 수행한다. 새 공개 배포나
+  서명된 최종 산출물이 아니다. `391a782`의 standalone dashboard OCI import 수정도 유지한다.
 - `bb87dea` Main 전체 `npm test` 성공(Security 107 통과·18 Linux skip,
   dashboard 23 통과, backend/Gateway/replay/MCP stdio/live smoke 성공), `npm run build` 성공.
   이어서 `d7b909b`는 실제 OCI resolver→worker→독립 단일키 validator CLI 4개→V2 정족수→
