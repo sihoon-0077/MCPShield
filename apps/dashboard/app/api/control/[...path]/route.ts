@@ -4,8 +4,8 @@ export const dynamic = "force-dynamic";
 const COOKIE = "mcpshield_control";
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
 const routes = {
-  GET: [/^session$/, /^operations$/, /^releases$/, /^releases\/[^/]+\/(history|appeals)$/, /^scans$/, /^scans\/[^/]+(?:\/evidence)?$/, /^policies$/],
-  POST: [/^releases\/resolve$/, /^releases\/[^/]+\/appeals$/, /^appeals\/[^/]+\/resolve$/, /^scans$/, /^scans\/[^/]+\/retry$/, /^policies$/, /^policies\/[^/]+\/deprecate$/],
+  GET: [/^session$/, /^operations$/, /^releases$/, /^releases\/[^/]+\/(history|appeals)$/, /^scans$/, /^scans\/[^/]+(?:\/evidence)?$/, /^policies$/, /^chain\/actions(?:\/[^/]+)?$/],
+  POST: [/^releases\/resolve$/, /^releases\/[^/]+\/(appeals|register)$/, /^appeals\/[^/]+\/resolve$/, /^scans$/, /^scans\/[^/]+\/retry$/, /^policies$/, /^policies\/[^/]+\/(deprecate|publish)$/, /^admission\/check$/],
 };
 
 type Context = { params: Promise<{ path: string[] }> };
