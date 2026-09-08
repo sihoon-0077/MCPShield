@@ -8,6 +8,7 @@ import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { createArtifactSnapshot, toolSurfaceHash } from "./artifact.mjs";
+import { admissionFetch, getSignedAdmission } from "./signed-admission.mjs";
 
 const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED"]);
 const SOURCES = new Set(["LIVE", "MOCK", "REPLAY"]);
@@ -50,7 +51,7 @@ function mockDecision(identity) {
   return validateDecision({ schemaVersion: "1.0.0", releaseId: identity.releaseId, decision: "BLOCK", releaseStatus: "UNVERIFIED", reasonCode: "STATUS_UNAVAILABLE", checkedAt: new Date().toISOString(), source: "MOCK" }, identity.releaseId);
 }
 
-export async function getAdmission({ identity, mode = process.env.MCPSHIELD_MODE ?? "live", apiBaseUrl = process.env.MCPSHIELD_API_URL ?? "http://127.0.0.1:3001", replayFile = process.env.MCPSHIELD_REPLAY_FILE, timeoutMs = Number(process.env.MCPSHIELD_ADMISSION_TIMEOUT_MS ?? 3000), fetchImpl = fetch }) {
+export async function getAdmission({ identity, mode = process.env.MCPSHIELD_MODE ?? "live", apiBaseUrl = process.env.MCPSHIELD_API_URL ?? "http://127.0.0.1:3001", replayFile = process.env.MCPSHIELD_REPLAY_FILE, timeoutMs = Number(process.env.MCPSHIELD_ADMISSION_TIMEOUT_MS ?? 3000), fetchImpl = fetch, ...signedOptions }) {
   if (!identity?.releaseId || !identity.artifactDigest || !identity.toolSurfaceHash) throw new Error("Gateway-owned artifact identity is required");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) throw new Error("Admission timeout must be between 1 and 30000ms");
   if (mode === "mock") return mockDecision(identity);
@@ -66,12 +67,15 @@ export async function getAdmission({ identity, mode = process.env.MCPSHIELD_MODE
     return validateDecision({ ...saved, source: "REPLAY" }, identity.releaseId);
   }
   if (mode !== "live") throw new Error(`Unknown MCPShield mode: ${mode}`);
-  const response = await fetchImpl(`${apiBaseUrl.replace(/\/$/, "")}/api/admission/check`, {
+  if (signedOptions.policyHash || process.env.MCPSHIELD_POLICY_HASH) {
+    return getSignedAdmission({ ...signedOptions, identity, apiBaseUrl, timeoutMs, fetchImpl });
+  }
+  if ((signedOptions.admissionMode ?? process.env.MCPSHIELD_ADMISSION_MODE ?? "strict") !== "strict") throw new Error("Balanced admission requires a signed policy trust context");
+  const response = await admissionFetch(`${apiBaseUrl.replace(/\/$/, "")}/api/admission/check`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ schemaVersion: "1.0.0", releaseId: identity.releaseId, artifactDigest: identity.artifactDigest, toolSurfaceHash: identity.toolSurfaceHash }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  }, fetchImpl, timeoutMs);
   if (!response.ok) throw new Error(`Admission API returned ${response.status}`);
   return validateDecision(await response.json(), identity.releaseId);
 }
@@ -99,43 +103,44 @@ function spawnSnapshot(snapshot) {
 
 function lineTransform(onMessage) {
   let pending = Buffer.alloc(0);
-  const inspect = (line) => {
+  const inspect = async (line) => {
     const text = line.toString("utf8").trim();
     if (!text) return;
     let message;
     try { message = JSON.parse(text); } catch { throw new Error("MCP stdio emitted invalid newline-delimited JSON-RPC"); }
-    onMessage(message);
+    await onMessage(message);
   };
   return new Transform({
     transform(chunk, _encoding, callback) {
-      try {
+      const processChunk = async () => {
         pending = Buffer.concat([pending, Buffer.from(chunk)]);
         if (pending.byteLength > 1024 * 1024) throw new Error("MCP JSON-RPC line exceeds 1 MiB");
         let newline;
         while ((newline = pending.indexOf(0x0a)) !== -1) {
           const line = pending.subarray(0, newline + 1);
           pending = pending.subarray(newline + 1);
-          inspect(line);
+          await inspect(line);
           this.push(line);
         }
-        callback();
-      } catch (error) { callback(error); }
+      };
+      processChunk().then(() => callback(), callback);
     },
     flush(callback) {
-      try { if (pending.length) { inspect(pending); this.push(pending); } callback(); } catch (error) { callback(error); }
+      const finish = async () => { if (pending.length) { await inspect(pending); this.push(pending); } };
+      finish().then(() => callback(), callback);
     },
   });
 }
 
 const idKey = (id) => `${typeof id}:${JSON.stringify(id)}`;
 
-function eachMessage(value, inspect) {
+async function eachMessage(value, inspect) {
   if (!Array.isArray(value)) return inspect(value);
   if (!value.length) throw new Error("Empty JSON-RPC batches are not allowed");
-  for (const message of value) inspect(message);
+  for (const message of value) await inspect(message);
 }
 
-export function runtimeSurfaceGuards(expectedHash, tools = []) {
+export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall) {
   const listRequests = new Map();
   const allowedTools = new Set(tools.map(({ name }) => name));
   const makeRoom = () => {
@@ -144,12 +149,13 @@ export function runtimeSurfaceGuards(expectedHash, tools = []) {
     if (completed) listRequests.delete(completed[0]);
     else throw new Error("Too many pending tools/list requests");
   };
-  const requests = lineTransform((value) => eachMessage(value, (message) => {
+  const requests = lineTransform((value) => eachMessage(value, async (message) => {
     if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("JSON-RPC batch contains an invalid request");
     if (message.jsonrpc !== "2.0") return;
     if (message.method === "tools/call" && !allowedTools.has(message.params?.name)) {
       throw new Error(`Undeclared runtime tool call: ${String(message.params?.name)}`);
     }
+    if (message.method === "tools/call" && beforeCall) await beforeCall(message);
     if (Object.hasOwn(message, "id")) {
       const key = idKey(message.id);
       if (message.method === "tools/list") {
@@ -185,8 +191,8 @@ function terminateChild(child) {
 async function admittedSnapshot(artifactDir, options) {
   const snapshot = await createArtifactSnapshot(artifactDir);
   try {
-    const decision = await getAdmission({ ...options, identity: snapshot });
-    log("admission", { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash, decision: decision.decision, status: decision.releaseStatus, source: decision.source });
+    const decision = await getAdmission({ ...options, identity: snapshot, operationClass: operationClass(snapshot.tools) });
+    log("admission", { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash, decision: decision.decision, status: decision.releaseStatus, source: decision.source, cacheHit: decision.cacheHit, expiresAt: decision.expiresAt });
     if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") throw new AdmissionBlockedError(decision);
     if (snapshot.runtimePolicyIssues.length) throw new Error(`Gateway runtime policy rejected ${snapshot.runtimePolicyIssues[0].path}: ${snapshot.runtimePolicyIssues[0].reason}`);
     return { snapshot, decision };
@@ -194,6 +200,19 @@ async function admittedSnapshot(artifactDir, options) {
     await snapshot.cleanup();
     throw error;
   }
+}
+
+function operationClass(tools) {
+  return tools.length && tools.every((tool) => tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint === false) ? "READ_PRIVATE" : "WRITE_EXTERNAL";
+}
+
+function recheckSession(snapshot, options) {
+  return async (message) => {
+    const decision = await getAdmission({ ...options, identity: snapshot, operationClass: operationClass(snapshot.tools.filter((tool) => tool.name === message.params?.name)) });
+    if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") {
+      throw new AdmissionBlockedError(decision);
+    }
+  };
 }
 
 export async function runArtifact({ artifactDir, capture = false, executionTimeoutMs = 15_000, input, ...options }) {
@@ -217,7 +236,7 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
       if (capture) target === "stdout" ? stdout += chunk : stderr += chunk;
       else target === "stdout" ? process.stdout.write(chunk) : process.stderr.write(chunk);
     };
-    const guarded = input === undefined ? undefined : runtimeSurfaceGuards(snapshot.toolSurfaceHash, snapshot.tools);
+    const guarded = input === undefined ? undefined : runtimeSurfaceGuards(snapshot.toolSurfaceHash, snapshot.tools, recheckSession(snapshot, options));
     const failOutput = (error) => { outputError ??= error; terminateChild(child); };
     child.stdin.once("error", failOutput);
     if (guarded) {
@@ -244,7 +263,7 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
 export async function proxyArtifactStdio({ artifactDir, ...options }) {
   const { snapshot } = await admittedSnapshot(artifactDir, options);
   const child = spawnSnapshot(snapshot);
-  const { requests, responses } = runtimeSurfaceGuards(snapshot.toolSurfaceHash, snapshot.tools);
+  const { requests, responses } = runtimeSurfaceGuards(snapshot.toolSurfaceHash, snapshot.tools, recheckSession(snapshot, options));
   let terminalError;
   let cleaned = false;
   const cleanup = (signal = "SIGTERM") => {

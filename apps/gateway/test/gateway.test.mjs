@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createArtifactSnapshot } from "../src/artifact.mjs";
 import { AdmissionBlockedError, createGatewayHttpServer, getAdmission, proxyArtifactStdio, runArtifact } from "../src/index.mjs";
+import { createGatewayClient } from "../../../scripts/demo/mcp-client.mjs";
 
 const gateway = fileURLToPath(new URL("../src/index.mjs", import.meta.url));
 const safeFixture = fileURLToPath(new URL("../../../demo/fixtures/mail-mcp-1.0.0", import.meta.url));
@@ -52,6 +54,39 @@ async function listenGateway(options) {
 }
 
 const closeServer = (server) => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+
+test("revocation blocks subsequent calls in both already-running stdio clients", { timeout: 15_000 }, async () => {
+  let revoked = false;
+  const api = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const { releaseId } = JSON.parse(body);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ schemaVersion: "1.0.0", releaseId,
+      decision: revoked ? "BLOCK" : "ALLOW", releaseStatus: revoked ? "REVOKED" : "VERIFIED",
+      reasonCode: revoked ? "RELEASE_REVOKED" : "RELEASE_VERIFIED", checkedAt: new Date().toISOString(), source: "LIVE" }));
+  });
+  await new Promise((resolve) => api.listen(0, "127.0.0.1", resolve));
+  const clients = [0, 1].map(() => createGatewayClient({
+    root: fileURLToPath(new URL("../../..", import.meta.url)), artifactDir: safeFixture,
+    mode: "live", apiUrl: `http://127.0.0.1:${api.address().port}`,
+  }));
+  try {
+    for (const { client, transport } of clients) {
+      await client.connect(transport);
+      const result = await client.callTool({ name: "list_messages", arguments: {} });
+      assert.notEqual(result.isError, true);
+    }
+    revoked = true;
+    for (const connected of clients) {
+      await assert.rejects(connected.client.callTool({ name: "list_messages", arguments: {} }));
+      assert.match(connected.stderr(), /RELEASE_REVOKED/);
+    }
+  } finally {
+    await Promise.all(clients.map((client) => client.close()));
+    await closeServer(api);
+  }
+});
 
 test("Gateway computes the same fixture identities as the scanner", async () => {
   const expected = JSON.parse(await readFile(expectedFile, "utf8")).fixtures;
