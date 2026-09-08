@@ -72,20 +72,32 @@ export async function inspectOciImage({ index, readBlob, platform = { os: 'linux
   };
 }
 
-async function boundedResponse(response, max = SNAPSHOT_LIMITS.bytes) {
-  if (!response.ok || !response.body) throw new Error(`OCI registry returned HTTP ${response.status}`);
+async function boundedResponse(response, max = SNAPSHOT_LIMITS.bytes, signal) {
+  if (!response.ok || !response.body) {
+    response.body?.cancel().catch(() => {});
+    throw new Error(`OCI registry returned HTTP ${response.status}`);
+  }
   const reader = response.body.getReader();
   let total = 0;
   const chunks = [];
+  let abort;
+  const expired = new Promise((_, reject) => {
+    abort = () => reject(Error('OCI_ACQUISITION_TIMEOUT'));
+    if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
+  });
+  expired.catch(() => {});
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      if (signal?.aborted) throw Error('OCI_ACQUISITION_TIMEOUT');
+      const { done, value } = await Promise.race([reader.read(), expired]);
+      if (signal?.aborted) throw Error('OCI_ACQUISITION_TIMEOUT');
       if (done) break;
       total += value.length;
       if (total > max) throw new Error('OCI_DOWNLOAD_SIZE_LIMIT');
       chunks.push(Buffer.from(value));
     }
-  } catch (error) { await reader.cancel(); throw error; }
+  } catch (error) { reader.cancel().catch(() => {}); throw error; }
+  finally { signal?.removeEventListener('abort', abort); }
   return Buffer.concat(chunks);
 }
 
@@ -95,7 +107,11 @@ export function parseOciLocator(locator) {
   return { registry: match[1], repository: match[2], reference: match[3] ?? match[4] };
 }
 
-export async function resolveOciArtifact(source) {
+// Optional fetch/deadline injection is for trusted tests/operators only; public
+// source data cannot select a transport, credential destination or time budget.
+export async function resolveOciArtifact(source, { fetchImpl = fetch, timeoutMs = 120_000 } = {}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) throw Error('OCI_ACQUISITION_BUDGET_INVALID');
+  const deadline = AbortSignal.timeout(timeoutMs);
   const budgetProfile = OCI_SOURCE_BUDGET_PROFILE, limits = snapshotLimits(budgetProfile);
   const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-oci-'));
   const artifactDir = join(workspace, 'artifact');
@@ -124,20 +140,27 @@ export async function resolveOciArtifact(source) {
       let downloadedBytes = 0;
       const registryGet = async (path, accept, max = JSON_LIMIT) => {
         const url = `https://${parsed.registry}/v2/${parsed.repository}/${path}`;
-        const request = () => fetch(url, { headers: { accept, ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) }, redirect: 'error', signal: AbortSignal.timeout(15_000) });
+        const requestSignal = () => AbortSignal.any([deadline, AbortSignal.timeout(15_000)]);
+        const request = () => {
+          deadline.throwIfAborted();
+          return fetchImpl(url, { headers: { accept, ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) }, redirect: 'error', signal: requestSignal() });
+        };
         let response = await request();
         if (response.status === 401 && !bearer) {
+          // Do not leave the first unauthorized body holding an HTTP socket.
+          response.body?.cancel().catch(() => {});
           // Anonymous pull tokens only; realm is fixed by registry, never trusted from a challenge header.
           const tokenUrl = parsed.registry === 'ghcr.io'
             ? new URL('https://ghcr.io/token') : new URL('https://auth.docker.io/token');
           tokenUrl.searchParams.set('service', parsed.registry === 'ghcr.io' ? 'ghcr.io' : 'registry.docker.io');
           tokenUrl.searchParams.set('scope', `repository:${parsed.repository}:pull`);
-          const payload = JSON.parse(await boundedResponse(await fetch(tokenUrl, { redirect: 'error', signal: AbortSignal.timeout(15_000) }), 64 * 1024));
+          deadline.throwIfAborted();
+          const payload = JSON.parse(await boundedResponse(await fetchImpl(tokenUrl, { redirect: 'error', signal: requestSignal() }), 64 * 1024, deadline));
           bearer = payload.token ?? payload.access_token;
           if (typeof bearer !== 'string' || bearer.length > 32_000) throw new Error('invalid OCI anonymous pull token');
           response = await request();
         }
-        const bytes = await boundedResponse(response, Math.min(max, limits.bytes - downloadedBytes));
+        const bytes = await boundedResponse(response, Math.min(max, limits.bytes - downloadedBytes), deadline);
         downloadedBytes += bytes.length;
         return bytes;
       };
@@ -174,7 +197,12 @@ export async function resolveOciArtifact(source) {
       layers: inspection.layers, platform: inspection.platform, allLayerDigestsVerified: true, executionPerformed: false };
     metadata.runtimePreparation = preflightOciRuntime({ sourceDigest: imageDigest, sourceTreeDigest: treeDigest,
       runtime: inspection.runtime, platform: inspection.platform, builderImageDigest: source.builderImageDigest });
+    deadline.throwIfAborted();
     return { artifactDir, root: artifactDir, releaseId: `${name}@0.0.0`, toolId: `oci:${originalLocator}`, version: '0.0.0', artifactUri: immutableReference,
       artifactDigest: treeDigest, manifestDigest, toolSurfaceHash: metadata.toolSurfaceHash, metadata, cleanup: () => removeFixtureSnapshot(workspace) };
-  } catch (error) { await removeFixtureSnapshot(workspace); throw error; }
+  } catch (error) {
+    await removeFixtureSnapshot(workspace);
+    if (deadline.aborted) throw Error('OCI_ACQUISITION_TIMEOUT');
+    throw error;
+  }
 }
