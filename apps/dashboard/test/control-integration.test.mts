@@ -11,11 +11,81 @@ import { ControlStore } from "../../api/src/control-store.js";
 import { runControlWorkerOnce } from "../../api/src/control-worker.js";
 import type { ControlOptions } from "../../api/src/control-plane.js";
 import { V2Relayer } from "../../api/src/chain-outbox.js";
+import { POST as judgePost, DELETE as judgeDelete } from "../app/api/judge/[...path]/route";
+// @ts-expect-error Release smoke is import-safe ESM JavaScript; importing never invokes Docker.
+import { smokeJudgeExperience } from "../../../scripts/ops/smoke-release-image.mjs";
 
 const request = async (path: string, cookie = "", body?: unknown, origin = "https://console.test") => {
   const req = new NextRequest(`https://console.test/api/control/${path}`, { method: body === undefined ? "GET" : "POST", headers: { cookie, origin, "content-type": "application/json", "idempotency-key": "console-integration-once" }, body: body === undefined ? undefined : JSON.stringify(body) });
   return (body === undefined ? GET : POST)(req, { params: Promise.resolve({ path: path.split("/") }) });
 };
+
+test("release-image judge smoke traverses the real BFF/API and cleans only its synthetic session", { timeout: 30_000 }, async () => {
+  const app = await buildApp({ databasePath: ":memory:", adminApiToken: "synthetic-smoke-admin-token", scannerApiToken: "synthetic-smoke-scanner-token", judgeDemo: true });
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const previous = process.env.MCPSHIELD_API_URL;
+  process.env.MCPSHIELD_API_URL = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`;
+  const untouched = (await app.inject({ method: "POST", url: "/api/demo/sessions" })).json().sessionId;
+  const calls: { path: string; method: string; body: unknown }[] = [];
+  try {
+    const result = await smokeJudgeExperience("http://127.0.0.1:3000", async (url: string, init: RequestInit) => {
+      const req = new Request(url, init), path = new URL(url).pathname.replace("/api/judge/", "");
+      assert.equal(req.headers.get("origin"), "http://127.0.0.1:3000"); assert.equal(init.redirect, "error");
+      assert.equal(req.headers.get("authorization"), null); assert.equal(req.headers.get("cookie"), null);
+      calls.push({ path, method: req.method, body: init.body });
+      assert.match(path, /^sessions(?:\/[0-9a-f-]{36}(?:\/actions)?)?$/);
+      return (req.method === "DELETE" ? judgeDelete : judgePost)(req, { params: Promise.resolve({ path: path.split("/") }) });
+    });
+    assert.deepEqual(result, { backend: "PASS", safe: "ALLOW", malicious: "BLOCK_BEFORE_SPAWN", source: "LIVE_DEMO", synthetic: true, ledger: "LOCAL_DEMO" });
+    assert.equal(calls.length, 11); assert.equal(calls[0].path, "sessions"); assert.equal(calls[10].method, "DELETE");
+    const ownPath = calls[10].path, ownId = ownPath.split("/")[1]; assert.notEqual(ownId, untouched);
+    assert.ok(calls.slice(1, 10).every(call => call.path === `${ownPath}/actions` && call.method === "POST" && Object.keys(JSON.parse(call.body as string)).join() === "action"));
+    assert.equal((await app.inject({ method: "GET", url: `/api/demo/sessions/${ownId}` })).statusCode, 404);
+    assert.equal((await app.inject({ method: "GET", url: `/api/demo/sessions/${untouched}` })).json().step, 0);
+  } finally {
+    previous === undefined ? delete process.env.MCPSHIELD_API_URL : process.env.MCPSHIELD_API_URL = previous;
+    await app.close();
+  }
+});
+
+test("release-image judge smoke fails on unavailable, malformed or oversized bodies without logging them", async () => {
+  const origin = "http://127.0.0.1:3000", secret = "synthetic-body-that-must-not-appear-in-errors";
+  await assert.rejects(smokeJudgeExperience("https://public.example", () => assert.fail("No non-loopback request")), /loopback/);
+  for (const response of [new Response(secret, { status: 503 }), Response.json({ error: secret }, { status: 200 }), new Response(secret, { status: 201, headers: { "content-type": "application/json" } }), Response.json({ secret: "x".repeat(65_536) }, { status: 201 })]) {
+    await assert.rejects(smokeJudgeExperience(origin, async () => response), (error: Error) => { assert.doesNotMatch(error.message, new RegExp(secret)); return /RELEASE_JUDGE_/.test(error.message); });
+  }
+});
+
+test("release-image judge smoke bounds a stalled error response body", async (context) => {
+  let cancelled = false;
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = smokeJudgeExperience("http://127.0.0.1:3000", async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status: 503 }));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  context.mock.timers.tick(20_001);
+  await assert.rejects(pending, /RELEASE_JUDGE_TIMEOUT/); assert.equal(cancelled, true);
+});
+
+test("release-image judge smoke rejects a substituted session and deletes only the session it created", async () => {
+  const sessionId = "12345678-1234-4123-8123-123456789abc", calls: string[] = [];
+  const initial = { sessionId, schemaVersion: "1.0.0", synthetic: true, source: "LIVE_DEMO", ledgerMode: "LOCAL_DEMO", step: 0, nextAction: "SCAN_SAFE", complete: false,
+    selectedRelease: "mail-mcp@1.0.0", releases: ["mail-mcp@1.0.0", "mail-mcp@1.0.1"].map(releaseId => ({ releaseId, scanStatus: "NOT_RUN", status: "UNVERIFIED" })), votes: [], executions: [] };
+  await assert.rejects(smokeJudgeExperience("http://127.0.0.1:3000", async (url: string, init: RequestInit) => {
+    calls.push(`${init.method} ${new URL(url).pathname}`);
+    return init.method === "DELETE" ? new Response(null, { status: 204 }) : Response.json(calls.length === 1 ? initial : { ...initial, sessionId: "substituted-session" }, { status: calls.length === 1 ? 201 : 200 });
+  }), /session identity\/source mismatch/);
+  assert.deepEqual(calls, ["POST /api/judge/sessions", `POST /api/judge/sessions/${sessionId}/actions`, `DELETE /api/judge/sessions/${sessionId}`]);
+});
+
+test("judge BFF preserves bodyless 204, 205 and 304 responses", async (context) => {
+  let upstreamStatus = 204;
+  context.mock.method(globalThis, "fetch", async () => new Response(null, { status: upstreamStatus }));
+  for (const status of [204, 205, 304]) {
+    upstreamStatus = status;
+    const path = ["sessions", "12345678-1234-4123-8123-123456789abc"];
+    const response = await judgeDelete(new Request(`http://127.0.0.1:3000/api/judge/${path.join("/")}`, { method: "DELETE" }), { params: Promise.resolve({ path }) });
+    assert.equal(response.status, status); assert.equal(await response.text(), "");
+  }
+});
 
 test("console login to real resolver, worker, evidence and appeal keeps incomplete scans unverified", async () => {
   const directory = await mkdtemp(join(tmpdir(), "mcpshield-console-integration-"));

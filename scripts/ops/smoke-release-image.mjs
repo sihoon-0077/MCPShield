@@ -1,11 +1,87 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { setTimeout } from 'node:timers/promises';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
+// One total deadline and size budget cover successful and error responses; never log response bodies.
+async function judgeRequest(origin, path, method, status, body, fetchImpl) {
+  const controller = new AbortController();
+  let timer, reader;
+  const deadline = new Promise((_, reject) => { timer = globalThis.setTimeout(() => { controller.abort(); reject(new Error('RELEASE_JUDGE_TIMEOUT')); }, 20_000); });
+  try {
+    const response = await Promise.race([fetchImpl(`${origin}/api/judge/${path}`, {
+      method, headers: { origin, accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+      body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal, redirect: 'error', cache: 'no-store',
+    }), deadline]);
+    const chunks = []; let bytes = 0;
+    reader = response.body?.getReader();
+    if (reader) while (true) {
+      const { done, value } = await Promise.race([reader.read(), deadline]);
+      if (done) break;
+      bytes += value.byteLength;
+      assert.ok(bytes <= 65_536, 'RELEASE_JUDGE_RESPONSE_TOO_LARGE');
+      chunks.push(Buffer.from(value));
+    }
+    assert.ok(response.status === status, `RELEASE_JUDGE_HTTP_${response.status}`);
+    if (status === 204) { assert.ok(bytes === 0, 'RELEASE_JUDGE_UNEXPECTED_DELETE_BODY'); return; }
+    assert.ok(/^application\/json\b/i.test(response.headers.get('content-type') ?? ''), 'RELEASE_JUDGE_JSON_REQUIRED');
+    try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new Error('RELEASE_JUDGE_INVALID_JSON'); }
+  } finally { globalThis.clearTimeout(timer); controller.abort(); void reader?.cancel().catch(() => {}); }
+}
+
+export async function smokeJudgeExperience(value, fetchImpl = fetch) {
+  const url = new URL(value);
+  assert.ok(url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash, 'Release smoke accepts only a loopback image origin');
+  const origin = url.origin;
+  const actions = ['SCAN_SAFE', 'VOTE_SAFE_A', 'VOTE_SAFE_B', 'RUN_SAFE', 'SELECT_MALICIOUS', 'SCAN_MALICIOUS', 'VOTE_FAIL_A', 'VOTE_FAIL_B', 'RUN_MALICIOUS'];
+  const ids = ['mail-mcp@1.0.0', 'mail-mcp@1.0.1'];
+  const safeResult = { ok: true, messages: [{ id: 'demo-1', subject: 'Welcome' }] };
+  let sessionId, failed = false;
+  function check(state, step) {
+    assert.ok(state?.sessionId === sessionId && state.schemaVersion === '1.0.0' && state.synthetic === true && state.source === 'LIVE_DEMO' && state.ledgerMode === 'LOCAL_DEMO', 'Release judge session identity/source mismatch');
+    assert.ok(state.step === step && state.nextAction === (actions[step] ?? null) && state.complete === (step === actions.length), 'Release judge did not advance the expected action');
+    assert.ok(Array.isArray(state.releases) && state.releases.length === 2 && state.releases.every((r, i) => r.releaseId === ids[i]), 'Release judge changed its fixed fixture scope');
+    assert.ok(state.releases[0].scanStatus === (step >= 1 ? 'PASSED' : 'NOT_RUN') && state.releases[0].status === (step >= 3 ? 'VERIFIED' : 'UNVERIFIED'), 'Safe scan/quorum state mismatch');
+    assert.ok(state.releases[1].scanStatus === (step >= 6 ? 'FAILED' : 'NOT_RUN') && state.releases[1].status === (step >= 8 ? 'REVOKED' : 'UNVERIFIED'), 'Malicious scan/quorum state mismatch');
+    assert.ok(state.selectedRelease === ids[step >= 5 ? 1 : 0], 'Release judge update selection mismatch');
+    const decisions = step >= 8 ? ['PASS', 'PASS', 'FAIL', 'FAIL'] : step >= 7 ? ['PASS', 'PASS', 'FAIL'] : step >= 3 ? ['PASS', 'PASS'] : step >= 2 ? ['PASS'] : [];
+    assert.ok(Array.isArray(state.votes) && state.votes.length === decisions.length && state.votes.every((vote, i) => vote.decision === decisions[i] && vote.releaseId === ids[i < 2 ? 0 : 1] && /^0x[a-f0-9]{64}$/.test(vote.signatureHash)), 'Release judge signed votes mismatch');
+    for (const releaseId of ids) {
+      const votes = state.votes.filter(vote => vote.releaseId === releaseId);
+      assert.ok(votes.every(vote => /^0x[0-9a-fA-F]{40}$/.test(vote.address)) && new Set(votes.map(vote => vote.address.toLowerCase())).size === votes.length, 'Release judge validators are not distinct');
+    }
+    assert.ok(Array.isArray(state.executions) && state.executions.length === (step >= 9 ? 2 : step >= 4 ? 1 : 0), 'Release judge execution count mismatch');
+    if (step >= 4) {
+      const execution = state.executions[0];
+      assert.ok(execution.releaseId === ids[0] && execution.decision === 'ALLOW' && execution.spawnAttempted === true && JSON.stringify(execution.result) === JSON.stringify(safeResult), 'Release judge did not execute the safe MCP tool');
+    }
+    if (step >= 6) assert.ok(Array.isArray(state.findings) && state.findings.some(f => f.code === 'CANARY_EXFILTRATION'), 'Release judge did not detect the synthetic canary');
+    if (step >= 9) {
+      const execution = state.executions[1];
+      assert.ok(execution.releaseId === ids[1] && execution.decision === 'BLOCK' && execution.spawnAttempted === false && execution.reasonCode === 'RELEASE_REVOKED' && execution.result === undefined, 'Release judge did not block before spawn');
+    }
+  }
+  try {
+    let state = await judgeRequest(origin, 'sessions', 'POST', 201, undefined, fetchImpl);
+    assert.ok(typeof state?.sessionId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(state.sessionId), 'Release judge did not create a private synthetic session');
+    sessionId = state.sessionId; check(state, 0);
+    for (const [index, action] of actions.entries()) {
+      state = await judgeRequest(origin, `sessions/${sessionId}/actions`, 'POST', 200, { action }, fetchImpl);
+      check(state, index + 1);
+    }
+  } catch (error) { failed = true; throw error; }
+  finally {
+    // Never enumerate/reset other sessions. The outer runner also removes this disposable container on failure.
+    if (sessionId) try { await judgeRequest(origin, `sessions/${sessionId}`, 'DELETE', 204, undefined, fetchImpl); }
+    catch { if (!failed) throw new Error('RELEASE_JUDGE_SESSION_CLEANUP_FAILED'); }
+  }
+  return { backend: 'PASS', safe: 'ALLOW', malicious: 'BLOCK_BEFORE_SPAWN', source: 'LIVE_DEMO', synthetic: true, ledger: 'LOCAL_DEMO' };
+}
+
 // Run only the image built by this job, with synthetic data and temporary credentials.
-const image = process.argv[2];
+async function main(image) {
 assert.match(image ?? '', /^sha256:[a-f0-9]{64}$/);
 const docker = (...args) => execFileSync('docker', args, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const env = ['ADMIN_API_TOKEN', 'SCANNER_API_TOKEN'].flatMap(key => ['-e', `${key}=${randomBytes(32).toString('hex')}`]);
@@ -27,6 +103,7 @@ try {
   const landing = await fetch(`${origin}/mcp`, { headers: { accept: 'text/html' }, signal: AbortSignal.timeout(5000) });
   assert.equal(landing.status, 200); assert.match(landing.headers.get('content-type') ?? '', /^text\/html/);
   assert.match(await landing.text(), /MCPShield/);
+  const judge = await smokeJudgeExperience(origin);
   for (const era of ['legacy', 'modern']) {
     client = new Client({ name: 'release-image-smoke', version: '1' }, { versionNegotiation: { mode: era === 'modern' ? { pin: '2026-07-28' } : 'legacy' } });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`)), { timeout: 10_000 });
@@ -42,8 +119,11 @@ try {
   const stopped = JSON.parse(docker('inspect', container))[0].State;
   assert.equal(stopped.Running, false); assert.equal(stopped.OOMKilled, false);
   assert.ok([0, 143].includes(stopped.ExitCode), `Release did not terminate gracefully: ${stopped.ExitCode}`);
-  console.log(JSON.stringify({ image, web: 'PASS', mcpLegacy: 'PASS', mcpModern: 'PASS', data: 'SYNTHETIC_REPLAY', lifecycle: 'PASS' }));
+  console.log(JSON.stringify({ image, web: 'PASS', mcpLegacy: 'PASS', mcpModern: 'PASS', mcpData: 'SYNTHETIC_REPLAY', judge, lifecycle: 'PASS' }));
 } finally {
   await client?.close().catch(() => {});
   if (container && /^[a-f0-9]{64}$/.test(container)) docker('rm', '--force', container);
 }
+}
+
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) await main(process.argv[2]);
