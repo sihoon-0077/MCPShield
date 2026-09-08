@@ -47,6 +47,7 @@ export async function reviewOciImage({ descriptor, expectedDescriptorDigest, tru
       // INTERNAL ONLY. Strip this field before any public API/telemetry output.
       // Persist only in the existing encrypted operator-evidence boundary.
       privateEvidence: { access: 'ENCRYPTED_OPERATOR_EVIDENCE_ONLY', catalogue,
+        runtime: { argv: proof.argv, workingDirectory: proof.workingDirectory, environment: proof.image.Config?.Env ?? [] },
         inventory: { digest: proof.filesystem.digest, entries: proof.filesystem.entries }, classifications: classified.classifications,
         sources: proof.filesystem.reviewSources.map(({ path, digest, bytes }) => ({ path, digest, contentBase64: bytes?.toString('base64') ?? null })),
         trivy: trivyEvidence } };
