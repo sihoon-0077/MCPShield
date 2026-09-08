@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +18,8 @@ import { observeOciRuntime } from "../../../services/scanner/src/oci-observer.mj
 import { createOciReleaseBinding, ociExecutionPolicy } from "../../../services/scanner/src/oci-binding.mjs";
 import { removeFixtureSnapshot } from "../../../services/scanner/src/snapshot.mjs";
 import { AdmissionBlockedError, runArtifact } from "../src/index.mjs";
+import { breakGlassDigest, signBreakGlassGrant, verifyBreakGlassAudit } from "../src/break-glass.mjs";
+import { syntheticRpc } from "./fixtures/synthetic-rpc.mjs";
 
 const execute = promisify(execFile);
 const tools = ["first", "second"].map(name => ({ name, inputSchema: { type: "object", properties: { linger: { type: "boolean" } }, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false } }));
@@ -93,12 +95,13 @@ test("actual OCI native shell → source import/observation → signed Gateway e
     const file = join(root, "gateway.json"); await writeFile(file, JSON.stringify(identity), { mode: 0o600 });
     const keys = generateKeyPairSync("ed25519"), context = { publicKey: keys.publicKey.export({ type: "spki", format: "pem" }), keyId: "synthetic-oci-issuer",
       apiToken: "SYNTHETIC_LOCAL_TOKEN", policyHash: `0x${"a".repeat(64)}`, chainId: 31337, registryContract: `0x${"b".repeat(40)}`, tenantId: "synthetic-oci", validatorSetVersion: 1 };
-    let requests = 0, revokeAt = Infinity, unsigned = false, scenario = 0;
+    let requests = 0, revokeAt = Infinity, offlineAt = Infinity, unsigned = false, scenario = 0;
     server = createServer(async (request, response) => {
       assert.equal(request.url, "/v1/admission/check"); assert.equal(request.headers.authorization, `Bearer ${context.apiToken}`);
       const chunks = []; for await (const chunk of request) chunks.push(chunk); const body = JSON.parse(Buffer.concat(chunks));
       assert.equal(body.releaseId, identity.releaseId); assert.equal(body.artifactDigest, binding.artifactDigest); assert.equal(body.toolSurfaceHash, binding.toolSurfaceHash);
       const revoked = ++requests >= revokeAt, now = Date.now();
+      if (requests >= offlineAt) { response.writeHead(503).end(); return; }
       const snapshot = { schemaVersion: "1.0.0", keyId: context.keyId, releaseId: body.releaseId, artifactDigest: body.artifactDigest, toolSurfaceHash: body.toolSurfaceHash,
         policyHash: context.policyHash, tenantId: context.tenantId, operationClass: body.operationClass, chainId: context.chainId, registryContract: context.registryContract,
         validatorSetVersion: 1, observedBlock: 123, blockHash: `0x${"c".repeat(64)}`, issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 30000).toISOString(),
@@ -114,6 +117,24 @@ test("actual OCI native shell → source import/observation → signed Gateway e
     const replies = result.stdout.trim().split("\n").map(JSON.parse); assert.deepEqual(replies.map(reply => reply.id), [1, 2, 3]);
     assert.equal(replies[2].result.content[0].text, "SYNTHETIC_NATIVE_ISOLATION_OK"); assert.equal(result.stderr.includes("SYNTHETIC_CANDIDATE_STDERR_PRIVATE"), false);
     assert.deepEqual(await ownedContainers(), before);
+    offlineAt = 2;
+    const balanced = await runArtifact({ ...options(), admissionMode: "balanced", input: wire(call()) });
+    assert.equal(requests, 3, "Only initial admission was fresh; pre-start/call each received 503 and used the signed read cache");
+    assert.match(balanced.stdout, /SYNTHETIC_NATIVE_ISOLATION_OK/); assert.deepEqual(await ownedContainers(), before);
+    offlineAt = 1;
+    const rpc = await syntheticRpc("oci-native-gateway-fallback");
+    Object.assign(rpc.identity, { ...binding, toolId: identity.toolId, releaseId: identity.releaseId });
+    try {
+      const rpcOptions = { ...options(), chainId: rpc.chainId, registryContract: rpc.registryContract, policyHash: rpc.policyHash,
+        rpc: { rpcUrls: rpc.rpcUrls, confirmations: 2, timeoutMs: 1500 }, indexer: null, cacheFile: null };
+      const rpcAllowed = await runArtifact({ ...rpcOptions, input: wire(call()) });
+      assert.equal(rpcAllowed.decision.decisionSource, "DIRECT_RPC"); assert.match(rpcAllowed.stdout, /SYNTHETIC_NATIVE_ISOLATION_OK/);
+      assert.ok(rpc.requests.length > 0); assert.ok(rpc.requests.every(request => request.authorization === undefined));
+      rpc.mode = "revoked";
+      await assert.rejects(runArtifact({ ...rpcOptions, input: wire(call()) }), error => error instanceof AdmissionBlockedError && error.decision.releaseStatus === "REVOKED");
+      assert.deepEqual(await ownedContainers(), before);
+    } finally { await rpc.close(); }
+    offlineAt = Infinity;
     for (const when of [1, 2, 3, 4]) {
       revokeAt = when;
       await assert.rejects(runArtifact({ ...options(), input: wire(call("first"), { ...call(), id: 4 }) }), error => error instanceof AdmissionBlockedError && error.decision.releaseStatus === "REVOKED");
@@ -122,13 +143,33 @@ test("actual OCI native shell → source import/observation → signed Gateway e
     revokeAt = Infinity; unsigned = true;
     await assert.rejects(runArtifact({ ...options(), input: wire(call()) }), /invalid proof metadata/); assert.equal(requests, 1); assert.deepEqual(await ownedContainers(), before);
     unsigned = false;
+    const emergencyOptions = options(); revokeAt = 1;
+    const operator = generateKeyPairSync("ed25519"), issuedAt = Date.now(), auditKeyFile = join(root, "emergency.key");
+    const grant = { schemaVersion: "mcpshield.break-glass-grant.v1", keyId: "synthetic-oci-operator", grantId: randomUUID(), actorId: "synthetic-private-operator",
+      reasonText: "Synthetic OCI emergency isolation regression", issuedAt, expiresAt: issuedAt + 60000, releaseId: identity.releaseId,
+      artifactDigest: binding.artifactDigest, manifestDigest: binding.manifestDigest, toolSurfaceHash: binding.toolSurfaceHash,
+      policyHash: context.policyHash, chainId: context.chainId, registryContract: emergencyOptions.registryContract, tenantId: context.tenantId,
+      toolName: "second", operationClass: "READ_PRIVATE", argumentsDigest: breakGlassDigest({}) };
+    const breakGlass = { configPath: join(root, "emergency.json"), grantPath: join(root, "grant.json") };
+    await writeFile(auditKeyFile, randomBytes(32).toString("hex"), { mode: 0o600 });
+    await writeFile(breakGlass.configPath, JSON.stringify({ schemaVersion: "mcpshield.break-glass-config.v1", keyId: grant.keyId,
+      publicKey: operator.publicKey.export({ type: "spki", format: "pem" }), clientInfo: { name: "synthetic-oci-gateway", version: "1" },
+      auditFile: join(root, "emergency.sqlite"), auditKeyFile, allowedCalls: [{ releaseId: identity.releaseId, toolName: grant.toolName, operationClass: grant.operationClass }] }), { mode: 0o600 });
+    await writeFile(breakGlass.grantPath, JSON.stringify(signBreakGlassGrant(grant, operator.privateKey.export({ type: "pkcs8", format: "pem" }))), { mode: 0o600 });
+    const emergency = await runArtifact({ ...emergencyOptions, breakGlass, input: wire(call()) });
+    assert.equal(emergency.executionAuthorization, "BREAK_GLASS_OVERRIDE"); assert.equal(emergency.decision.decision, "BLOCK"); assert.equal(emergency.decision.releaseStatus, "REVOKED");
+    assert.match(emergency.stdout, /SYNTHETIC_NATIVE_ISOLATION_OK/); assert.equal(verifyBreakGlassAudit(breakGlass.configPath).count, 2);
+    await assert.rejects(runArtifact({ ...emergencyOptions, breakGlass, input: wire(call()) }), /AUDIT_OR_REPLAY_REJECTED/);
+    await assert.rejects(runArtifact({ ...emergencyOptions, input: wire(call()) }), error => error instanceof AdmissionBlockedError && error.decision.releaseStatus === "REVOKED");
+    assert.deepEqual(await ownedContainers(), before); revokeAt = Infinity;
     await assert.rejects(runArtifact({ ...options(), input: wire(call("first", { linger: true })), executionTimeoutMs: 1000 }), /timed out/);
     assert.deepEqual(await ownedContainers(), before);
     // A recomputed, internally consistent commitment cannot substitute for local bytes.
     const alteredBinding = createOciReleaseBinding({ sourceReleaseId: binding.sourceReleaseId,
       descriptor: { ...binding.descriptor, rootfsDigest: ociHash("synthetic-false-filesystem") }, executionPolicy });
     await writeFile(file, JSON.stringify({ ...identity, ...exactReleaseIdentity({ toolId: identity.toolId, ...alteredBinding }), binding: alteredBinding }));
-    await assert.rejects(runArtifact({ ...options(), input: wire(call()) }), /PREPARED_OCI_LOCAL_IMAGE_REJECTED/); assert.equal(requests, 0);
+    await assert.rejects(runArtifact({ ...options(), breakGlass, input: wire(call()) }), /PREPARED_OCI_LOCAL_IMAGE_REJECTED/); assert.equal(requests, 0);
+    assert.equal(verifyBreakGlassAudit(breakGlass.configPath).count, 2, "Emergency authorization cannot bypass the local image identity gate");
     await writeFile(file, JSON.stringify(identity));
     // Real CLI EOF must remove the container, not only kill the attached Docker client.
     const cliOptions = options(), env = { ...process.env, MCPSHIELD_MODE: "live", MCPSHIELD_API_URL: cliOptions.apiBaseUrl,

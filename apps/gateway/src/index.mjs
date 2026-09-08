@@ -162,7 +162,7 @@ async function admittedSnapshot(artifactDir, options) {
     if (artifactDir) throw new Error("PREPARED_IDENTITY_AMBIGUOUS");
     if ((options.mode ?? process.env.MCPSHIELD_MODE ?? "live") !== "live" || !(options.policyHash ?? process.env.MCPSHIELD_POLICY_HASH)) throw new Error("PREPARED_SIGNED_LIVE_REQUIRED");
     const { createPreparedSnapshot } = await import("./prepared.mjs");
-    snapshot = await createPreparedSnapshot(options.preparedIdentityPath, { admissionMode: options.admissionMode ?? process.env.MCPSHIELD_ADMISSION_MODE ?? "strict", breakGlass: Boolean(options.breakGlass) });
+    snapshot = await createPreparedSnapshot(options.preparedIdentityPath);
   } else snapshot = await createArtifactSnapshot(artifactDir);
   try {
     const configuredId = options.controlReleaseId ?? process.env.MCPSHIELD_CONTROL_RELEASE_ID;
@@ -206,7 +206,6 @@ async function executionDecision(snapshot, options, toolName, phase, actionClass
 }
 
 function requireExecutionDecision(snapshot, decision) {
-  if (snapshot.preparedProfile === "oci-container-v1" && (decision.source !== "LIVE" || !["API", "ORG_INDEXER"].includes(decision.decisionSource))) throw new Error("PREPARED_OCI_STRICT_SIGNED_ADMISSION_REQUIRED");
   const emergency = emergencySessions.get(snapshot);
   emergency?.assertCurrent();
   if (decision.decision === "ALLOW" && decision.releaseStatus === "VERIFIED") return;
