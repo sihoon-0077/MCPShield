@@ -12,6 +12,7 @@
     "scripts/demo"
   ],
   "scripts": {
+    "lock:normalize": "node scripts/ops/normalize-lock.mjs",
     "dev:api": "tsx watch apps/api/src/server.ts",
     "start:api": "tsx apps/api/src/server.ts",
     "start:indexer": "tsx apps/indexer/src/index.ts",

@@ -31,7 +31,9 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install monorepo dependencies
-        run: npm ci
+        run: |
+          node scripts/ops/normalize-lock.mjs --check
+          npm ci
       - name: Test backend, contracts, gateway, and replay demo
         run: npm test
       - name: Build backend types and dashboard

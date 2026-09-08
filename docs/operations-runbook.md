@@ -87,6 +87,10 @@ terminal REVOKED를 되돌리지 않는다. 실제 기관별 키 보관/HSM 복�
 
 ## 배포·롤백
 
+의존성 변경 후 `npm run lock:normalize`를 실행한다. Ganache의 bundled 개발용
+shrinkwrap이 npm install 때 root lock에 끼워 넣은 `extraneous` 항목만 제거한다.
+실제 의존성 버전이나 integrity는 바꾸지 않으며, Linux Node 22/24 CI로 재검증한다.
+
 배포 전 unit/integration/실제 Docker 테스트, production dependency audit, secret scan을 수행한다.
 공개 `/mcp`와 `/try`는 합성 데이터 데모를 유지한다. 운영 credential·evidence API를 익명 데모에 노출하지 않는다.
 DB migration은 추가 방식으로 적용하고, 백업을 확인한 후 새 버전을 배포한다.
