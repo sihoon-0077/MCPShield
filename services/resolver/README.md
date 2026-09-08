@@ -194,3 +194,78 @@ size rejection and an actual stalled HTTP body deadline. Missing Docker/builder
 configuration remains NOT_RUN/INCONCLUSIVE; unsupported dependency layouts remain
 explicitly rejected. npm behavior follows the [package-lock-only contract](https://docs.npmjs.com/cli/v11/commands/npm-install/)
 and [native npm configuration](https://docs.npmjs.com/using-npm/config/).
+
+## OCI 2A: native import and language-neutral observation (not approval)
+
+`importOciRuntime({root, sourceTreeDigest, platform})` accepts the resolver-owned
+artifact with an `oci/` layout. It re-verifies the original stable snapshot,
+selected raw manifest/config/layer hashes, decompressed layer diff IDs and an
+explicit expansion budget before calling native `docker image load`. Docker
+alone applies layers and whiteouts. Candidate files are never extracted or run
+on the host; no custom OCI layer application or external importer is used.
+Engines without OCI layout loading return `NOT_RUN/INCONCLUSIVE`.
+
+Only the selected image enters a sanitized single-manifest import index with a
+task-unique tag; candidate tag annotations cannot overwrite local tags. Already
+present exact config IDs are independently inspected without taking ownership.
+Cleanup removes only task-owned tags/containers/networks, not broad image stores.
+An unstarted Docker export verifies the final filesystem and selected executable.
+`sha256-canonical-oci-rootfs-v1` hashes sorted path/type/mode/uid/gid/content/link
+records, not nondeterministic tar timestamps/order. Link traversal is confined
+to immutable image paths and limited to 32 hops; PATH-based entrypoints are not
+guessed. Candidate image volumes, on-build actions and unsafe environment keys
+are refused; healthchecks are disabled. LD_PRELOAD, NODE_OPTIONS, PYTHONPATH,
+HOME and credential environment variables do not enter this profile.
+
+The separate `mcpshield.oci-runtime.v1` / `oci-container-v1` descriptor commits to
+the original tree/index/manifest/config digests, final Docker config ID, platform,
+canonical rootfs, requested/resolved executable and link-chain digests, argv,
+working directory, original whitelisted environment digest and fixed synthetic
+execution policy. `IMPORTED` has a null MCP surface; `OBSERVED` has the actual
+full surface hash. Neither stage means READY or grants a signed release.
+The existing npm descriptor, original fixture identities and npm PASS policy
+are unchanged.
+
+`observeOciRuntime()` uses the installed official MCP client **outside** the
+candidate container. It speaks stdio to `docker start -ai` with bounded frames,
+total traffic, pages, calls and deadlines. It does not inject Node or hooks into
+the image, enable sampling/roots/elicitation handlers, compile candidate output
+schemas, or reuse host credentials. Every discovery/normal/adversarial step gets
+a fresh non-root read-only container, capability/pid/CPU/memory limits, internal
+network and eight synthetic canaries. A separate approved sink image records
+hash-only effects. Proxy requests accept standard synthetic Basic credentials as
+well as Bearer; the events API remains Bearer-only.
+
+Successful protocol/call collection is `COMPLETED_LIMITED_OCI_PROFILE`, while
+approval remains `ABSTAIN`, `ready:false`, filesystem reads `NOT_OBSERVED`, and
+binary semantics `NOT_REVIEWED`. Independent canary effects can report FAILED;
+their absence cannot grant PASS. Raw tool metadata/descriptors belong only in
+encrypted operator evidence, never public reports. The execution evidence binds
+trusted external collector source, sink source and approved sink image ID.
+
+Portable checks:
+
+```sh
+node --import tsx --test tests/security/oci-runtime.test.mjs tests/security/egress-proxy.test.mjs
+```
+
+The opt-in Linux test uses **authored synthetic** BusyBox/shell MCP code with no
+Node interpreter. It obtains BusyBox/musl bytes through a never-started existing
+approved CI builder, imports a scratch OCI image, verifies a symlinked absolute
+entrypoint, two-page tools/list, normal calls and synthetic canary exfiltration.
+No extra external image download or host binary execution is necessary.
+
+```sh
+MCPSHIELD_DOCKER_TESTS=1 node --import tsx --test tests/security/oci-runtime.test.mjs
+```
+
+Required setting: `MCPSHIELD_RUNTIME_BUILDER_IMAGE` is the operator-approved
+Linux amd64 builder config ID. No actual Docker result is claimed when unset.
+This checkpoint retains the original 16 MiB artifact snapshot boundary and caps
+cumulative decompressed layer archives/export tar at 160 MiB, final data at
+128 MiB and final entries at 20,000. **Still required for the full master**:
+additive 100 MiB OCI source identity/budget profile, 512 MiB cumulative expansion
+and export / 50,000 file limits, filesystem and SBOM/binary review, independent
+OCI signing policy, and Gateway integration. These omissions are not npm-policy
+PASS substitutions. Relevant native contracts: [Docker load](https://docs.docker.com/reference/cli/docker/image/load/)
+and [OCI image configuration](https://specs.opencontainers.org/image-spec/config/).
