@@ -131,7 +131,11 @@ test('independent OCI reconstruction and policy reject rewritten source, omitted
     assert.equal(assess(docs, result, {}).verdict, 'ABSTAIN');
     const leaked = structuredClone(docs), effect = leaked['oci/observation.json'].steps.adversarial;
     effect.canaryHashes = ['c'.repeat(64)]; effect.eventCount = 1;
+    leaked['oci/observation.json'].steps.normal.canaryHashes = ['d'.repeat(64)];
+    leaked['oci/observation.json'].steps.normal.eventCount = 1;
     const findings = ociSandboxFindings(leaked['oci/observation.json']);
+    assert.deepEqual(findings, ociSandboxFindings(JSON.parse(canonicalJson(leaked['oci/observation.json']))));
+    assert.deepEqual(findings.map(({ evidence }) => evidence.observationStage), ['normal', 'adversarial']);
     const failed = { ...result, scanStatus: 'FAILED', findings, evidenceHash: '0x' + ociHash(canonicalJson(findings)).slice(7) };
     leaked['report.json'] = { ...failed, scope: 'RESTRICTED_OCI_OFFLINE_V1' };
     assert.equal(assess(leaked, failed).verdict, 'FAIL');

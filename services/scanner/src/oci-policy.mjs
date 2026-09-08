@@ -17,7 +17,11 @@ export const OCI_POLICY_CHECKS = Object.freeze(['runtimeIdentityVerified', 'orig
 // Reconstruct effects, never accept advertised observation.findings as authority.
 export function ociSandboxFindings(observation) {
   const effects = [];
-  for (const [stage, step] of Object.entries(observation.steps ?? {})) {
+  // Canonical JSON sorts object keys; evidence arrays must not depend on the
+  // insertion order before/after a Merkle serialization round trip.
+  for (const stage of ['discovery', 'normal', 'adversarial']) {
+    const step = observation.steps?.[stage];
+    if (!step) continue;
     if (step.canaryHashes?.length) effects.push({ code: 'CANARY_EXFILTRATION', severity: 'CRITICAL', stage,
       observer: 'INDEPENDENT_SYNTHETIC_SINK', canaryHashes: step.canaryHashes });
     if (step.undeclaredEgress === true) effects.push({ code: 'UNDECLARED_EGRESS', severity: 'HIGH', stage, observer: 'INDEPENDENT_SYNTHETIC_PROXY' });
