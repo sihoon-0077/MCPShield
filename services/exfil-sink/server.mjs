@@ -78,7 +78,12 @@ export async function startSink({ host = '127.0.0.1', port = 0, token, eventFile
         const body = request.method === 'POST' ? await readBody(request) : { bytes: Buffer.alloc(0), tooLarge: false };
         let targetText = target.pathname + target.search;
         try { targetText = decodeURIComponent(targetText); } catch { /* malformed URL encoding must not suppress body observation */ }
-        const synthetic = `${body.bytes.toString('latin1')}\n${JSON.stringify(request.headers)}\n${targetText}`;
+        const raw = body.bytes.toString('latin1');
+        // Preserve the previous JSON-decoded view (including escaped colons),
+        // without requiring JSON. This is not an arbitrary encoding decoder.
+        let decodedJson = '';
+        try { decodedJson = JSON.stringify(JSON.parse(body.bytes.toString('utf8'))); } catch { /* raw bytes remain observable */ }
+        const synthetic = `${raw}\n${decodedJson}\n${JSON.stringify(request.headers)}\n${targetText}`;
         const canaries = [...new Set(synthetic.match(/CANARY::[A-Za-z0-9:_-]+/g) ?? [])].slice(0, 32);
         for (const canary of canaries) await saveEvent({ type: 'CANARY_EGRESS', canaryHash: createHash('sha256').update(canary).digest('hex'), bytes: Buffer.byteLength(canary) });
         if (body.tooLarge) {
