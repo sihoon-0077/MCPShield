@@ -66,3 +66,44 @@ Typed request interfaces for release registration, scan submission, signed
 attestation (including `scanId`, `nonce`, `deadline`, and `signature`), and
 admission (including `toolSurfaceHash`) live in
 `packages/protocol/api/types.ts`.
+# Additive master control plane (`/v1`)
+
+The deployed `/api` demo stays compatible. `/v1` uses exact digest release IDs and explicit tenant credentials; it is disabled unless `CONTROL_PLANE_ENABLED=true`.
+
+```text
+CONTROL_PLANE_ENABLED=true
+CONTROL_PLANE_CREDENTIALS=[{"tenantId":"your-team","role":"admin","token":"<generated-secret>"}]
+CONTROL_DATABASE_URL=postgresql://user:password@postgres:5432/mcpshield
+CONTROL_EVIDENCE_KEY=<64 hex characters from randomBytes(32)>
+CONTROL_ARTIFACT_PATH=/data/artifacts
+CONTROL_EVIDENCE_PATH=/data/evidence
+```
+
+`CONTROL_DATABASE_URL` can instead be a SQLite file for one-process development. The v1 PostgreSQL adapter executes the same portable migration against a real pool; legacy `/api` projections still use their SQLite adapter. Encrypted evidence is content-addressed local object storage, with AES-256-GCM and tenant AAD; do not lose the environment encryption key. Object storage must share a volume between API and scan worker.
+
+Run the independently deployable worker with `node --import tsx apps/api/src/control-worker-cli.ts` (add `--once` for one job). It claims durable SQL jobs, retries classified transient failures three times, and puts exhausted work in `DEAD_LETTER`. The worker uses the scanner's safe static-only entrypoint by default. `CONTROL_SANDBOX_MODE=docker` opts into the scanner's actual isolated Docker runtime. Scan completion alone never makes a release VERIFIED.
+
+| Endpoint | Role | Response |
+|---|---|---|
+| `GET /v1/session` | reader+ | tenant, role, capabilities |
+| `GET /v1/releases`, `/v1/policies`, `/v1/scans` | reader+ | `{items:[...]}` |
+| `POST /v1/releases/resolve` | operator+ | `{release}`; sourceType npm/tarball/fixture, locator |
+| `POST /v1/scans` | operator+ | `{scan,deduplicated,links}`; releaseId,policyHash + Idempotency-Key |
+| `GET /v1/scans/:id` | reader+ | `{scan}` |
+| `GET /v1/scans/:id/evidence` | operator+ | decrypted Merkle-verified `{bundle,reportRoot}` plus audit event |
+| `POST /v1/scans/:id/retry` | operator+ | only retryable DLQ work |
+| `GET /v1/releases/:id/history`, `/v1/events` | reader+ | bounded audit events |
+| `GET/POST /v1/releases/:id/appeals` | reader/operator+ | reason and optional same-release scanId |
+| `POST /v1/appeals/:id/resolve` | admin | resolution text, immutable history retained |
+| `POST /v1/policies` | admin | alias + versioned document; hash immutable |
+| `POST /v1/policies/:hash/deprecate` | admin | explicit deprecation audit |
+| `GET /v1/operations` | reader+ | latest-250 scan counts and actual DB driver |
+| `POST /v1/admission/check` | reader+ | policy/identity-bound decision and optional signed snapshot |
+
+Admission body is `{releaseId,artifactDigest,toolSurfaceHash,policyHash,mode:"strict"|"balanced",operationClass:"READ_PUBLIC"|"READ_PRIVATE"|"WRITE_EXTERNAL"|"DESTRUCTIVE"|"FINANCIAL"}`. Runtime identity must use the digest releaseId from resolve, not the legacy name@version. `CONTROL_V2_RPC_URLS`, `CONTROL_V2_REGISTRY_ADDRESS`, `CONTROL_V2_CHAIN_ID`, and optional `CONTROL_V2_CONFIRMATIONS` (default 2) enable the V2 chain reader. It requires confirmed/current agreement for ALLOW and uses the latest chain block to deny quarantine/revocation. Without a V2 reader, admission explicitly BLOCKs with LOCAL_DEMO source.
+
+Set `CONTROL_SIGNING_KEY` to an Ed25519 PKCS8 PEM and `CONTROL_SIGNING_KEY_ID` to publish signed snapshots. The signature covers sorted-key JSON of all fields including tenantId, operationClass, reasonCode and reportUrl; expiry is at most 30 seconds and never exceeds the chain attestation. Gateway must pin the public key and chain coordinates. No signing private key is returned by an endpoint.
+
+Verification: `node --import tsx --test tests/api/control-plane.test.ts tests/contracts/release-registry-v2.test.ts`. Set `MCPSHIELD_POSTGRES_TEST_URL` to run the actual PostgreSQL case (otherwise explicitly skipped). Existing tests are unchanged.
+
+Current boundaries: V2 contracts/reader are separate from V1 and have not been publicly deployed. V2 write relayer/validator fanout and durable chain projection are next integration work; never label a completed off-chain scan VERIFIED. SQL queue is the durable source; Redis stage streams, S3-compatible object replication, richer stage scheduling, PITR and production governance are not implemented by this batch.

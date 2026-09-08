@@ -9,15 +9,18 @@ export interface CompiledContract {
   bytecode: string;
 }
 
-export function compileReleaseRegistry(): CompiledContract {
+export function compileReleaseRegistry(contractName = "ReleaseRegistry"): CompiledContract {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const sourcePath = path.resolve(here, "../src/ReleaseRegistry.sol");
+  const sourceName = contractName === "ReleaseRegistry" ? "ReleaseRegistry.sol" : "ReleaseRegistryV2.sol";
+  if (!["ReleaseRegistry", "ReleaseRegistryV2", "ValidatorRegistry", "PolicyRegistry"].includes(contractName)) throw new Error("Unknown contract");
+  const sourcePath = path.resolve(here, "../src", sourceName);
   const source = fs.readFileSync(sourcePath, "utf8");
   const input = {
     language: "Solidity",
-    sources: { "ReleaseRegistry.sol": { content: source } },
+    sources: { [sourceName]: { content: source } },
     settings: {
       optimizer: { enabled: true, runs: 200 },
+      viaIR: contractName !== "ReleaseRegistry",
       evmVersion: "shanghai",
       outputSelection: { "*": { "*": ["abi", "evm.bytecode.object"] } },
     },
@@ -29,6 +32,6 @@ export function compileReleaseRegistry(): CompiledContract {
   if (errors.length > 0) {
     throw new Error(errors.map((entry: { formattedMessage: string }) => entry.formattedMessage).join("\n"));
   }
-  const contract = output.contracts["ReleaseRegistry.sol"].ReleaseRegistry;
+  const contract = output.contracts[sourceName][contractName];
   return { abi: contract.abi, bytecode: `0x${contract.evm.bytecode.object}` };
 }
