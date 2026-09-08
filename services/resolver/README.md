@@ -215,6 +215,13 @@ explicit expansion budget before calling native `docker image load`. Docker
 alone applies layers and whiteouts. Candidate files are never extracted or run
 on the host; no custom OCI layer application or external importer is used.
 Engines without OCI layout loading return `NOT_RUN/INCONCLUSIVE`.
+For Docker's classic image store, the sanitized archive also contains standard
+Docker-save `manifest.json` metadata referencing the same verified config/layer
+blobs and only the task-owned UUID tag. No layer content is converted, merged,
+patched or executed by MCPShield. The native loader decompresses/registers layers
+and validates diff IDs. This preserves the existing Docker config-ID contract
+without switching daemons/image stores. The [native Moby loader](https://github.com/moby/moby/blob/v28.5.2/image/tarexport/load.go)
+is authoritative for those operations; unsupported loaders still fail closed.
 
 Only the selected image enters a sanitized single-manifest import index with a
 task-unique tag; candidate tag annotations cannot overwrite local tags. Already
