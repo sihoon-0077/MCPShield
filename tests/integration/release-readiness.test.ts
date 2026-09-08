@@ -3,7 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { buildApp } from '../../apps/api/src/app.js';
 // @ts-expect-error Native ESM release gate, import never invokes Docker.
-import { waitForJudgeBackend, smokeJudgeExperience } from '../../scripts/ops/smoke-release-image.mjs';
+import { waitForJudgeBackend, waitForMcpLanding, smokeJudgeExperience } from '../../scripts/ops/smoke-release-image.mjs';
 
 const origin = 'http://127.0.0.1:3000';
 test('release smoke contract exercises the real API and complete synthetic judge session', async () => {
@@ -60,5 +60,41 @@ test('readiness rejects a disabled/mismatched demo route, unexpected responses a
 test('readiness has one total deadline and cancels stalled bodies', async () => {
   let cancelled = false;
   await assert.rejects(waitForJudgeBackend(origin, async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status: 503 }), 30), /RELEASE_BACKEND_NOT_READY/);
+  assert.equal(cancelled, true);
+});
+
+test('MCP landing readiness tolerates independent cold start using only bounded read-only requests', async () => {
+  let calls = 0;
+  await waitForMcpLanding(origin, async (url: string, init: RequestInit) => {
+    assert.equal(url, `${origin}/mcp`); assert.equal(init.method, 'GET'); assert.equal(init.body, undefined);
+    assert.equal(init.redirect, 'error'); assert.equal(init.cache, 'no-store');
+    assert.equal(new Headers(init.headers).get('authorization'), null);
+    if (++calls === 1) throw new TypeError('synthetic connection refused');
+    if (calls < 4) return new Response(null, { status: calls === 2 ? 500 : 503 });
+    return new Response('<html>MCPShield</html>', { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  });
+  assert.equal(calls, 4);
+});
+
+test('MCP landing readiness rejects wrong routes, oversized bodies and external origins', async () => {
+  await assert.rejects(waitForMcpLanding('https://external.example', () => assert.fail()), /loopback/);
+  for (const response of [new Response(null, { status: 404 }), Response.json({ name: 'MCPShield' }),
+    new Response('wrong page', { headers: { 'content-type': 'text/html' } }),
+    new Response('MCPShield'.padEnd(1_048_577, 'x'), { headers: { 'content-type': 'text/html' } })]) {
+    let calls = 0;
+    await assert.rejects(waitForMcpLanding(origin, async () => { calls++; return response; }), /RELEASE_MCP_/);
+    assert.equal(calls, 1);
+  }
+});
+
+test('MCP landing readiness cancels stalled fetch/body within its total deadline', async () => {
+  let signal: AbortSignal | undefined;
+  await assert.rejects(waitForMcpLanding(origin, (_: string, init: RequestInit) => {
+    signal = init.signal!; return new Promise(() => {});
+  }, 30), /RELEASE_MCP_NOT_READY/);
+  assert.equal(signal?.aborted, true);
+  let cancelled = false;
+  await assert.rejects(waitForMcpLanding(origin, async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }),
+    { headers: { 'content-type': 'text/html' } }), 30), /RELEASE_MCP_NOT_READY/);
   assert.equal(cancelled, true);
 });

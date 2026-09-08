@@ -51,6 +51,42 @@ export async function waitForJudgeBackend(value, fetchImpl = fetch, timeoutMs = 
   throw new Error('RELEASE_BACKEND_NOT_READY');
 }
 
+export async function waitForMcpLanding(value, fetchImpl = fetch, timeoutMs = 20_000) {
+  const url = new URL(value);
+  assert.ok(url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash, 'Release readiness accepts only a loopback image origin');
+  assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 20_000, 'RELEASE_READINESS_BUDGET_INVALID');
+  const until = performance.now() + timeoutMs;
+  // Next and the MCP gateway start independently. Retry only this read-only
+  // landing check; never retry initialization or stateful demo/tool requests.
+  while (performance.now() < until) {
+    const controller = new AbortController(); let timer, reader;
+    const deadline = new Promise((_, reject) => { timer = globalThis.setTimeout(() => { controller.abort(); reject(new Error('RELEASE_MCP_TIMEOUT')); }, Math.max(1, Math.min(2000, until - performance.now()))); });
+    try {
+      const response = await Promise.race([fetchImpl(`${url.origin}/mcp`, {
+        method: 'GET', headers: { accept: 'text/html' }, redirect: 'error', cache: 'no-store', signal: controller.signal,
+      }), deadline]);
+      reader = response.body?.getReader();
+      if (response.status >= 500 && response.status <= 599) throw new Error('RELEASE_MCP_STARTING');
+      assert.equal(response.status, 200, 'RELEASE_MCP_HTTP_UNEXPECTED');
+      assert.match(response.headers.get('content-type') ?? '', /^text\/html\b/i, 'RELEASE_MCP_HTML_REQUIRED');
+      const chunks = []; let bytes = 0;
+      if (reader) while (true) {
+        const { done, value } = await Promise.race([reader.read(), deadline]);
+        if (done) break;
+        bytes += value.byteLength;
+        assert.ok(bytes <= 1_048_576, 'RELEASE_MCP_RESPONSE_TOO_LARGE');
+        chunks.push(Buffer.from(value));
+      }
+      assert.match(Buffer.concat(chunks).toString('utf8'), /MCPShield/, 'RELEASE_MCP_LANDING_MISMATCH');
+      return;
+    } catch (error) {
+      if (!(error instanceof TypeError) && !['RELEASE_MCP_STARTING', 'RELEASE_MCP_TIMEOUT'].includes(error.message)) throw error;
+    } finally { globalThis.clearTimeout(timer); controller.abort(); void reader?.cancel().catch(() => {}); }
+    await setTimeout(Math.max(0, Math.min(500, until - performance.now())));
+  }
+  throw new Error('RELEASE_MCP_NOT_READY');
+}
+
 export async function smokeJudgeExperience(value, fetchImpl = fetch) {
   const url = new URL(value);
   assert.ok(url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash, 'Release smoke accepts only a loopback image origin');
@@ -127,9 +163,7 @@ try {
   }
   assert.ok(ready, 'Release image did not start its public web experience');
   stage = 'MCP_LANDING';
-  const landing = await fetch(`${origin}/mcp`, { headers: { accept: 'text/html' }, signal: AbortSignal.timeout(5000) });
-  assert.equal(landing.status, 200); assert.match(landing.headers.get('content-type') ?? '', /^text\/html/);
-  assert.match(await landing.text(), /MCPShield/);
+  await waitForMcpLanding(origin);
   stage = 'JUDGE_READINESS';
   await waitForJudgeBackend(origin);
   stage = 'JUDGE_FLOW';
