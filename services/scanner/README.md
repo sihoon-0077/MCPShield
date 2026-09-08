@@ -34,6 +34,9 @@ not a discovered surface. `scanSource({source,...options})` resolves, scans and
 cleans up in one call. Network, integrity and archive failures throw typed-message
 errors before admission; callers should record the failed job rather than retry
 unsafe artifacts indefinitely.
+This rule also applies to `source:{type:'local',path}`: ingesting a local path
+does not make its code trusted. Every resolved source is static-only unless
+Docker is explicitly selected, and resolved Docker scans require MCP discovery.
 
 Evidence `bundle.files` contains canonical JSON strings and `bundle.manifest`
 has algorithm `sha256-path-merkle-v1`, root and inclusion proofs. Sorted paths
@@ -121,7 +124,7 @@ that owns the read-only mounts; a root host runner is rejected. This preserves
 mount privacy without DAC capabilities or world-readable canary files.
 
 Current limits: SBOM is declared/lockfile based, not a vulnerability database;
-probes are bounded scripted calls, not a measured LLM agent ASR benchmark.
+probes are bounded tool-call plans, not a free-running multi-turn agent benchmark.
 Docker scans now launch a trusted MCP collector inside the isolated container,
 initialize the server, exhaust `tools/list` pagination (32-page/128-tool caps),
 reject repeated cursors/duplicate names and compare the complete observed surface
@@ -147,6 +150,43 @@ cases and intentionally reports the implicit-scope false negative. Real agent
 providers, independently labeled external datasets and kernel-level syscall
 coverage remain separate validation work. Disable the additions by continuing
 to use `scanRelease()` and the existing fixture CLI; existing hashes stay valid.
+
+### AI-generated synthetic probes and action-effect evaluation
+
+Add `--ai-generate-probes true --sandbox docker` to an opted-in AI scan. The
+Analyzer/Critic remains no-tools; a separate structured request generates 2–8
+NORMAL/ADVERSARIAL scenarios. Host validation checks unique scenario IDs, known
+tool names, actual tool input schemas, bounded JSON arguments and synthetic
+mail/URL/file targets. Executable commands, credential arguments, unsupported
+schema references/regular expressions and unsafe targets require review instead
+of execution. Existing Ajv validates schemas; each plan owns a short-lived cache.
+Generated strings are data, never host commands. The trusted collector executes
+only validated MCP calls inside Docker; eight per-run fake canaries and the
+controlled proxy determine whether an actual effect occurred. Generation failure
+is recorded as `DEFERRED` and cannot produce a complete sandbox PASS.
+
+The evidence bundle includes `semantic/generated-probes.json` with planner
+provenance and `sandbox/mcp.json` with actual call result hashes. The default
+scanner stays compatible with no remote model or generated calls. Disable this
+feature by removing `--ai-generate-probes`; remove remote opt-in to stop all
+provider traffic. Linux regression tests use a local fake model API and real
+containers, explicitly not a claim about model reasoning quality.
+
+```powershell
+$env:MCP_SHIELD_ENABLE_REMOTE_AI='true'
+$env:MCP_SHIELD_AI_TOKEN='<secret-manager-value>'
+node benchmarks/evaluate-ai-mcp.mjs --model YOUR_MODEL --runs 3
+```
+
+This command makes billable model requests only after explicit opt-in. It
+discovers the actual MCP surface in Docker, generates one bounded tool-call
+plan per run, executes normal/unprotected/protected calls and reports observed
+canary-effect rates and normal-task completion. No effective baseline means
+no claimed reduction. CLI admission is labeled `SCANNER_POLICY_NOT_CHAIN`;
+`runAiMcpAttackHarness({authorize,...})` accepts a real validator/chain/Gateway
+callback for integrated experiments. Missing credentials produce `NOT_RUN`,
+never fabricated model results. This is a synthetic action-effect benchmark,
+not a general agent ASR or independently labeled MCPTox evaluation.
 
 The scanner produces a canonical MCPShield `ScanResult` v1 from a controlled
 fixture. It combines reproducible artifact/tool hashes, static rules, a

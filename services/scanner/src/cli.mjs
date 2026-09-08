@@ -28,6 +28,7 @@ Optional remote AI (explicit opt-in):
   --ai-url https://trusted.example/analyze --allow-remote-ai true
   --ai-provider openai --ai-model YOUR_MODEL --allow-remote-ai true --ai-timeout-ms 45000
   Set MCP_SHIELD_AI_TOKEN in the environment; never put it in CLI arguments.
+  Add --ai-generate-probes true --sandbox docker for validated synthetic tool calls.
 `;
 
 function parseArgs(args) {
@@ -61,6 +62,7 @@ try {
   const args = parseArgs(process.argv.slice(2));
   const remoteAiOptIn = args['allow-remote-ai'] ?? process.env.MCP_SHIELD_ENABLE_REMOTE_AI ?? 'false';
   if (!['true', 'false'].includes(remoteAiOptIn)) throw new TypeError('--allow-remote-ai must be true or false');
+  if (!['true', 'false'].includes(args['ai-generate-probes'] ?? 'false')) throw new TypeError('--ai-generate-probes must be true or false');
   const scanOptions = {
     fixtureDir: args.fixture ? resolve(args.fixture) : undefined,
     baselineDir: args.baseline ? resolve(args.baseline) : undefined,
@@ -70,6 +72,7 @@ try {
     aiToken: process.env.MCP_SHIELD_AI_TOKEN,
     aiProvider: args['ai-provider'] ?? process.env.MCP_SHIELD_AI_PROVIDER ?? 'custom',
     aiModel: args['ai-model'] ?? process.env.MCP_SHIELD_AI_MODEL,
+    aiGenerateProbes: args['ai-generate-probes'] === 'true',
     aiTimeoutMs: args['ai-timeout-ms'] ? Number(args['ai-timeout-ms']) : undefined,
     allowRemoteAi: remoteAiOptIn === 'true', source: args.source ?? 'LIVE',
   };
