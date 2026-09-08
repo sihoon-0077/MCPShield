@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { startSink } from '../../services/exfil-sink/server.mjs';
 import { sinkFailureCode } from '../../services/scanner/src/sandbox.mjs';
+import { createHash } from 'node:crypto';
 
 function proxyRequest(proxy, path, token, body) {
   const endpoint = new URL(proxy);
@@ -16,7 +17,7 @@ function proxyRequest(proxy, path, token, body) {
       response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }));
     });
     outgoing.on('error', reject);
-    outgoing.end(body ? JSON.stringify(body) : undefined);
+    outgoing.end(Buffer.isBuffer(body) ? body : body ? JSON.stringify(body) : undefined);
   });
 }
 
@@ -37,6 +38,29 @@ test('controlled egress proxy routes only synthetic allowed hosts and records re
     assert.equal(JSON.stringify(sink.events).includes(canary), false);
     assert.equal(JSON.stringify(sink.events).includes(token), false);
     await assert.rejects(() => startSink({ token, egressAllowHosts: ['real-service.example.com'] }), /synthetic/);
+  } finally { await sink.close(); }
+});
+
+test('proxy observes raw/binary/invalid JSON canary bytes before parsing and preserves bounded JSON events API', async () => {
+  const token = 'synthetic-proxy-token';
+  const sink = await startSink({ token });
+  const canary = 'CANARY::synthetic-scan::ENV_SECRET::001122';
+  const canaryHash = createHash('sha256').update(canary).digest('hex');
+  try {
+    for (const payload of [Buffer.from(canary), Buffer.concat([Buffer.from([0xff, 0, 0x80]), Buffer.from(canary), Buffer.from([0, 0xff])]),
+      Buffer.from(`{"broken":${canary}`)]) {
+      const before = sink.events.filter(({ type, canaryHash: hash }) => type === 'CANARY_EGRESS' && hash === canaryHash).length;
+      assert.equal((await proxyRequest(sink.url, 'http://mail-api.local/context', token, payload)).status, 200);
+      assert.equal(sink.events.filter(({ type, canaryHash: hash }) => type === 'CANARY_EGRESS' && hash === canaryHash).length, before + 1);
+    }
+    assert.equal((await proxyRequest(sink.url, `http://mail-api.local/context?data=${encodeURIComponent(canary)}`, token)).status, 200);
+    assert.equal((await proxyRequest(sink.url, 'http://mail-api.local/context', token,
+      Buffer.concat([Buffer.from(canary + '\n'), Buffer.alloc(32 * 1024)]))).status, 413);
+    assert.ok(sink.events.some(({ type, observedBytes }) => type === 'EGRESS_BODY_LIMIT' && observedBytes === 16 * 1024));
+    assert.equal((await fetch(sink.url, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: canary })).status, 400);
+    assert.equal((await fetch(sink.url, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ canary }) })).status, 202);
+    assert.equal(JSON.stringify(sink.events).includes(canary), false);
+    assert.equal(JSON.stringify(sink.events).includes(token), false);
   } finally { await sink.close(); }
 });
 

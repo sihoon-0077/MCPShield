@@ -18,31 +18,37 @@ function json(response, status, body) {
     'content-type': 'application/json',
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
+    ...(status === 413 ? { connection: 'close' } : {}),
   }).end(JSON.stringify(body));
 }
 
-function readJson(request) {
+function readBody(request) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let settled = false;
+    const timer = setTimeout(() => { settled = true; reject(Object.assign(new Error('request body timeout'), { statusCode: 408 })); request.destroy(); }, 2000);
+    const finish = (tooLarge) => { if (settled) return; settled = true; clearTimeout(timer); resolve({ bytes: Buffer.concat(chunks), tooLarge }); };
     request.on('data', (chunk) => {
+      if (settled) return;
+      chunks.push(Buffer.from(chunk.subarray(0, Math.max(0, MAX_BODY_BYTES - size))));
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        reject(Object.assign(new Error('request body too large'), { statusCode: 413 }));
-        request.destroy();
+        finish(true);
         return;
       }
-      chunks.push(chunk);
     });
-    request.on('end', () => {
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-      } catch {
-        reject(Object.assign(new Error('invalid JSON'), { statusCode: 400 }));
-      }
-    });
-    request.on('error', reject);
+    request.on('end', () => finish(false));
+    request.on('error', (error) => { clearTimeout(timer); reject(error); });
+    request.on('aborted', () => { clearTimeout(timer); reject(Object.assign(new Error('request aborted'), { statusCode: 400 })); });
   });
+}
+
+async function readJson(request) {
+  const body = await readBody(request);
+  if (body.tooLarge) throw Object.assign(new Error('request body too large'), { statusCode: 413 });
+  try { return JSON.parse(body.bytes.toString('utf8')); }
+  catch { throw Object.assign(new Error('invalid JSON'), { statusCode: 400 }); }
 }
 
 export async function startSink({ host = '127.0.0.1', port = 0, token, eventFile, onEvent, egressAllowHosts = ['mail-api.local', 'exfil-sink.local'] } = {}) {
@@ -67,11 +73,19 @@ export async function startSink({ host = '127.0.0.1', port = 0, token, eventFile
           return;
         }
         if (!['GET', 'POST'].includes(request.method)) { json(response, 405, { error: 'method not allowed' }); return; }
-        const body = request.method === 'POST' ? await readJson(request) : {};
-        const synthetic = JSON.stringify({ body, headers: request.headers });
+        // Observe bytes before any endpoint parsing: raw text, binary and invalid
+        // JSON are still egress. Never store request content or forward it.
+        const body = request.method === 'POST' ? await readBody(request) : { bytes: Buffer.alloc(0), tooLarge: false };
+        let targetText = target.pathname + target.search;
+        try { targetText = decodeURIComponent(targetText); } catch { /* malformed URL encoding must not suppress body observation */ }
+        const synthetic = `${body.bytes.toString('latin1')}\n${JSON.stringify(request.headers)}\n${targetText}`;
         const canaries = [...new Set(synthetic.match(/CANARY::[A-Za-z0-9:_-]+/g) ?? [])].slice(0, 32);
         for (const canary of canaries) await saveEvent({ type: 'CANARY_EGRESS', canaryHash: createHash('sha256').update(canary).digest('hex'), bytes: Buffer.byteLength(canary) });
-        await saveEvent({ type: 'EGRESS_ALLOWED', hostname: target.hostname, method: request.method, requestBytes: Buffer.byteLength(JSON.stringify(body)), canaryCount: canaries.length });
+        if (body.tooLarge) {
+          await saveEvent({ type: 'EGRESS_BODY_LIMIT', observedBytes: body.bytes.length, limitBytes: MAX_BODY_BYTES });
+          json(response, 413, { error: 'request body too large' }); return;
+        }
+        await saveEvent({ type: 'EGRESS_ALLOWED', hostname: target.hostname, method: request.method, requestBytes: body.bytes.length, canaryCount: canaries.length });
         // No network forwarding: each allowed hostname represents a synthetic endpoint inside the test environment.
         json(response, 200, { synthetic: true, endpoint: target.hostname, messages: [{ id: 'proxy-demo-1', subject: 'Synthetic response' }] });
       } catch (error) { json(response, error.statusCode ?? 400, { error: error.statusCode ? error.message : 'invalid proxy request' }); }
