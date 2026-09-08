@@ -4,6 +4,36 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 
+test('export-disabled telemetry preserves real trace context without network requests', async () => {
+  let requests = 0;
+  const server = createServer((_req, res) => { requests++; res.end('{}'); });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  try {
+    const moduleUrl = new URL('../../packages/telemetry/index.mjs', import.meta.url).href;
+    const code = `
+      import { withSpan, traceHeaders, currentTraceId, shutdownTelemetry } from ${JSON.stringify(moduleUrl)};
+      const ids = []; let carrier;
+      await withSpan('scan.accept', {}, async () => { ids.push(currentTraceId()); carrier = traceHeaders(); });
+      await withSpan('sandbox.execute', {}, async () => { ids.push(currentTraceId()); }, carrier);
+      await shutdownTelemetry();
+      console.log(JSON.stringify({ids,carrier}));
+    `;
+    const run = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code], {
+      env: { ...process.env, MCPSHIELD_TELEMETRY_ENABLED: 'false',
+        OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${address.port}` }, timeout: 15000, windowsHide: true,
+    });
+    const result = JSON.parse(run.stdout.trim());
+    assert.match(result.ids[0], /^(?!0{32})[0-9a-f]{32}$/);
+    assert.equal(result.ids[0], result.ids[1]);
+    assert.match(result.carrier.traceparent, /^00-(?!0{32})[0-9a-f]{32}-(?!0{16})[0-9a-f]{16}-00$/);
+    assert.equal(requests, 0);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test('official OTLP exporter preserves queue trace parent and excludes bodies, secrets and raw exceptions', async () => {
   const requests: Array<{ url?: string; value: any }> = [];
   const server = createServer(async (req, res) => {

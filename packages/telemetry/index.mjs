@@ -1,5 +1,6 @@
 import { context, propagation, trace, metrics, ROOT_CONTEXT, SpanStatusCode } from '@opentelemetry/api';
 import { NodeSDK } from '@opentelemetry/sdk-node';
+import { AlwaysOffSampler, NoopSpanProcessor } from '@opentelemetry/sdk-trace';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
@@ -36,14 +37,16 @@ export function startTelemetry() {
     'service.version': '0.2.0',
   });
   sdk = new NodeSDK({
-    resource, autoDetectResources: false, instrumentations: [],
+    resource, autoDetectResources: false, instrumentations: [], logRecordProcessors: [],
     ...(enabled ? {
       traceExporter: new OTLPTraceExporter({ url: collectorUrl('v1/traces'), timeoutMillis: 3000 }),
       metricReaders: [new PeriodicExportingMetricReader({
         exporter: new OTLPMetricExporter({ url: collectorUrl('v1/metrics'), timeoutMillis: 3000 }),
         exportIntervalMillis: 15000, exportTimeoutMillis: 5000,
       })],
-    } : { spanProcessors: [], metricReaders: [] }),
+    // A processor registers the provider even without exports, so durable jobs
+    // retain real trace IDs. No records or network exporters are created here.
+    } : { spanProcessors: [new NoopSpanProcessor()], sampler: new AlwaysOffSampler(), metricReaders: [] }),
   });
   sdk.start();
   return sdk;
@@ -64,7 +67,8 @@ function safeAttributes(attributes) {
 }
 
 export function currentTraceId() {
-  return trace.getSpan(context.active())?.spanContext().traceId;
+  const id = trace.getSpan(context.active())?.spanContext().traceId;
+  return typeof id === 'string' && /^(?!0{32})[0-9a-f]{32}$/.test(id) ? id : undefined;
 }
 
 export function traceHeaders() {
