@@ -1,7 +1,7 @@
 import React, { useEffect, useState, type FormEvent } from "react";
 import { controlApi } from "../lib/control-client";
 
-export type Release = { releaseId: string; legacyReleaseId: string; toolId: string; version: string; status: string; artifactDigest: string; toolSurfaceHash: string; policyHash: string | null; reportRoot: string | null; validUntil: string | null; chainUnavailable?: boolean; chain: null | { chainId: number; registryContract: string; observedBlock: number; blockHash: string; txHash: string | null } };
+export type Release = { releaseId: string; legacyReleaseId: string; toolId: string; version: string; status: string; artifactDigest: string; toolSurfaceHash: string; policyHash: string | null; reportRoot: string | null; validUntil: string | null; sourceType?: string; runtimeProfile?: string; sourceReleaseId?: string; chainUnavailable?: boolean; chain: null | { chainId: number; registryContract: string; observedBlock: number; blockHash: string; txHash: string | null } };
 export type Scan = { scanId: string; releaseId: string; policyHash: string; status: string; stage: string; attempts: number; maxAttempts: number; traceId: string; createdAt: string; updatedAt: string; nextAttemptAt: string; lastError?: unknown; result?: { state?: string; verdict?: string; validUntil?: string; reportRoot?: string; scanResult?: { scanStatus?: string } } };
 export type ChainAction = { actionId: string; releaseId: string | null; kind: string; status: string; txHash: string | null; errorCode: string | null; chainId: number; registryAddress: string; createdAt: string; updatedAt: string };
 export type Admission = { decision: string; status: string; reasonCode: string; releaseId: string; policyHash: string; source: string; checkedAt: string; traceId: string; signature?: string; snapshot?: { expiresAt: string; observedBlock: number; blockHash: string; chainId: number; registryContract: string; operationClass: string } };
@@ -9,6 +9,7 @@ const date = (value?: string | null) => value ? new Date(value).toLocaleString("
 const short = (value?: string | null) => value ? `${value.slice(0, 12)}…${value.slice(-8)}` : "없음";
 const actionName: Record<string, string> = { REGISTER_RELEASE: "릴리스 등록", PUBLISH_POLICY: "정책 공개", DEPRECATE_POLICY: "정책 폐기", ATTEST: "검증자 서명 제출", QUARANTINE: "긴급 격리", SYNC_EXPIRY: "만료 반영" };
 const actionStatus: Record<string, string> = { NEW: "전송 대기", PREPARED: "서명 준비 · 전송 미확인", SUBMITTED: "전송됨 · 영수증 대기", COMPLETED: "처리됨 · 최종성은 별도 확인", FAILED: "실패" };
+export const policyMatchesRelease = (release: Pick<Release, "runtimeProfile"> | undefined, policy: { document?: unknown }) => Boolean(release) && (policy.document as { profile?: string } | undefined)?.profile === release?.runtimeProfile;
 
 export function ChainActionsView({ actions }: { actions: ChainAction[] }) {
   return <div className="ops-table-wrap"><table><thead><tr><th>작업 / 범위</th><th>전송 상태</th><th>트랜잭션</th><th>최근 변경</th></tr></thead><tbody>{actions.map((item) => <tr key={item.actionId}><td>{actionName[item.kind] ?? item.kind}<small>{item.releaseId ? "현재 릴리스" : "조직 정책 작업 · 적용 정책 확인 필요"}</small><small title={item.actionId}>{short(item.actionId)}</small></td><td><b>{item.status}</b><small>{actionStatus[item.status] ?? "알 수 없는 상태"}</small>{item.errorCode && <small className="ops-flow-error">{item.errorCode}</small>}</td><td><code title={item.txHash ?? ""}>{short(item.txHash)}</code><small>chain {item.chainId} · {short(item.registryAddress)}</small></td><td>{date(item.updatedAt)}</td></tr>)}</tbody></table>{!actions.length && <p className="ops-empty">불러온 내역에 체인 작업이 없습니다. 전송 또는 검증 완료로 간주하지 않습니다.</p>}</div>;
@@ -25,8 +26,9 @@ export function AdmissionView({ admission, now }: { admission: Admission | null;
 }
 
 export function ReleaseWorkflow({ release, scans, policies, actions, manage, onRefresh }: {
-  release: Release; scans: Scan[]; policies: { policyHash: string; alias: string; deprecatedAt: string | null }[]; actions: ChainAction[]; manage: boolean; onRefresh: () => Promise<void>;
+  release: Release; scans: Scan[]; policies: { policyHash: string; alias: string; deprecatedAt: string | null; document?: unknown }[]; actions: ChainAction[]; manage: boolean; onRefresh: () => Promise<void>;
 }) {
+  policies = policies.filter(policy => policyMatchesRelease(release, policy));
   const releaseScans = scans.filter((scan) => scan.releaseId === release.releaseId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const [scanId, setScanId] = useState(releaseScans[0]?.scanId ?? "");
   const scan = releaseScans.find((item) => item.scanId === scanId) ?? releaseScans[0];

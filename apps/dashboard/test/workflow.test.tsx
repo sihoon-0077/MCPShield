@@ -2,11 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AdmissionView, ChainActionsView, ReleaseWorkflow, type Release, type Scan, type ChainAction, type Admission } from "../components/release-workflow";
+import { AdmissionView, ChainActionsView, ReleaseWorkflow, policyMatchesRelease, type Release, type Scan, type ChainAction, type Admission } from "../components/release-workflow";
 
 const release: Release = { releaseId: `0x${"1".repeat(64)}`, legacyReleaseId: "synthetic@1.0.0", toolId: "synthetic", version: "1.0.0", status: "UNVERIFIED", artifactDigest: `sha256:${"2".repeat(64)}`, toolSurfaceHash: `0x${"3".repeat(64)}`, policyHash: `0x${"4".repeat(64)}`, reportRoot: null, validUntil: null, chain: null };
 const scan: Scan = { scanId: "synthetic-scan", releaseId: release.releaseId, policyHash: release.policyHash!, status: "COMPLETED", stage: "COMPLETED", attempts: 1, maxAttempts: 3, traceId: "5".repeat(32), createdAt: "2026-09-08T00:00:00Z", updatedAt: "2026-09-08T00:00:01Z", nextAttemptAt: "2026-09-08T00:00:00Z", result: { state: "READY_FOR_VALIDATORS", verdict: "ABSTAIN", scanResult: { scanStatus: "INCONCLUSIVE" } } };
 const action: ChainAction = { actionId: "synthetic-action", releaseId: release.releaseId, kind: "ATTEST", status: "SUBMITTED", txHash: `0x${"6".repeat(64)}`, errorCode: null, chainId: 31337, registryAddress: `0x${"7".repeat(40)}`, createdAt: scan.createdAt, updatedAt: scan.updatedAt };
+
+test("policy selection is bound to the release profile, not registry ordering", () => {
+  const prepared = { policyHash: `0x${"a".repeat(64)}`, alias: "prepared-only", deprecatedAt: null, document: { profile: "restricted-node-docker-v1" } };
+  const legacy = { policyHash: `0x${"b".repeat(64)}`, alias: "legacy-only", deprecatedAt: null, document: {} };
+  assert.equal(policyMatchesRelease(release, prepared), false); assert.equal(policyMatchesRelease(release, legacy), true);
+  assert.equal(policyMatchesRelease({ ...release, runtimeProfile: "restricted-node-docker-v1" }, prepared), true);
+  assert.equal(policyMatchesRelease({ ...release, runtimeProfile: "restricted-node-docker-v1" }, legacy), false);
+  const html = renderToStaticMarkup(<ReleaseWorkflow release={release} scans={[]} policies={[prepared, legacy]} actions={[]} manage={false} onRefresh={async () => {}} />);
+  assert.match(html, /legacy-only/); assert.doesNotMatch(html, /prepared-only/);
+});
 
 test("workflow renders real API stages without turning READY, submitted attestations or historical chain state into allow", () => {
   const html = renderToStaticMarkup(<ReleaseWorkflow release={release} scans={[scan]} policies={[{ policyHash: release.policyHash!, alias: "test", deprecatedAt: null }]} actions={[action, { ...action, actionId: "another" }, { ...action, actionId: "receipt-only", releaseId: null, kind: "ANCHOR_RECEIPTS" }]} manage={false} onRefresh={async () => {}} />);
