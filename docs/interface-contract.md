@@ -34,6 +34,41 @@ read-only, bounded and not cached as an ALLOW proof. Its persistent local
 revocation marker is unsigned negative state, not a portable chain certificate.
 See `apps/gateway/README.md` for operator-only configuration and limits.
 
+### OCI prepared identity (consumer contract; full execution integration pending)
+
+`services/scanner/src/oci-binding.mjs` is the shared pure validator for profile
+`oci-container-v1`; do not feed an OCI binding into the Node prepared validator.
+An OBSERVED descriptor commits the original source tree, Docker config image ID,
+platform, final filesystem, exact entrypoint/argv/environment and full tool surface.
+Its hash becomes the derived `artifactDigest`. The derived `manifestDigest` hashes
+exactly six canonical fields: `schemaVersion: mcpshield.prepared-release.v1`,
+`profile: oci-container-v1`, `sourceReleaseId`, `sourceArtifactDigest`,
+`descriptorDigest`, `executionPolicyDigest`. The original source release is immutable.
+The derived Control ID still uses the same four-field Registry V2 ABI encoding above.
+
+The fixed `restricted-oci-offline-v1` execution policy binds seven operator-local
+anchors: `baseImageDigest`, `baseCatalogueDigest`, `trivyImageDigest`, `databaseDigest`,
+`observerDigest`, `sinkImageDigest`, `sinkCodeDigest`. A caller-supplied matching hash
+is not independent authority: the worker and each validator must acquire and check
+their own trusted bytes. The fixed Gateway policy allows no network/host mounts and
+does not grant arbitrary native binary or filesystem safety certification.
+Inventory/Trivy phase `COMPLETE`, an OBSERVED descriptor and a valid binding are
+**not PASS, READY or execution authorization**. Missing full semantic coverage,
+independent replay or consumer enforcement remains an explicit incomplete requirement.
+
+### Explicit local emergency execution
+
+`mcpshield.break-glass-grant.v1` is separate from normal admission and FR407 receipts.
+The operator-signed grant binds exact identities, tenant/policy/chain, actor/reason,
+expiry (at most 60 seconds), one locally allowed read tool and canonical arguments.
+Local configuration separately pins the client identity. Neither the grant nor its
+encrypted usage audit changes normal `BLOCK`/`REVOKED` or removes revocation evidence.
+Execution is separately labeled `BREAK_GLASS_OVERRIDE`; a locally constructed
+`decisionSource: TRANSPORT_UNAVAILABLE` is unsigned outage evidence, not a chain proof.
+Public HTTP rejects emergency options. Audit usage timestamps/normal decisions are
+Gateway-recorded, not separately operator-signed; the ledger is local and unanchored.
+See the Gateway README for exact private-file configuration and remaining limits.
+
 ## Original demo `/api` contract
 
 All JSON payloads use `schemaVersion: "1.0.0"`. Canonical JSON Schemas live in `packages/protocol/schemas`; TypeScript types live in `packages/protocol/api/types.ts`. Unknown fields are rejected where a shared schema is used.
