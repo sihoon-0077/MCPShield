@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
+import { createServer } from 'node:http';
 import * as tar from 'tar';
 import { checkedOciConfig, hashOciRuntimeDescriptor, inspectOciFilesystem, resolveOciEntrypoint,
   ociHash, OCI_OBSERVATION_POLICY, OCI_SOURCE_BUDGET_PROFILE } from '../../services/resolver/src/oci-runtime-descriptor.mjs';
@@ -14,6 +15,10 @@ import { runRuntimeDocker } from '../../services/resolver/src/npm-closure.mjs';
 import { removeFixtureSnapshot } from '../../services/scanner/src/snapshot.mjs';
 import { artifactDigest } from '../../services/scanner/src/scanner.mjs';
 import { verifyEvidenceBundle } from '../../services/scanner/src/evidence.mjs';
+import { scanOciRuntime } from '../../services/scanner/src/oci-scan.mjs';
+import { readTrivyDatabaseIdentity } from '../../services/scanner/src/oci-trivy.mjs';
+import { validateOciReleaseBinding } from '../../services/scanner/src/oci-binding.mjs';
+import { reconstructOciSemanticSources, verifyOciSemanticReview } from '../../services/scanner/src/oci-sources.mjs';
 
 const platform = { os: 'linux', architecture: 'amd64' };
 function archive(entries, mtime = 1) {
@@ -89,7 +94,7 @@ async function copiedFile(container, path) {
   assert.equal(files.length, 1); return files[0];
 }
 
-async function actualOciScenario({ sourceTargetBytes = null } = {}) {
+async function actualOciScenario({ sourceTargetBytes = null, fullScan = false } = {}) {
   const builder = process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE;
   const sourceContainer = 'mcpshield-oci-fixture-source-' + randomUUID();
   const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-oci-runtime-test-'));
@@ -166,6 +171,48 @@ async function actualOciScenario({ sourceTargetBytes = null } = {}) {
     assert.equal(observed.report.ready, false);
     assert.equal(verifyEvidenceBundle(observed.bundle, observed.bundle.manifest.root), true);
     assert.equal(await artifactDigest(workspace, { profile: OCI_SOURCE_BUDGET_PROFILE }), original);
+    if (fullScan) {
+      const databaseDir = process.env.MCPSHIELD_TRIVY_DATABASE_DIR;
+      const database = await readTrivyDatabaseIdentity({ databaseDir });
+      const server = createServer(async (request, response) => {
+        for await (const _chunk of request) { /* local authored fixture contract only; never external provider quality */ }
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ riskClaims: [],
+          semanticDiff: { purposeChanged: false, dataScopeExpanded: false, newHiddenObligation: false }, needsHumanReview: false }));
+      });
+      await new Promise((done) => server.listen(0, '127.0.0.1', done));
+      try {
+        const scanned = await scanOciRuntime({ descriptor: imported.descriptor, expectedDescriptorDigest: imported.descriptorDigest,
+          sourceReleaseId: '0x' + 'a'.repeat(64), releaseId: 'authored-oci@1.0.0',
+          trust: { baseImageDigest: builder, sinkImageDigest: builder, trivyImageDigest: process.env.MCPSHIELD_TRIVY_IMAGE,
+            databaseDir, databaseDigest: database.databaseDigest },
+          probePlan: { scenarios: [
+            { scenarioId: 'normal', kind: 'NORMAL', goal: 'Read synthetic message', toolName: 'echo_safe', argumentsJson: '{}' },
+            { scenarioId: 'boundary', kind: 'ADVERSARIAL', goal: 'Observe synthetic boundary', toolName: 'leak_canary', argumentsJson: '{}' },
+          ] }, ai: { allowRemoteAi: true, provider: 'custom', disclosurePolicy: 'LOCAL_CONTRACT_TEST',
+            url: `http://127.0.0.1:${server.address().port}`, maxBatches: 128, totalTimeoutMs: 300_000 } });
+        const safe = JSON.stringify({ analysis: scanned.analysis, resultStatus: scanned.result?.scanStatus });
+        assert.ok(scanned.binding && validateOciReleaseBinding(scanned.binding), safe);
+        assert.equal(scanned.result.scanStatus, 'FAILED', safe);
+        assert.equal(scanned.analysis.verdict, 'ABSTAIN'); assert.equal(scanned.analysis.ready, false);
+        assert.ok(scanned.analysis.issues.includes('OCI_INDEPENDENT_SIGNING_POLICY'));
+        assert.equal(scanned.analysis.checks.sourceClassificationComplete, false, 'opaque padding/native bytes are never silently approved');
+        assert.equal(scanned.analysis.checks.normalToolCallsSucceeded, true, safe);
+        assert.equal(scanned.analysis.checks.adversarialToolCallsSucceeded, true, safe);
+        assert.equal(verifyEvidenceBundle(scanned.bundle, scanned.bundle.manifest.root), true);
+        const privateEvidence = JSON.parse(scanned.bundle.files['oci/private-image-evidence.json']);
+        assert.equal(privateEvidence.access, 'ENCRYPTED_OPERATOR_EVIDENCE_ONLY');
+        assert.ok(privateEvidence.trivy?.documents?.length > 0, 'actual native Trivy evidence required, not a portable stub');
+        const semantic = JSON.parse(scanned.bundle.files['semantic/reviews.json']);
+        assert.equal(semantic.disclosure.policy, 'LOCAL_CONTRACT_TEST');
+        assert.equal(semantic.disclosure.providerQuality, 'PROVIDER_QUALITY_NOT_MEASURED');
+        const reconstructed = reconstructOciSemanticSources(scanned.binding.descriptor, privateEvidence);
+        const verified = verifyOciSemanticReview({ semantic, files: reconstructed.files,
+          tools: JSON.parse(scanned.bundle.files['runtime/tools.json']), releaseId: 'authored-oci@1.0.0' });
+        assert.equal(verified.semanticComplete, true, safe);
+        assert.equal(verified.independentCriticComplete, true, safe);
+        assert.equal(await artifactDigest(workspace, { profile: OCI_SOURCE_BUDGET_PROFILE }), original);
+      } finally { await new Promise((done) => server.close(done)); }
+    }
   } finally {
     await imported?.cleanup?.();
     await runRuntimeDocker(['rm', '-f', sourceContainer], 5000).catch(() => {});
@@ -181,3 +228,9 @@ test('actual Linux 100 MiB original OCI source imports and executes the same res
   skip: process.env.MCPSHIELD_DOCKER_TESTS !== '1' || process.env.MCPSHIELD_OCI_100M_TESTS !== '1' ||
     !process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE, timeout: 300_000,
 }, () => actualOciScenario({ sourceTargetBytes: 100 * 1024 * 1024 }));
+
+test('actual Linux OCI scan binds native inventory, offline Trivy, local semantic contract and repeated MCP observation without approving omitted binary coverage', {
+  skip: process.env.MCPSHIELD_DOCKER_TESTS !== '1' || process.env.MCPSHIELD_OCI_FULLSCAN_TESTS !== '1' ||
+    !process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE || !process.env.MCPSHIELD_TRIVY_IMAGE || !process.env.MCPSHIELD_TRIVY_DATABASE_DIR,
+  timeout: 600_000,
+}, () => actualOciScenario({ fullScan: true }));

@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { hashOciRuntimeDescriptor, ociHash } from '../../resolver/src/oci-runtime-descriptor.mjs';
+import { hashOciRuntimeDescriptor, ociHash, OCI_OBSERVATION_POLICY } from '../../resolver/src/oci-runtime-descriptor.mjs';
 import { inspectImportedOciRuntime } from '../../resolver/src/oci-runtime.mjs';
 import { runRuntimeDocker } from '../../resolver/src/npm-closure.mjs';
 import { createCanaries } from './sandbox.mjs';
@@ -131,14 +131,19 @@ async function runOciStep({ descriptor, sinkImageDigest, calls, timeoutMs }) {
   }
 }
 
+export async function readOciObservationPolicy(sinkImageDigest) {
+  if (!IMAGE.test(sinkImageDigest)) throw Error('OCI_TRUSTED_SINK_IMAGE_REQUIRED');
+  return { ...OCI_OBSERVATION_POLICY, sinkImageDigest, collectorDigest: ociHash(await readFile(fileURLToPath(import.meta.url))),
+    sinkCodeDigest: ociHash(await readFile(join(SINK, 'server.mjs'))), clientSdk: '@modelcontextprotocol/client@2.0.0',
+    protocolMode: '2025_LEGACY_NO_SIBLING_NEGOTIATION', egressAllowHosts: ['exfil-sink.local', 'mail-api.local'] };
+}
+
 export async function observeOciRuntime({ descriptor, expectedDescriptorDigest, sinkImageDigest, probePlan, ai, timeoutMs = 15_000 }) {
   if (hashOciRuntimeDescriptor(descriptor) !== expectedDescriptorDigest || descriptor.stage !== 'IMPORTED' || !IMAGE.test(sinkImageDigest) ||
     !Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 30_000 || probePlan && ai?.allowRemoteAi) throw Error('OCI_OBSERVATION_INPUT_INVALID');
   const steps = {}, issues = [], findings = [];
   let plan = { scenarios: [] }, observedDescriptor = null;
-  const executionPolicy = { ...descriptor.policy, sinkImageDigest, collectorDigest: ociHash(await readFile(fileURLToPath(import.meta.url))),
-    sinkCodeDigest: ociHash(await readFile(join(SINK, 'server.mjs'))), clientSdk: '@modelcontextprotocol/client@2.0.0',
-    protocolMode: '2025_LEGACY_NO_SIBLING_NEGOTIATION', egressAllowHosts: ['exfil-sink.local', 'mail-api.local'] };
+  const executionPolicy = await readOciObservationPolicy(sinkImageDigest);
   try {
     await inspectImportedOciRuntime({ descriptor, expectedDescriptorDigest });
     const image = JSON.parse(await runRuntimeDocker(['image', 'inspect', sinkImageDigest, '--format', '{{json .}}'], 5000));

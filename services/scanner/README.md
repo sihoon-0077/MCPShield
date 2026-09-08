@@ -686,3 +686,68 @@ not apply Node-only permissions to native processes. OCI outputs use
 to OCI; raw image environment and whole new source cannot be sent externally.
 Absent permitted local test configuration remains incomplete. Neither
 a successful model contract test nor creating this binding enables OCI signing.
+
+### OCI composed scan and original-source reconstruction
+
+`src/oci-scan.mjs` now composes the existing native image review, isolated MCP
+observer, strict two-role local semantic contract and immutable release binding:
+
+```js
+scanOciRuntime({ descriptor, expectedDescriptorDigest, sourceReleaseId,
+  releaseId, scanId, trust, ai, probePlan, timeoutMs, reviewTimeoutMs })
+prepareAndScanOciRuntime({ preparation, ...scan })
+```
+
+All arguments are server/operator-owned, never API body image/path/command
+overrides. `trust` contains `baseImageDigest`, optional `baseCatalogueDigest`,
+`trivyImageDigest`, `databaseDir`, `databaseDigest`, and `sinkImageDigest`.
+`preparation` is the existing `importOciRuntime` input. The wrapper transfers its
+private `runtimeTag` and exact-resource `cleanup` ownership to the job; exceptions
+clean the imported image. Registration must retain durable ownership, and failed
+or stale jobs must clean their own image rather than deleting unrelated tags.
+
+The result is `{result,binding,analysis,bundle}`. Missing discovery/catalogue
+returns `result:null,binding:null`. A deterministic observed canary effect can
+make the canonical scan result FAILED; **analysis.verdict remains ABSTAIN and
+ready remains false** until the separate independent OCI signing policy and
+Gateway consumer are implemented. `COMPLETED_RESTRICTED_SCAN` means phase checks
+completed, not approval. Unknown binaries, new directory/link metadata, omitted
+source, incomplete Trivy package inventory and absent filesystem syscall tracing
+are not excused by a successful model response. Existing npm policy is not reused.
+
+The encrypted bundle contains `oci/binding.json`, `runtime/oci-descriptor.json`,
+`runtime/execution-policy.json` (the full binding policy),
+`runtime/observation-policy.json` (the actual observer commitment), raw complete
+`runtime/tools.json`, `oci/observation.json`, `oci/image-review.json`,
+`oci/private-image-evidence.json`, `oci/source-reconstruction.json`,
+`semantic/reviews.json`, `oci/policy-review.json` and `report.json`.
+Never expose the raw bundle as a public result or telemetry object.
+
+`reconstructOciSemanticSources` independently verifies original bounded source
+base64/bytes/digests against the final native inventory, validates the exact base
+catalogue, and constructs all structural changes **including deletions**.
+Paths use separate `oci/structure.json` and `oci/source/` namespaces to prevent a
+candidate file shadowing synthetic metadata. Entrypoint/argv/workdir and image
+environment hashes are bound; raw environment values stay in private evidence
+and the explicitly local contract only, never a remote provider DTO.
+`verifyOciSemanticReview` reconstructs every redacted excerpt and both prompts,
+checks original input/tool identity, exact citations, execution provenance and
+disclosure labels. These are self-consistency checks, not authenticated observer
+or provider attestations: each signing validator must rerun native export,
+offline Trivy, observer and the permitted AI flow using its own trusted settings.
+
+Portable data-contract tests:
+
+```sh
+node --import tsx --test tests/security/oci-sources.test.mjs
+```
+
+The opt-in composed Linux regression reuses the authored non-Node OCI scenario,
+actual trusted builder/Trivy/DB and a local synthetic model. It verifies repeated
+MCP pagination/calls/canary effects and Merkle/raw-source reconstruction while
+requiring ABSTAIN for deliberately opaque padding/native coverage gaps. It is
+not a live provider-quality test; not running it is NOT_RUN, not success:
+
+```sh
+MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_OCI_FULLSCAN_TESTS=1 MCPSHIELD_RUNTIME_BUILDER_IMAGE=sha256:... MCPSHIELD_TRIVY_IMAGE=sha256:... MCPSHIELD_TRIVY_DATABASE_DIR=/absolute/cache/db node --import tsx --test --test-name-pattern="actual Linux OCI scan binds" tests/security/oci-runtime.test.mjs
+```
