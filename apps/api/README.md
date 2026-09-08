@@ -115,6 +115,15 @@ identities and publish/deprecate policies. Never expose the relayer or validator
 to the browser. SQL is the durable queue and transaction outbox (SQLite locally,
 PostgreSQL for shared workers); evidence is AES-256-GCM encrypted with tenant AAD.
 
+Scan intake atomically checks tenant queue/daily bounds and durable idempotency keys.
+A still-valid PASS/FAIL for the same exact release and policy is reused across new
+request keys; expired or inconclusive results are rescanned. Key aliases remain bound
+to their original request hash. Without an explicit `baselineReleaseId`, intake selects
+the most recent previously registered, still-valid `VERIFIED` release of the same tool.
+An explicit baseline must belong to that tenant and tool; it is shown on the scan record.
+PostgreSQL serializes each tenant with a transaction advisory lock; local SQLite uses
+one serialized connection. DLQ retries share the same queue bound.
+
 Run `node --import tsx apps/api/src/control-worker-cli.ts` with the same control-plane
 database/evidence/artifact configuration as the API. `--scan-only`, `--chain-only`, and
 `--once` select bounded worker modes. The scanner defaults to static-only and returns

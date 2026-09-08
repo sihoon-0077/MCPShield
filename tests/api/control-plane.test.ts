@@ -114,6 +114,51 @@ test("policy guards stage coverage and idempotent retry survives an exhausted qu
   } finally { await f.close(); }
 });
 
+async function intakeChecks(store: ControlStore, tenantId: string) {
+  const initialUsage = (await store.scanUsage(tenantId)).today;
+  const policy = { ...defaultPolicy, maxQueuedScans: 1 }, request = { releaseId: release.releaseId, policyHash: hash(policy), artifactDigest: digest };
+  const baselineId = `0x${"c".repeat(64)}`, overrideId = `0x${"d".repeat(64)}`;
+  await store.put(tenantId, "release", baselineId, { ...release, releaseId: baselineId, status: "VERIFIED", validUntil: new Date(Date.now() + 60000).toISOString() });
+  const enqueue = (key: string, input = request) => store.enqueueConstrained(tenantId, input, key, hash(input), "synthetic-trace", release, policy);
+  const first = await enqueue("original");
+  assert.equal(first.scan.request.baselineReleaseId, baselineId);
+  const claimed = await store.claim(`worker-${tenantId}`); assert.equal(claimed?.scanId, first.scan.scanId);
+  await store.finish(claimed!, `worker-${tenantId}`, { verdict: "PASS", validUntil: new Date(Date.now() + 60000).toISOString() });
+  const reused = await Promise.all(["alias-1", "alias-2", "alias-3"].map((key) => enqueue(key)));
+  assert.ok(reused.every((value) => value.reusedResult && value.scan.scanId === first.scan.scanId));
+  assert.equal((await store.scanUsage(tenantId)).today, initialUsage + 1);
+  await assert.rejects(enqueue("alias-1", { ...request, artifactDigest: `sha256:${"f".repeat(64)}` }), /IDEMPOTENCY_CONFLICT/);
+  await store.query("UPDATE cp_scans SET result_json = ? WHERE scan_id = ?", [JSON.stringify({ verdict: "PASS", validUntil: new Date(Date.now() - 1000).toISOString() }), first.scan.scanId]);
+  const racing = await Promise.allSettled(Array.from({ length: 8 }, (_, index) => enqueue(`race-${index}`)));
+  assert.equal(racing.filter((value) => value.status === "fulfilled").length, 1);
+  assert.ok(racing.filter((value) => value.status === "rejected").every((value: any) => value.reason.statusCode === 429));
+  const next = (await store.claim(`worker-${tenantId}`))!;
+  await store.finish(next, `worker-${tenantId}`, { verdict: "PASS", validUntil: new Date(Date.now() + 60000).toISOString() });
+  await store.put(tenantId, "release", overrideId, { ...release, releaseId: overrideId, status: "UNVERIFIED" });
+  const override = await enqueue("override", { ...request, baselineReleaseId: overrideId } as typeof request);
+  assert.equal(override.scan.request.baselineReleaseId, overrideId); assert.equal(override.reusedResult, false);
+  const done = (await store.claim(`worker-${tenantId}`))!; await store.finish(done, `worker-${tenantId}`, { verdict: "ABSTAIN" });
+}
+
+test("FR-007/008 reuses valid deep scans, binds alias keys, picks a verified baseline and serializes quotas", async () => {
+  const store = await ControlStore.open();
+  try { await intakeChecks(store, "sqlite-intake"); } finally { await store.close(); }
+});
+
+test("DLQ retries cannot bypass the tenant queue bound", async () => {
+  const f = await setup();
+  try {
+    const document = { ...defaultPolicy, maxQueuedScans: 1 }, policyHash = hash(document);
+    await f.store.put(tenant, "policy", policyHash, { policyHash, document });
+    const request = { releaseId: release.releaseId, policyHash };
+    const old = await f.store.enqueue(tenant, request, "old", hash(request), "trace");
+    await f.store.query("UPDATE cp_scans SET state = 'DEAD_LETTER', last_error = ? WHERE scan_id = ?", [JSON.stringify({ code: "WORKER_LOST", retryable: true }), old.scan.scanId]);
+    await f.store.enqueue(tenant, request, "active", hash(request), "trace");
+    assert.equal((await f.app.inject({ method: "POST", url: `/v1/scans/${old.scan.scanId}/retry`, headers: auth })).statusCode, 429);
+    assert.equal((await f.store.scan(tenant, old.scan.scanId))!.status, "DEAD_LETTER");
+  } finally { await f.close(); }
+});
+
 test("remote AI is server-only and requires an explicit allow flag, key and model", () => {
   const env = { CONTROL_PLANE_ENABLED: "true", CONTROL_PLANE_CREDENTIALS: JSON.stringify([{ tenantId: tenant, token, role: "admin" }]),
     CONTROL_EVIDENCE_KEY: "1".repeat(64), CONTROL_AI_PROVIDER: "openai", OPENAI_API_KEY: "synthetic-provider-key" };
@@ -204,6 +249,7 @@ test("PostgreSQL real adapter persists and atomically dequeues", { skip: !proces
     assert.equal(leased?.scanId, first.scan.scanId);
     assert.equal(await store.finish(leased!, tenantId, { check: "POSTGRESQL" }), true);
     assert.equal((await store.scan(tenantId, first.scan.scanId))?.status, "COMPLETED");
+    await intakeChecks(store, tenantId);
   } finally {
     await store.query("DELETE FROM cp_scans WHERE tenant_id = ?", [tenantId]);
     await store.close();

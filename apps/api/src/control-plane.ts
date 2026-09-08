@@ -128,16 +128,12 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       const policy = await get(user.tenantId, "policy", body.policyHash);
       if (policy.deprecatedAt) throw err("POLICY_DEPRECATED", 409);
       if (body.requestedTiers && (!Array.isArray(body.requestedTiers) || [...body.requestedTiers].sort().join() !== [...policy.document.requiredTiers].sort().join())) throw err("REQUIRED_TIERS_MISSING");
-      if (body.baselineReleaseId) await get(user.tenantId, "release", body.baselineReleaseId);
+      if (body.baselineReleaseId && (await get(user.tenantId, "release", body.baselineReleaseId)).toolId !== release.toolId) throw err("BASELINE_TOOL_MISMATCH");
       const idempotencyKey = request.headers["idempotency-key"];
       if (typeof idempotencyKey !== "string" || !idempotencyKey.trim() || idempotencyKey.length > 256) throw err("IDEMPOTENCY_KEY_REQUIRED");
       const input = { ...body, artifactDigest: release.artifactDigest };
-      const existing = await store.idempotentScan(user.tenantId, idempotencyKey, hash(input));
-      if (existing) return reply.code(202).send({ scan: publicScan(existing), deduplicated: true, links: { self: `/v1/scans/${existing.scanId}` } });
-      const usage = await store.scanUsage(user.tenantId);
-      if (usage.today >= policy.document.maxDailyScans || usage.queued >= policy.document.maxQueuedScans) throw err("SCAN_QUOTA_EXCEEDED", 429);
       const result = await withSpan("scan.accept", { "mcpshield.release_id": body.releaseId }, async () =>
-        store.enqueue(user.tenantId, { ...input, traceparent: traceHeaders().traceparent }, idempotencyKey, hash(input), currentTraceId() ?? randomUUID()),
+        store.enqueueConstrained(user.tenantId, { ...input, traceparent: traceHeaders().traceparent }, idempotencyKey, hash(input), currentTraceId() ?? randomUUID(), release, policy.document),
       { traceparent: typeof request.headers.traceparent === "string" ? request.headers.traceparent : undefined });
       if (!result.deduplicated) await store.event(user.tenantId, body.releaseId, "scan.queued", { scanId: result.scan.scanId }, result.scan.traceId);
       return reply.code(202).send({ ...result, scan: publicScan(result.scan), links: { self: `/v1/scans/${result.scan.scanId}` } });
@@ -151,7 +147,13 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       const user = authenticate(request.headers.authorization); authorize(user, "operator");
       const scan = await store.scan(user.tenantId, (request.params as any).scanId); if (!scan) throw err("SCAN_NOT_FOUND", 404);
       if (!scan.lastError?.retryable) throw err("SCAN_NOT_RETRYABLE", 409);
-      if (!await store.retry(user.tenantId, scan.scanId)) throw err("SCAN_NOT_IN_DLQ", 409);
+      const retried = await store.forTenant(user.tenantId, async (transaction) => {
+        const policy = await transaction.get(user.tenantId, "policy", scan.policyHash);
+        if (!policy || policy.deprecatedAt) throw err("POLICY_DEPRECATED", 409);
+        if ((await transaction.scanUsage(user.tenantId)).queued >= policy.document.maxQueuedScans) throw err("SCAN_QUOTA_EXCEEDED", 429);
+        return transaction.retry(user.tenantId, scan.scanId);
+      });
+      if (!retried) throw err("SCAN_NOT_IN_DLQ", 409);
       await store.event(user.tenantId, scan.releaseId, "scan.retried", { scanId: scan.scanId }, scan.traceId);
       return { scan: publicScan((await store.scan(user.tenantId, scan.scanId))!) };
     });
@@ -227,9 +229,10 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
 }
 
 function publicRelease({ artifactDir: _path, metadata: _metadata, ...release }: Record<string, any>) { return release; }
-function publicScan({ tenantId: _tenant, leaseOwner: _owner, request: _request, result, ...scan }: ScanJob) {
-  if (!result) return scan;
-  const { evidenceKey: _key, ...safeResult } = result; return { ...scan, result: safeResult };
+function publicScan({ tenantId: _tenant, leaseOwner: _owner, request, result, ...scan }: ScanJob) {
+  const baselineReleaseId = request.baselineReleaseId ?? null;
+  if (!result) return { ...scan, baselineReleaseId };
+  const { evidenceKey: _key, ...safeResult } = result; return { ...scan, baselineReleaseId, result: safeResult };
 }
 export async function saveEvidence(options: ControlOptions, tenantId: string, bundle: Record<string, any>) {
   const content = Buffer.from(canonical(bundle));

@@ -3,7 +3,7 @@ import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 export interface ScanJob {
   scanId: string; tenantId: string; releaseId: string; policyHash: string;
@@ -25,6 +25,8 @@ const job = (row: Record<string, any>): ScanJob => ({
 export class ControlStore {
   private sqlite?: DatabaseSync;
   private pool?: Pool;
+  private transactionClient?: PoolClient;
+  private sqliteTransaction = Promise.resolve();
   private constructor() {}
   static async open(location = ":memory:") {
     const store = new ControlStore();
@@ -34,10 +36,10 @@ export class ControlStore {
     } else {
       if (location !== ":memory:") mkdirSync(dirname(resolve(location)), { recursive: true });
       store.sqlite = new DatabaseSync(location);
-      store.sqlite.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;");
+      store.sqlite.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     }
     const migration = (name: string) => readFileSync(fileURLToPath(new URL(`../../../database/migrations/${name}.sql`, import.meta.url)), "utf8");
-    const schema = [migration("002_control_plane"), migration(`003_scan_audit.${store.pool ? "pg" : "sqlite"}`), migration("004_chain_outbox")].join("\n");
+    const schema = [migration("002_control_plane"), migration(`003_scan_audit.${store.pool ? "pg" : "sqlite"}`), migration("004_chain_outbox"), migration("006_scan_request_keys")].join("\n");
     const domain = migration("005_chain_action_domain");
     if (store.sqlite) {
       store.sqlite.exec("BEGIN IMMEDIATE");
@@ -62,8 +64,30 @@ export class ControlStore {
   get driver() { return this.pool ? "POSTGRESQL" : "SQLITE"; }
   async close() { if (this.pool) await this.pool.end(); else this.sqlite?.close(); }
   async query(sql: string, values: Array<string | number | null> = []): Promise<Record<string, any>[]> {
-    if (this.pool) { let index = 0; return (await this.pool.query(sql.replace(/\?/g, () => `$${++index}`), values)).rows; }
+    if (this.pool) { let index = 0; return (await (this.transactionClient ?? this.pool).query(sql.replace(/\?/g, () => `$${++index}`), values)).rows; }
+    await this.sqliteTransaction;
     return this.sqlite!.prepare(sql).all(...values) as Record<string, any>[];
+  }
+  async forTenant<T>(tenantId: string, execute: (transaction: ControlStore) => Promise<T>): Promise<T> {
+    if (this.pool) {
+      const transaction = new ControlStore(), client = await this.pool.connect();
+      transaction.pool = this.pool; transaction.transactionClient = client;
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [tenantId]);
+        const result = await execute(transaction); await client.query("COMMIT"); return result;
+      } catch (error) { await client.query("ROLLBACK"); throw error; }
+      finally { client.release(); }
+    }
+    // One SQLite connection cannot interleave transactions. PostgreSQL locks only the relevant tenant.
+    const previous = this.sqliteTransaction; let unlock!: () => void;
+    this.sqliteTransaction = new Promise<void>((resolve) => { unlock = resolve; }); await previous;
+    try {
+      this.sqlite!.exec("BEGIN IMMEDIATE");
+      const transaction = new ControlStore(); transaction.sqlite = this.sqlite;
+      try { const result = await execute(transaction); this.sqlite!.exec("COMMIT"); return result; }
+      catch (error) { this.sqlite!.exec("ROLLBACK"); throw error; }
+    } finally { unlock(); }
   }
   async put(tenantId: string, kind: string, id: string, document: Record<string, any>, replace = false) {
     const conflict = replace ? "DO UPDATE SET document = excluded.document" : "DO NOTHING";
@@ -106,9 +130,44 @@ export class ControlStore {
     return row ? job(row) : undefined;
   }
   async idempotentScan(tenantId: string, key: string, requestHash: string) {
+    const [alias] = await this.query("SELECT scan_id,request_hash FROM cp_scan_request_keys WHERE tenant_id = ? AND idempotency_key = ?", [tenantId, key]);
+    if (alias) {
+      if (alias.request_hash !== requestHash) throw Object.assign(new Error("IDEMPOTENCY_CONFLICT"), { statusCode: 409 });
+      return this.scan(tenantId, alias.scan_id);
+    }
     const [row] = await this.query("SELECT * FROM cp_scans WHERE tenant_id = ? AND idempotency_key = ?", [tenantId, key]);
     if (row && row.request_hash !== requestHash) throw Object.assign(new Error("IDEMPOTENCY_CONFLICT"), { statusCode: 409 });
     return row ? job(row) : undefined;
+  }
+  async enqueueConstrained(tenantId: string, request: Record<string, any>, key: string, requestHash: string, traceId: string,
+    release: Record<string, any>, policy: Record<string, any>) {
+    return this.forTenant(tenantId, async (transaction) => {
+      const existing = await transaction.idempotentScan(tenantId, key, requestHash);
+      if (existing) return { scan: existing, deduplicated: true, reusedResult: false };
+      const field = (column: string, name: string) => this.pool ? `${column}::jsonb->>'${name}'` : `json_extract(${column}, '$.${name}')`;
+      const now = new Date().toISOString();
+      const [cached] = await transaction.query(`SELECT * FROM cp_scans WHERE tenant_id = ? AND release_id = ? AND policy_hash = ?
+        AND state = 'COMPLETED' AND ${field("result_json", "validUntil")} > ? AND ${field("result_json", "verdict")} IN ('PASS','FAIL')
+        ${request.baselineReleaseId ? `AND ${field("request_json", "baselineReleaseId")} = ?` : ""} ORDER BY updated_at DESC LIMIT 1`,
+        [tenantId, request.releaseId, request.policyHash, now, ...(request.baselineReleaseId ? [request.baselineReleaseId] : [])]);
+      let result;
+      if (cached) result = { scan: job(cached), deduplicated: true, reusedResult: true };
+      else {
+        const usage = await transaction.scanUsage(tenantId);
+        if (usage.today >= policy.maxDailyScans || usage.queued >= policy.maxQueuedScans) throw Object.assign(new Error("SCAN_QUOTA_EXCEEDED"), { statusCode: 429 });
+        let baselineReleaseId = request.baselineReleaseId;
+        if (!baselineReleaseId) {
+          const [baseline] = await transaction.query(`SELECT id FROM cp_records WHERE tenant_id = ? AND kind = 'release' AND id <> ?
+            AND ${field("document", "toolId")} = ? AND ${field("document", "status")} = 'VERIFIED'
+            AND ${field("document", "validUntil")} > ? AND created_at <= ? ORDER BY created_at DESC LIMIT 1`,
+            [tenantId, request.releaseId, release.toolId, now, release.createdAt ?? now]);
+          baselineReleaseId = baseline?.id;
+        }
+        result = { ...await transaction.enqueue(tenantId, { ...request, ...(baselineReleaseId ? { baselineReleaseId } : {}) }, key, requestHash, traceId), reusedResult: false };
+      }
+      await transaction.query("INSERT INTO cp_scan_request_keys(tenant_id,idempotency_key,request_hash,scan_id) VALUES(?,?,?,?)", [tenantId, key, requestHash, result.scan.scanId]);
+      return result;
+    });
   }
   async scanUsage(tenantId: string) {
     const counts: Record<string, number> = { QUEUED: 0, RUNNING: 0, COMPLETED: 0, DEAD_LETTER: 0 };
