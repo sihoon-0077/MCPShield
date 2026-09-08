@@ -71,3 +71,23 @@ test("V2 matching FAIL quorum permanently revokes exact bytes across policies", 
     await assert.rejects(f.registry.submitAttestation(f.payload, await f.sign(3)));
   } finally { await f.close(); }
 });
+
+test("V2 PASS majority is independent of dissent order and TTL finalization needs no third signature", async () => {
+  const f = await fixture();
+  try {
+    const fail = { ...f.payload, verdict: 1 };
+    await (await f.registry.submitAttestation(fail, await f.sign(3, fail))).wait();
+    for (const index of [1, 2]) await (await f.registry.submitAttestation(f.payload, await f.sign(index))).wait();
+    assert.equal((await f.registry.getDecision(f.payload.releaseId, policy)).status, 1n);
+    const now = Number((await f.provider.getBlock("latest"))!.timestamp);
+    const validator = f.registry.connect(await f.provider.getSigner(1));
+    await (await validator.quarantine(f.payload.releaseId, policy, root, id("CANARY_EXFILTRATION"), now + 60)).wait();
+    await f.chain.request({ method: "evm_increaseTime", params: [2] }); await f.chain.request({ method: "evm_mine", params: [] });
+    const fresh = { ...f.payload, reportRoot: surface, nonce: 1, validFrom: now + 2, validUntil: now + 3602 };
+    for (const index of [1, 2]) await (await f.registry.submitAttestation(fresh, await f.sign(index, fresh))).wait();
+    assert.equal((await f.registry.getDecision(f.payload.releaseId, policy)).status, 2n);
+    await f.chain.request({ method: "evm_increaseTime", params: [65] }); await f.chain.request({ method: "evm_mine", params: [] });
+    await (await f.registry.syncExpiry(f.payload.releaseId, policy)).wait();
+    assert.equal((await f.registry.getDecision(f.payload.releaseId, policy)).status, 1n);
+  } finally { await f.close(); }
+});

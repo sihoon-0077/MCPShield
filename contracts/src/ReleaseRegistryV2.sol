@@ -87,6 +87,7 @@ contract ReleaseRegistryV2 {
         bytes32 reportRoot; uint64 validFrom; uint64 validUntil; uint64 quarantineUntil;
         uint32 validatorSetVersion; uint8 approvals; uint8 rejections; Status status;
     }
+    struct Quarantine { bytes32 releaseId; bytes32 policyHash; bytes32 evidenceHash; bytes32 reasonCode; uint64 expiresAt; uint32 validatorSetVersion; uint256 nonce; uint256 deadline; }
     address public immutable owner;
     ValidatorRegistry public immutable validators;
     PolicyRegistry public immutable policies;
@@ -99,6 +100,7 @@ contract ReleaseRegistryV2 {
     mapping(bytes32 => uint64) public quarantinedAt;
     mapping(bytes32 => uint64) public quarantineUntil;
     bytes32 private constant TYPEHASH = keccak256("Attestation(bytes32 releaseId,bytes32 artifactDigest,bytes32 manifestDigest,bytes32 toolSurfaceDigest,bytes32 policyHash,bytes32 reportRoot,uint8 verdict,uint64 validFrom,uint64 validUntil,uint32 validatorSetVersion,uint256 nonce,uint256 deadline)");
+    bytes32 private constant QUARANTINE_TYPEHASH = keccak256("Quarantine(bytes32 releaseId,bytes32 policyHash,bytes32 evidenceHash,bytes32 reasonCode,uint64 expiresAt,uint32 validatorSetVersion,uint256 nonce,uint256 deadline)");
     bytes32 private constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     uint256 private constant HALF_N = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0;
     bytes32 public constant CANARY_EXFILTRATION = keccak256("CANARY_EXFILTRATION");
@@ -158,13 +160,25 @@ contract ReleaseRegistryV2 {
         if (d.rejections >= 2) {
             revoked[a.releaseId] = true;
             _transition(a.releaseId, a.policyHash, d, Status.REVOKED, keccak256("FAIL_QUORUM"));
-        } else if (d.approvals >= 2 && d.rejections == 0 && quarantineUntil[a.releaseId] <= block.timestamp
+        } else if (d.approvals >= 2 && quarantineUntil[a.releaseId] <= block.timestamp
             && (quarantinedAt[a.releaseId] == 0 || a.validFrom > quarantinedAt[a.releaseId])) {
             _transition(a.releaseId, a.policyHash, d, Status.VERIFIED, keccak256("PASS_QUORUM"));
         }
     }
     function quarantine(bytes32 releaseId, bytes32 policyHash, bytes32 evidenceHash, bytes32 reasonCode, uint64 expiresAt) external {
         require(validators.isActiveValidator(msg.sender, validators.version()), "NOT_VALIDATOR");
+        _quarantine(releaseId, policyHash, evidenceHash, reasonCode, expiresAt);
+    }
+    function quarantineBySignature(Quarantine calldata q, bytes calldata signature) external {
+        require(block.timestamp <= q.deadline, "SIGNATURE_EXPIRED");
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator(), keccak256(abi.encode(QUARANTINE_TYPEHASH, q))));
+        address signer = _recover(digest, signature);
+        require(validators.isActiveValidator(signer, q.validatorSetVersion), "NOT_VALIDATOR");
+        require(nonces[signer] == q.nonce, "REPLAY");
+        nonces[signer] = q.nonce + 1;
+        _quarantine(q.releaseId, q.policyHash, q.evidenceHash, q.reasonCode, q.expiresAt);
+    }
+    function _quarantine(bytes32 releaseId, bytes32 policyHash, bytes32 evidenceHash, bytes32 reasonCode, uint64 expiresAt) private {
         require(releases[releaseId].exists && !revoked[releaseId], "INVALID_RELEASE");
         require(policies.active(policyHash) && evidenceHash != bytes32(0), "INVALID_EVIDENCE");
         require(reasonCode == CANARY_EXFILTRATION || reasonCode == HOST_ESCAPE_ATTEMPT || reasonCode == DIGEST_MISMATCH, "NON_DETERMINISTIC_REASON");
@@ -181,6 +195,9 @@ contract ReleaseRegistryV2 {
         d = decisions[releaseId][policyHash];
         if (revoked[releaseId]) d.status = Status.REVOKED;
         else if (quarantineUntil[releaseId] > block.timestamp) d.status = Status.QUARANTINED;
+        else if (d.approvals >= 2 && d.validFrom <= block.timestamp && d.validUntil > block.timestamp
+            && d.validatorSetVersion == validators.version() && policies.active(policyHash)
+            && (quarantinedAt[releaseId] == 0 || d.validFrom > quarantinedAt[releaseId])) d.status = Status.VERIFIED;
         else if (d.status == Status.QUARANTINED || (d.validUntil != 0 && d.validUntil <= block.timestamp)
             || (quarantinedAt[releaseId] != 0 && d.validFrom <= quarantinedAt[releaseId])
             || (d.status == Status.VERIFIED && (d.validatorSetVersion != validators.version() || !policies.active(policyHash)))) d.status = Status.EXPIRED;
