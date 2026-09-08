@@ -406,7 +406,7 @@ async function scanSnapshotRelease({
   if (sandboxResult.canaryObserved) findings.push({
     code: 'CANARY_EXFILTRATION', severity: 'CRITICAL', deterministic: true, stage: 'SANDBOX',
     message: 'The fixture sent the injected dummy canary to the controlled local sink.',
-    evidence: { canarySha256: sandboxResult.canaryHash, sink: 'CONTROLLED_LOCAL', sandbox: sandboxResult.mode },
+    evidence: { canarySha256: sandboxResult.canaryHash, ...(sandboxResult.canaryType ? { canaryType: sandboxResult.canaryType } : {}), sink: 'CONTROLLED_LOCAL', sandbox: sandboxResult.mode },
   });
   let sandboxIncomplete = sandboxResult.timedOut || Boolean(sandboxResult.error);
   if (mcpProbe && !staticOnly && !manifest.surfaceUnknown) {

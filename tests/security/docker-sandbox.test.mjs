@@ -75,6 +75,8 @@ test('actual synthetic MCP calls breach the controlled sink without admission an
   assert.equal(report.protected.spawned, false);
   assert.equal(report.protectedAttackSuccessRate, 0);
   assert.ok(verifiedScan.result.findings.some(({ code }) => code === 'CANARY_EXFILTRATION'));
+  const exfil = verifiedScan.result.findings.find(({ code }) => code === 'CANARY_EXFILTRATION');
+  assert.equal(exfil.evidence.canaryType, 'CUSTOMER_RECORD');
   assert.equal(JSON.parse(verifiedScan.bundle.files['sandbox/mcp.json']).pages, 2);
-  assert.ok(JSON.parse(verifiedScan.bundle.files['sandbox/events.json']).egressEvents.some(({ type }) => type === 'CANARY_EGRESS'));
+  assert.ok(JSON.parse(verifiedScan.bundle.files['sandbox/events.json']).egressEvents.some(({ type, canaryHash }) => type === 'CANARY_EGRESS' && canaryHash === exfil.evidence.canarySha256));
 });
