@@ -68,6 +68,15 @@
   후보 바이너리는 Docker 내부에서만 실행하며, 원본/config/최종 filesystem/entrypoint digest를 바인딩한다.
   현 단계는 관측 전용으로 `ABSTAIN`, filesystem `NOT_OBSERVED`, binary `NOT_REVIEWED`이며
   OCI PASS·Gateway 실행·전체 100MiB 지원을 완료로 간주하지 않는다. 실제 Linux 결과는 아직 없다.
+- `eb00dbf` 통합 로컬 전체 `npm test` 성공: backend 73 통과·외부 환경 6 skip,
+  Security 82 통과·Docker 11 skip, Gateway 68 통과·Docker 1 skip, dashboard 23 통과,
+  replay·MCP E2E·live smoke 성공. `f3c6214` 타입 검사와 Next production build 성공.
+  OCI 자체 portable 검사 7 통과·Docker 1 skip이며, 테스트 개수는 완료율이나 탐지율이 아니다.
+- `8dca40a`: npm 12의 extension hash 검사와 생성기의 확장 코드 미실행 정책을 일치시켰다.
+  private install에서만 확장 파일을 분리하고 정확한 원문을 최종 closure에 복원한다.
+  확장/patch 의존 lock은 실행하지 않고 명시 거부한다. Docker ADD 목적지 권한을 0555로 고정하고
+  CLOSURE_PREPARED 반환 전 실제 final CID를 미실행 export해 원본 closure와 다시 대조한다.
+  통합 관련 회귀 13 통과·Docker 4 skip. 원래 Linux 실패 2건의 실제 해소 여부는 후속 실행으로 확인한다.
 - clean `de4fc9f`의 실제 로컬 EVM·SQLite·HTTP 측정(40회/동시4/identity4):
   hot p95 83.500ms, uniform p95 60.727ms, signed REVOKED 40/40 BLOCK·캐시 재사용0회,
   해당 BLOCK p95 46.899ms, 다음 admission의 차단 확인 49.126ms.
