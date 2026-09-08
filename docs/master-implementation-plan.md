@@ -15,6 +15,16 @@
 
 ### 현재 검증 경계
 
+- 후속 코드 리뷰에서 `ad7b74f`의 새 scoped AI 입력 모듈(아직 Main 미통합)에
+  metadata 분할 우회를 실제 재현했다. 동일한 source/baseline을 두고 도구 description/title에
+  각각 소스의 절반을 넣으면 `scopeComplete:true`, `sourceChars:0`인데 전체 원문이 복원됐다.
+  정확한 전송 union 검사와 HTTP 0회 회귀를 담당 파트에 요청했다. 제한된 snippet 모듈만으로
+  2.5.4.3의 프라이버시 요구가 완료됐다고 표시하지 않는다. 기존 legacy analyzer/critic,
+  prepared/OCI 및 probe/benchmark 전송 caller의 일관된 versioned 전환도 아직 남아 있다.
+  UC-07/FR-406은 기존 appeal 접수/종결과 fresh rescan 간 연결이 부족함을 확인했다.
+  기존 `/v1/scans`에 검증된 OPEN appeal 연결을 추가하고 history·원본 판정을 보존하는
+  Backend 계약 및 기존 admin resolution UI를 병렬 구현 중이다. 신고 해결은 chain 승인이나
+  REVOKED 해제를 의미하지 않는다.
 - 새 통합 `391a7825ec7dc0f49f11bc543c4bbf9e994b8d86`의
   [CI 34279690606](https://github.com/sihoon-0077/MCPShield/actions/runs/34279690606)를 dispatch했다.
   최초 확인은 pending(작업 배정 전)이며 성공/실패 결과는 아직 없다. 앞선 push 검증과 같은
