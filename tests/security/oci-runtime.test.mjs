@@ -266,7 +266,10 @@ async function actualOciScenario({ sourceTargetBytes = null, fullScan = false, p
         assert.equal(verifyEvidenceBundle(scanned.bundle, scanned.bundle.manifest.root), true);
         const privateEvidence = JSON.parse(scanned.bundle.files['oci/private-image-evidence.json']);
         assert.equal(privateEvidence.access, 'ENCRYPTED_OPERATOR_EVIDENCE_ONLY');
-        assert.ok(privateEvidence.trivy?.documents?.length > 0, 'actual native Trivy evidence required, not a portable stub');
+        const imageReview = JSON.parse(scanned.bundle.files['oci/image-review.json']);
+        assert.ok(privateEvidence.trivy?.documents?.length > 0, JSON.stringify({ code: 'ACTUAL_NATIVE_TRIVY_EVIDENCE_REQUIRED',
+          issues: imageReview.issues, diagnostics: imageReview.diagnostics,
+          vulnerability: { status: imageReview.vulnerability?.status, issues: imageReview.vulnerability?.issues, diagnostics: imageReview.vulnerability?.diagnostics } }));
         const semantic = JSON.parse(scanned.bundle.files['semantic/reviews.json']);
         assert.equal(semantic.disclosure.policy, 'LOCAL_CONTRACT_TEST');
         assert.equal(semantic.disclosure.providerQuality, 'PROVIDER_QUALITY_NOT_MEASURED');

@@ -41,7 +41,7 @@ export async function reviewOciImage({ descriptor, expectedDescriptorDigest, tru
       image: { descriptorDigest: expectedDescriptorDigest, finalImageDigest: descriptor.finalImageDigest, rootfsDigest: proof.filesystem.digest },
       runtimeCatalogue: { baseImageDigest: catalogue.baseImageDigest, catalogueDigest: catalogue.catalogueDigest,
         platform: catalogue.platform, source: catalogue.source },
-      coverage: classified.coverage, vulnerability, issues: [...new Set([...classified.issues, ...vulnerability.issues])],
+      coverage: classified.coverage, diagnostics: classified.diagnostics, vulnerability, issues: [...new Set([...classified.issues, ...vulnerability.issues])],
       durationMs: Date.now() - started };
     return { ...summary, reviewDigest: ociHash(canonicalJson(summary)),
       // INTERNAL ONLY. Strip this field before any public API/telemetry output.
