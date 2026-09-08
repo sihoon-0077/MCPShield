@@ -51,9 +51,14 @@ test("appeal conclusion uses admin API scope, preserves original prose and histo
     }
     const busyHtml = renderToStaticMarkup(React.createElement(AppealRecords, { appeals: [original], manage: true, busy: true })); assert.match(busyHtml, /disabled=""/);
     const resolvedResponse = await request(resolvePath, admin, { resolution }); assert.equal(resolvedResponse.status, 200);
-    const resolved = (await resolvedResponse.json()).appeal;
+    const first = await resolvedResponse.json(), resolved = first.appeal; assert.equal(first.deduplicated, false);
     assert.equal(resolved.status, "RESOLVED"); assert.equal(resolved.reason, reason); assert.equal(resolved.resolution, resolution); assert.equal(resolved.createdAt, original.createdAt);
     assert.ok(Number.isFinite(Date.parse(resolved.resolvedAt))); assert.deepEqual(await store.get(credentials[0].tenantId, "release", release.releaseId), release);
+    const retry = await request(resolvePath, admin, { resolution }); assert.equal(retry.status, 200);
+    assert.deepEqual(await retry.json(), { appeal: resolved, deduplicated: true });
+    const overwrite = await request(resolvePath, admin, { resolution: "Synthetic different conclusion must not overwrite" });
+    assert.equal(overwrite.status, 409); assert.match(await overwrite.text(), /APPEAL_ALREADY_RESOLVED/);
+    assert.deepEqual(await store.get(credentials[0].tenantId, "appeal", resolved.appealId), resolved);
     const publicList = (await (await request(path, reader)).json()).items; assert.equal(publicList[0].resolution, resolution);
     const html = renderToStaticMarkup(React.createElement(AppealRecords, { appeals: publicList, manage: true }));
     assert.match(html, /RESOLVED/); assert.match(html, /종결 일시/); assert.match(html, /appeal.resolved/); assert.match(html, /&lt;script&gt;not executable&lt;\/script&gt;/); assert.doesNotMatch(html, /<script|<form|<textarea/);
