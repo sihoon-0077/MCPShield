@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 // Trusted program in the approved builder. Only package.json is mounted; no
 // candidate .npmrc, extension, source code, scripts, executable or host home.
 let stage = 'TOOLCHAIN';
+let failureCode = 'FAILED';
 try {
   if (process.getuid() === 0 || process.getgid() === 0) throw Error();
   for (const [name, version] of [['brace-expansion', '5.0.9'], ['ip-address', '10.3.1'], ['tar', '7.5.22']]) {
@@ -30,7 +31,15 @@ try {
     cwd: '/work/resolve', env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/work/home', NODE_ENV: 'production' },
     timeout: 80_000, maxBuffer: 64 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  if (result.error || result.status !== 0) throw Error();
+  if (result.error || result.status !== 0) {
+    const code = /(?:^|\n)npm error code ([A-Z][A-Z0-9_]+)(?:\r?\n|$)/.exec(result.stderr?.toString('utf8') ?? '')?.[1];
+    failureCode = result.error?.code === 'ETIMEDOUT' ? 'ETIMEDOUT' : [
+      'E401', 'E403', 'E404', 'EUSAGE', 'ERESOLVE', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNREFUSED',
+      'EAI_AGAIN', 'ENETUNREACH', 'EINTEGRITY', 'EACCES', 'EPERM', 'EBADENGINE',
+      'EUNSUPPORTEDPROTOCOL', 'EINVALIDPACKAGENAME', 'EINVALIDTAGNAME', 'EJSONPARSE',
+    ].includes(code) ? code : 'NPM_FAILED';
+    throw Error();
+  }
   stage = 'VERIFY';
   if (!(await readFile('/work/resolve/package.json')).equals(pkg)) throw Error();
   try { await lstat('/work/resolve/node_modules'); throw Error('UNEXPECTED_INSTALL'); }
@@ -44,6 +53,6 @@ try {
     configOrigin: 'DISTINCT_TRUSTED_FILES_NO_CANDIDATE_ENV', generatedAt: new Date().toISOString() }));
   process.stdout.write('MCPSHIELD_LOCK_GENERATED\n');
 } catch {
-  process.stderr.write(`MCPSHIELD_LOCK_FAILURE:${stage}\n`);
+  process.stderr.write(`MCPSHIELD_LOCK_FAILURE:${stage}:${failureCode}\n`);
   process.exitCode = 1;
 }
