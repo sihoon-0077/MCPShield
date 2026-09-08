@@ -14,6 +14,8 @@
 **/*.pem
 **/*.key
 data
+release-artifact
+trivy-cache
 .codex
 .railway
 .env

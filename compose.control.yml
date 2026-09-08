@@ -53,6 +53,11 @@ services:
         condition: service_healthy
       control-init:
         condition: service_completed_successfully
+  dashboard:
+    environment:
+      MCPSHIELD_PUBLIC_ORIGIN: http://127.0.0.1:3000
+      MCPSHIELD_CONTROL_ALLOW_LOOPBACK_HTTP: "true"
+      MCPSHIELD_API_HTTP_HOSTS: backend
   control-worker:
     build:
       context: .

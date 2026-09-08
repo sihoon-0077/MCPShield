@@ -30,6 +30,9 @@ docker compose --env-file .env.master.local -f docker-compose.yml -f compose.con
 ```
 
 DB 포트는 공개하지 않으며, worker/API에 Docker socket을 마운트하지 않는다.
+Compose 콘솔 주소는 `http://127.0.0.1:3000/console`이다. 로컬 전용 HTTP 예외는
+명시된 loopback origin에서만 적용한다. 공개 배포에는 `MCPSHIELD_PUBLIC_ORIGIN=https://...`
+을 설정하고 loopback 예외를 끈다. 프록시 헤더를 보고 신뢰 origin을 추측하지 않는다.
 이 구성의 worker도 정적 전용이다. 동적 검사는 별도 신뢰된 Linux worker 호스트에서
 `CONTROL_SANDBOX_MODE=docker`와 동일 DB·비공개 artifact/evidence 저장소를 설정한다.
 테스트넷과 외부 AI는 이 명령으로 생성되지 않는다.
@@ -126,6 +129,26 @@ shrinkwrap이 npm install 때 root lock에 끼워 넣은 `extraneous` 항목만 
 공개 `/mcp`와 `/try`는 합성 데이터 데모를 유지한다. 운영 credential·evidence API를 익명 데모에 노출하지 않는다.
 DB migration은 추가 방식으로 적용하고, 백업을 확인한 후 새 버전을 배포한다.
 실패 시 이전 이미지로 롤백한다. 데이터 삭제나 기존 schema 재설계는 롤백 수단으로 쓰지 않는다.
+
+### 서명 이미지·SBOM 검증
+
+`MCPShield Verification`을 `master/main`에서 수동 실행하면 모든 테스트 통과 뒤
+`signed-image` job이 실제 Docker 이미지를 빌드하고 Trivy 취약점·라이선스 목록과
+CycloneDX SBOM을 만든다. HIGH/CRITICAL 스캔 실패를 성공으로 바꾸지 않는다.
+GitHub OIDC 기반 provenance·SBOM 서명을 만든 뒤 같은 저장소 신원으로 검증한다.
+생성된 이미지 archive와 보고서는 CI artifact로 1일만 보관하며 public registry에는 push하지 않는다.
+실행 전에는 구성 완료일 뿐, 서명 이미지가 생성·검증됐다는 증거가 아니다.
+
+다운로드 후 압축을 풀고 다음처럼 확인한다.
+
+```sh
+gh attestation verify mcpshield-image.tar.gz --repo sihoon-0077/MCPShield
+docker load --input mcpshield-image.tar.gz
+```
+
+라이선스 목록 수집은 법률 검토나 프로젝트의 공개 라이선스 선택을 대신하지 않는다.
+기준: [GitHub artifact attestation](https://github.com/actions/attest),
+[Trivy image scan](https://trivy.dev/docs/latest/target/container_image/).
 
 공식 구성 참고: [OpenTelemetry Node](https://opentelemetry.io/docs/languages/js/getting-started/nodejs/),
 [Collector](https://opentelemetry.io/docs/collector/configuration/),

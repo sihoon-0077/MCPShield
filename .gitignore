@@ -15,3 +15,5 @@ tmp/
 *.db-wal
 *.db-shm
 /data/
+/release-artifact/
+/trivy-cache/

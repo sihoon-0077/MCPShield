@@ -117,3 +117,55 @@ jobs:
           docker exec "$PG_CONTAINER" createdb -U mcpshield mcpshield_restore_drill
           docker exec "$PG_CONTAINER" pg_restore -U mcpshield --exit-on-error --single-transaction -d mcpshield_restore_drill /tmp/mcpshield-ci.dump
           test "$(docker exec "$PG_CONTAINER" psql -U mcpshield -d mcpshield_restore_drill -tAc "SELECT count(*) FROM cp_records WHERE tenant_id='restore-test' AND id='backup-check'")" = "1"
+
+  signed-image:
+    # Explicit workflow dispatch only: do not accumulate large images on every push.
+    # This creates a downloadable CI artifact, not a public container registry/release.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master/main'
+    needs: [verify, postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build immutable commit image and archive
+        run: |
+          mkdir -p release-artifact trivy-cache
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" --tag "mcpshield:$GITHUB_SHA" .
+          docker image inspect "mcpshield:$GITHUB_SHA" --format '{{.Id}}' > release-artifact/image-id.txt
+          docker save "mcpshield:$GITHUB_SHA" | gzip -n > release-artifact/mcpshield-image.tar.gz
+          sha256sum release-artifact/mcpshield-image.tar.gz > release-artifact/SHA256SUMS
+      - name: Scan actual image vulnerabilities and collect dependency licenses
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --read-only --tmpfs /tmp:rw,nosuid,size=128m -e TRIVY_CACHE_DIR=/cache -v "$PWD/trivy-cache:/cache" -v "$PWD/release-artifact:/output" aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 image --input /output/mcpshield-image.tar.gz --scanners vuln,license --license-full --format json --output /output/image-scan.json
+          node -e "const r=require('./release-artifact/image-scan.json'); const v=(r.Results||[]).flatMap(x=>x.Vulnerabilities||[]).filter(x=>['HIGH','CRITICAL'].includes(x.Severity)); if(v.length)throw Error('Image vulnerability gate failed: '+v.length); console.log('Image HIGH/CRITICAL vulnerability count: 0. License inventory is not legal approval.');"
+      - name: Generate image CycloneDX SBOM
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --read-only --tmpfs /tmp:rw,nosuid,size=128m -e TRIVY_CACHE_DIR=/cache -v "$PWD/trivy-cache:/cache" -v "$PWD/release-artifact:/output" aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 image --input /output/mcpshield-image.tar.gz --format cyclonedx --output /output/sbom.cdx.json
+      - name: Sign build provenance for the actual image archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-artifact/mcpshield-image.tar.gz
+      - name: Sign image SBOM attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-artifact/mcpshield-image.tar.gz
+          sbom-path: release-artifact/sbom.cdx.json
+      - name: Verify build signature against this repository identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh attestation verify release-artifact/mcpshield-image.tar.gz --repo "$GITHUB_REPOSITORY"
+      - name: Retain bounded downloadable image and evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcpshield-${{ github.sha }}
+          path: release-artifact/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
