@@ -1,0 +1,10 @@
+ARG BUILDER_IMAGE
+FROM ${BUILDER_IMAGE}
+USER 0
+ADD closure.tar /app/
+COPY closure-report.json /mcpshield-closure-report.json
+USER 1000:1000
+WORKDIR /app
+# No candidate executable is started during image creation. The attested argv is required at runtime.
+ENTRYPOINT []
+CMD []

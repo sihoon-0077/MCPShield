@@ -14,13 +14,13 @@ export const RESOLVER_LIMITS = Object.freeze({ downloadBytes: 16 * 1024 * 1024, 
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const sha256 = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
-export async function downloadRegistryUrl(value, maxBytes = RESOLVER_LIMITS.downloadBytes) {
+export async function downloadRegistryUrl(value, maxBytes = RESOLVER_LIMITS.downloadBytes, { signal } = {}) {
   const url = new URL(value);
   // Public ingestion is intentionally restricted to the registry, never an arbitrary SSRF-capable fetch proxy.
   if (url.protocol !== 'https:' || url.hostname !== 'registry.npmjs.org' || url.port || url.username || url.password || url.hash) {
     throw new TypeError('only HTTPS registry.npmjs.org sources are allowed');
   }
-  const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(RESOLVER_LIMITS.timeoutMs), headers: { accept: 'application/json, application/octet-stream' } });
+  const response = await fetch(url, { redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(RESOLVER_LIMITS.timeoutMs), ...(signal ? [signal] : [])]), headers: { accept: 'application/json, application/octet-stream' } });
   if (!response.ok || !response.body) throw new Error(`registry returned HTTP ${response.status}`);
   const reader = response.body.getReader();
   let bytes = 0;
@@ -50,7 +50,7 @@ export function resolveNpmVersion(spec, metadata) {
   return { name, version, release };
 }
 
-function validateIntegrity(bytes, integrity) {
+export function validateIntegrity(bytes, integrity) {
   if (!integrity) return false;
   if (typeof integrity !== 'string' || integrity.length > 1024) throw new TypeError('invalid artifact integrity');
   const candidates = integrity.split(/\s+/).map((token) => /^(sha512|sha384|sha256|sha1)-([A-Za-z0-9+/]+={0,2})$/.exec(token)).filter(Boolean);

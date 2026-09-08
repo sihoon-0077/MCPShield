@@ -33,12 +33,12 @@ function argvValid(argv) {
 }
 
 // A descriptor is an identity commitment, NOT an attestation or permission to execute.
-// v1 only describes preflight; even fully populated caller-supplied fields cannot claim READY.
+// Preflight/closure preparation never grants READY, even with fully populated caller-supplied fields.
 export function hashPreparedRuntimeDescriptor(value) {
   const fields = ['schemaVersion', 'stage', 'profile', 'sourceDigest', 'sourceTreeDigest', 'lockDigest', 'lockOrigin',
     'builderImageDigest', 'platform', 'finalImageDigest', 'toolSurfaceHash', 'entrypoint', 'argv', 'policy'];
   if (!record(value) || Object.keys(value).length !== fields.length || fields.some((key) => !Object.hasOwn(value, key)) ||
-    value.schemaVersion !== 'mcpshield.prepared-runtime.v1' || value.stage !== 'PREFLIGHT' ||
+    value.schemaVersion !== 'mcpshield.prepared-runtime.v1' || !['PREFLIGHT', 'CLOSURE_PREPARED'].includes(value.stage) ||
     !['npm-closure-v1', 'oci-image-v1'].includes(value.profile)) fail('RUNTIME_DESCRIPTOR_INVALID');
   for (const key of ['sourceDigest', 'sourceTreeDigest']) if (!digestPattern.test(value[key])) fail('RUNTIME_DESCRIPTOR_DIGEST_INVALID');
   for (const key of ['lockDigest', 'builderImageDigest', 'finalImageDigest']) {
@@ -62,6 +62,8 @@ export function hashPreparedRuntimeDescriptor(value) {
   const policy = { acquisitionNetwork: 'REGISTRY_ONLY_SEPARATE', installNetwork: 'NONE', installScripts: 'DISABLED',
     executionNetwork: 'INTERNAL_SYNTHETIC_PROXY', user: 'NON_ROOT', rootFilesystem: 'READ_ONLY' };
   if (canonicalJson(value.policy) !== canonicalJson(policy)) fail('RUNTIME_POLICY_INVALID');
+  if (value.stage === 'CLOSURE_PREPARED' && (value.profile !== 'npm-closure-v1' || !value.lockDigest ||
+    !value.builderImageDigest || !value.finalImageDigest || !value.entrypoint || !value.platform)) fail('RUNTIME_PREPARATION_INCOMPLETE');
   return hash(canonicalJson(value));
 }
 

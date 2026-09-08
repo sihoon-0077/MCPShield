@@ -33,7 +33,9 @@ and isolation policy. Unknown values remain null. OCI lock origin is explicitly
 `NOT_APPLICABLE`; missing npm lock origin is null, supplied is `SUPPLIED`, and
 future isolated lock generation must use `RESOLVER_GENERATED`. The exported
 `hashPreparedRuntimeDescriptor()` validates these distinctions and hashes
-canonical JSON. It rejects forged READY stages and extra fields. A descriptor
+canonical JSON. It rejects forged READY stages and extra fields. The additive
+`CLOSURE_PREPARED` stage requires the supplied lock, builder, platform, entrypoint
+and final image identity; it still cannot grant READY. A descriptor
 hash is an identity commitment, never authorization to run.
 
 Optional internal source fields are `binName`, `platform` and
@@ -54,7 +56,56 @@ or expose unredacted resolver metadata as public evidence.
 node --import tsx --test tests/security/runtime-preflight.test.mjs tests/security/oci-resolver.test.mjs
 ```
 
-## Next checkpoint: 1B, supplied-lock offline Node closure
+## Implemented checkpoint: 1B, supplied-lock offline Node closure
+
+`acquireNpmClosure()` validates actual archive SRI and archive package identity,
+reuses the no-links/path-bounded tar resolver, and limits total compressed and
+expanded bytes, files and deadline. Repeated dependency locations count against
+the expanded quota even when they reuse one cached tar. Its returned input
+directory is private, read-only data; call its `cleanup()` when finished.
+
+`prepareNpmClosure()` additionally requires Linux Docker and an operator-supplied
+exact builder **image config ID**. Missing settings return NOT_RUN/INCONCLUSIVE,
+never READY. A separate approved toolchain image uses the pinned official Node
+22 Alpine amd64 base, upgraded OpenSSL libraries, and npm 12.0.2 verified against
+the official npm tarball SRI. Candidate input is never present during this
+network-enabled trusted builder build. CI must vulnerability-scan the resulting
+builder ID before approving it; no clean vulnerability result is implied here.
+
+The installer has no network, capabilities, host secrets or Docker socket; it
+runs as UID/GID 1000 with a read-only root filesystem, memory/pid/CPU limits,
+bounded tmpfs and a task-owned Docker volume. It does not load package `.npmrc`,
+uses offline npm cache data, disables lifecycle scripts and bin links, and hashes
+every installed file including node_modules. Candidate code is not invoked.
+The returned Docker tar is validated again (paths, links, permissions, bytes and
+hashes) without host extraction/execution before native Docker ADD builds the
+final image. npm/daemon stderr is discarded, not exposed as evidence.
+
+On success the result remains `status: INCONCLUSIVE`, `ready: false` and
+`phase: CLOSURE_PREPARED`. `imageDigestKind: DOCKER_IMAGE_CONFIG_ID` distinguishes
+local immutable image IDs from a not-yet-published OCI registry manifest digest.
+The descriptor binds that ID and exact argv. `cleanup()` removes the uniquely
+tagged output image; temporary containers, volumes and inputs are already cleaned.
+Real MCP discovery, runtime observation, release registration and Gateway launch
+binding are still separate required stages.
+
+Linux CI/operator setup (trusted builder only; no candidate package execution):
+
+```sh
+docker build -f services/resolver/Dockerfile.builder -t mcpshield-runtime-builder:reviewed .
+export MCPSHIELD_RUNTIME_BUILDER_IMAGE=$(docker image inspect mcpshield-runtime-builder:reviewed --format '{{.Id}}')
+# Scan/approve this exact image ID before enabling the actual test.
+MCPSHIELD_DOCKER_TESTS=1 node --import tsx --test tests/security/npm-closure.test.mjs
+```
+
+The actual Docker regression uses only authored synthetic package bytes, verifies
+the dependency can be imported inside the resulting restricted image, and checks
+that lifecycle hooks, package npmrc, rootfs writes and external networking are
+disabled. Without the explicit builder configuration that test is skipped, not
+reported as measured success. Default portable checks still cover real archive
+integrity, timeout, dependency hash changes and malicious tar boundaries.
+
+### Pipeline and next integration
 
 1. Fetch only lock-pinned registry tarballs in a bounded acquisition step and
    verify every SRI; cap total bytes, packages and wall-clock budget. No package
