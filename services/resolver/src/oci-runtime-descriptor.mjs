@@ -44,11 +44,14 @@ export function checkedOciConfig(config) {
 
 // Canonical final filesystem evidence, not Docker export's timestamp/order-sensitive
 // raw tar hash. Layers/whiteouts are applied ONLY by Docker. No host extraction.
-export function inspectOciFilesystem(bytes) {
+export function inspectOciFilesystem(bytes, { retainReviewSources = false, trustedEntries = [] } = {}) {
   if (!Buffer.isBuffer(bytes) || bytes.length < 1024 || bytes.length > OCI_RUNTIME_LIMITS.archiveBytes ||
     bytes.length % 512 || !new tar.Header(bytes).cksumValid) fail('OCI_FILESYSTEM_ARCHIVE_INVALID');
-  const entries = [], paths = new Set();
+  const entries = [], paths = new Set(), reviewSources = [];
+  const trusted = new Map(trustedEntries.map((entry) => [entry.path, canonicalJson(entry)]));
   let total = 0;
+  let retainedBytes = 0;
+  const sourceBudget = 8 * 1024 * 1024;
   const parser = tar.t({ sync: true, strict: true, onReadEntry(entry) {
     const path = entry.path.replace(/^\.\//, '').replace(/\/$/, '');
     if (!path || path === '.') { if (entry.type !== 'Directory' || entry.size !== 0) fail('OCI_FILESYSTEM_ENTRY_INVALID'); return; }
@@ -64,15 +67,25 @@ export function inspectOciFilesystem(bytes) {
     if (entry.type === 'Link' && !ociAbsolutePath(`/${item.link}`)) fail('OCI_FILESYSTEM_LINK_INVALID');
     if (entry.type === 'CharacterDevice' || entry.type === 'BlockDevice') Object.assign(item, { deviceMajor: entry.devmaj, deviceMinor: entry.devmin });
     if (entry.type === 'File') {
-      const hash = createHash('sha256'); entry.on('data', (chunk) => hash.update(chunk));
-      entry.on('end', () => { item.digest = `sha256:${hash.digest('hex')}`; });
+      const hash = createHash('sha256');
+      const chunks = retainReviewSources && entry.size <= sourceBudget - retainedBytes ? [] : null;
+      entry.on('data', (chunk) => { hash.update(chunk); if (chunks) chunks.push(chunk); });
+      entry.on('end', () => {
+        item.digest = `sha256:${hash.digest('hex')}`;
+        if (retainReviewSources && trusted.get(path) !== canonicalJson(item)) {
+          const source = chunks && retainedBytes + entry.size <= sourceBudget ? Buffer.concat(chunks) : null;
+          if (source) retainedBytes += source.length;
+          reviewSources.push({ path, digest: item.digest, bytes: source });
+        }
+      });
     } else if (entry.size !== 0) fail('OCI_FILESYSTEM_ENTRY_INVALID');
     entries.push(item);
   } });
   parser.end(bytes);
   if (!entries.length || entries.some((entry) => entry.type === 'File' && !sha.test(entry.digest))) fail('OCI_FILESYSTEM_INCOMPLETE');
   entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-  return { algorithm: 'sha256-canonical-oci-rootfs-v1', digest: ociHash(canonicalJson(entries)), entries, bytes: total };
+  return { algorithm: 'sha256-canonical-oci-rootfs-v1', digest: ociHash(canonicalJson(entries)), entries, bytes: total,
+    ...(retainReviewSources ? { reviewSources, retainedSourceBytes: retainedBytes } : {}) };
 }
 
 export function resolveOciEntrypoint(filesystem, requestedPath) {

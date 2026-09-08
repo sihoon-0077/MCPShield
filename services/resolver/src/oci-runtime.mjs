@@ -11,6 +11,7 @@ import { copyFixtureSnapshot, removeFixtureSnapshot, OCI_SOURCE_BUDGET_PROFILE }
 import { canonicalJson } from '../../scanner/src/evidence.mjs';
 import { checkedOciConfig, hashOciRuntimeDescriptor, inspectOciFilesystem, resolveOciEntrypoint,
   ociHash, OCI_OBSERVATION_POLICY, OCI_RUNTIME_LIMITS } from './oci-runtime-descriptor.mjs';
+import { validateRuntimePlatform } from './runtime-descriptor.mjs';
 
 const hashPattern = /^sha256:[a-f0-9]{64}$/;
 
@@ -36,28 +37,46 @@ export function inspectOciLayerBudget(layers, config) {
   return { expandedArchiveBytes: expanded, entries, layerCount: layers.length, diffIdsVerified: true, appliedBy: 'NATIVE_DOCKER_ONLY' };
 }
 
-export async function inspectImportedOciRuntime({ descriptor, expectedDescriptorDigest }) {
+export async function inspectImportedOciRuntime({ descriptor, expectedDescriptorDigest, trustedEntries, retainReviewSources = false, timeoutMs }) {
   if (hashOciRuntimeDescriptor(descriptor) !== expectedDescriptorDigest) throw Error('OCI_RUNTIME_IDENTITY_MISMATCH');
   if (process.platform !== 'linux') throw Error('OCI_LINUX_DOCKER_REQUIRED');
-  return inspectImage(descriptor.finalImageDigest, descriptor.platform, descriptor);
+  return inspectImage(descriptor.finalImageDigest, descriptor.platform, descriptor, descriptor.layerArchiveBytes, { trustedEntries, retainReviewSources, timeoutMs });
 }
 
-async function inspectImage(imageDigest, platform, expected, layerArchiveBytes = expected?.layerArchiveBytes ?? 0) {
+// Native export only: the fixed command is never started and no candidate argv
+// is interpreted. Also used to independently catalogue an operator-approved base.
+export async function exportOciFilesystem({ imageDigest, platform, archiveBudget = OCI_RUNTIME_LIMITS.archiveBytes, trustedEntries, retainReviewSources = false, timeoutMs = 40_000 }) {
+  if (!hashPattern.test(imageDigest) || !Number.isSafeInteger(archiveBudget) || archiveBudget < 1024 || archiveBudget > OCI_RUNTIME_LIMITS.archiveBytes) throw Error('OCI_EXPORT_INPUT_INVALID');
+  validateRuntimePlatform(platform);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 40_000) throw Error('OCI_EXPORT_BUDGET_INVALID');
+  if (process.platform !== 'linux') throw Error('OCI_LINUX_DOCKER_REQUIRED');
+  const deadline = Date.now() + timeoutMs;
+  const run = (args, cap, max) => {
+    if (Date.now() >= deadline) throw Error('OCI_EXPORT_TIMEOUT');
+    return runRuntimeDocker(args, Math.min(cap, deadline - Date.now()), max);
+  };
   const container = `mcpshield-oci-inspect-${randomUUID()}`;
   try {
-    const image = JSON.parse(await runRuntimeDocker(['image', 'inspect', imageDigest, '--format', '{{json .}}'], 5000));
+    const image = JSON.parse(await run(['image', 'inspect', imageDigest, '--format', '{{json .}}'], 5000));
     if (image.Id !== imageDigest || image.Os !== platform.os || image.Architecture !== platform.architecture) throw Error('OCI_IMPORTED_IMAGE_IDENTITY_MISMATCH');
+    await run(['create', '--pull=never', '--name', container, '--network=none', '--read-only', '--user=1000:1000',
+      '--cap-drop=ALL', '--security-opt=no-new-privileges', '--no-healthcheck', '--entrypoint=/bin/false', imageDigest], 5000);
+    const archive = await run(['export', container], 30_000, archiveBudget);
+    const filesystem = inspectOciFilesystem(archive, { trustedEntries, retainReviewSources });
+    if (Date.now() >= deadline) throw Error('OCI_EXPORT_TIMEOUT');
+    return { image, filesystem, exportArchiveBytes: archive.length, candidateExecutionPerformed: false };
+  } finally { try { await runRuntimeDocker(['rm', '-f', '-v', container], 5000); } catch { /* exact never-started container and its anonymous volumes */ } }
+}
+
+async function inspectImage(imageDigest, platform, expected, layerArchiveBytes = expected?.layerArchiveBytes ?? 0, reviewOptions = {}) {
+    const proof = await exportOciFilesystem({ imageDigest, platform, archiveBudget: OCI_RUNTIME_LIMITS.archiveBytes - layerArchiveBytes, ...reviewOptions });
+    const { image, filesystem } = proof;
     const runtime = checkedOciConfig({ config: image.Config });
-    await runRuntimeDocker(['create', '--pull=never', '--name', container, '--network=none', '--read-only', '--user=1000:1000',
-      '--cap-drop=ALL', '--security-opt=no-new-privileges', '--no-healthcheck', '--entrypoint', runtime.argv[0], imageDigest, ...runtime.argv.slice(1)], 5000);
-    const archive = await runRuntimeDocker(['export', container], 30_000, OCI_RUNTIME_LIMITS.archiveBytes - layerArchiveBytes);
-    const filesystem = inspectOciFilesystem(archive);
     const entrypoint = resolveOciEntrypoint(filesystem, runtime.argv[0]);
     if (expected && (expected.rootfsDigest !== filesystem.digest || canonicalJson(expected.entrypoint) !== canonicalJson(entrypoint) ||
       canonicalJson(expected.argv) !== canonicalJson(runtime.argv) || expected.workingDirectory !== runtime.workingDirectory ||
-      expected.environmentDigest !== runtime.environmentDigest || expected.exportArchiveBytes !== archive.length)) throw Error('OCI_IMPORTED_FILESYSTEM_IDENTITY_MISMATCH');
-    return { image, filesystem, entrypoint, ...runtime, exportArchiveBytes: archive.length, candidateExecutionPerformed: false };
-  } finally { try { await runRuntimeDocker(['rm', '-f', container], 5000); } catch { /* exact never-started container */ } }
+      expected.environmentDigest !== runtime.environmentDigest || expected.exportArchiveBytes !== proof.exportArchiveBytes)) throw Error('OCI_IMPORTED_FILESYSTEM_IDENTITY_MISMATCH');
+    return { ...proof, entrypoint, ...runtime };
 }
 
 export async function importOciRuntime({ root, sourceTreeDigest, platform }) {

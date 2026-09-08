@@ -5,9 +5,12 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 export const SNAPSHOT_LIMITS = Object.freeze({ files: 1_024, bytes: 16 * 1024 * 1024 });
 export const OCI_SOURCE_BUDGET_PROFILE = 'oci-100m-512m-v1';
 const OCI_SOURCE_LIMITS = Object.freeze({ files: 50_000, bytes: 100 * 1024 * 1024 });
+export const TRIVY_DATABASE_BUDGET_PROFILE = 'trivy-db-1g-v1';
+const TRIVY_DATABASE_LIMITS = Object.freeze({ files: 2, bytes: 1024 * 1024 * 1024 });
 export function snapshotLimits(profile = 'fixture-v1') {
   if (profile === 'fixture-v1') return SNAPSHOT_LIMITS;
   if (profile === OCI_SOURCE_BUDGET_PROFILE) return OCI_SOURCE_LIMITS;
+  if (profile === TRIVY_DATABASE_BUDGET_PROFILE) return TRIVY_DATABASE_LIMITS;
   throw Error('ARTIFACT_BUDGET_PROFILE_UNSUPPORTED');
 }
 
@@ -94,6 +97,7 @@ async function copyFileStable(source, target, state) {
     try {
       const buffer = Buffer.alloc(64 * 1024);
       while (true) {
+        state.signal?.throwIfAborted();
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
         if (!bytesRead) break;
         copied += bytesRead; state.bytes += bytesRead;
@@ -113,6 +117,7 @@ async function copyFileStable(source, target, state) {
 }
 
 async function copyDirectoryStable(source, target, state) {
+  state.signal?.throwIfAborted();
   if (++state.directoryCount + state.files > state.limits.files) throw Error('fixture exceeds its entry budget');
   const before = await lstat(source, { bigint: false });
   if (before.isSymbolicLink()) throw new Error(`fixture symlinks are not allowed: ${relative(state.sourceRoot, source)}`);
@@ -142,6 +147,7 @@ async function copyDirectoryStable(source, target, state) {
 }
 
 async function verifySourceTree(source, state, seen = new Set()) {
+  state.signal?.throwIfAborted();
   const stat = await lstat(source, { bigint: false });
   if (stat.isSymbolicLink()) throw new Error('fixture changed while snapshot was verified');
   const kind = stat.isDirectory() ? 'D' : stat.isFile() ? 'F' : null;
@@ -162,17 +168,19 @@ async function verifySourceTree(source, state, seen = new Set()) {
   }
 }
 
-export async function copyFixtureSnapshot(sourceDir, snapshotDir, { profile = 'fixture-v1' } = {}) {
+export async function copyFixtureSnapshot(sourceDir, snapshotDir, { profile = 'fixture-v1', signal } = {}) {
+  signal?.throwIfAborted();
   const sourceRoot = resolve(sourceDir);
   const snapshotRoot = resolve(snapshotDir);
   const rootStat = await lstat(sourceRoot, { bigint: false });
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new TypeError('fixture root must be a real directory');
   const canonicalRoot = await realpath(sourceRoot);
   if (resolve(canonicalRoot) !== sourceRoot) throw new TypeError('fixture root symlinks or aliases are not allowed');
-  const state = { sourceRoot, snapshotRoot, files: 0, directoryCount: -1, bytes: 0, entries: new Map(), limits: snapshotLimits(profile) };
+  const state = { sourceRoot, snapshotRoot, files: 0, directoryCount: -1, bytes: 0, entries: new Map(), limits: snapshotLimits(profile), signal };
   try {
     await copyDirectoryStable(sourceRoot, snapshotRoot, state);
     await verifySourceTree(sourceRoot, state);
+    signal?.throwIfAborted();
     return Object.freeze({ root: snapshotRoot, files: state.files, bytes: state.bytes });
   } catch (error) {
     await removeFixtureSnapshot(snapshotRoot);

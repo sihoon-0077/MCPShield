@@ -552,3 +552,73 @@ V2 tree hash, while descriptor.sourceDigest is archive provenance. Gateway uses
 the stricter no-network profile with exactly `--permission`,
 `--allow-fs-read=/app`, `--disallow-code-generation-from-strings`, no custom
 preload/host-data mount. This preserves the separate original fixture identity.
+
+## OCI inventory, trusted runtime catalogue and offline Trivy review
+
+`src/oci-review.mjs` exports `reviewOciImage({descriptor,
+expectedDescriptorDigest, trust, timeoutMs})`. `trust` is **operator-local**:
+`baseImageDigest`, optional `baseCatalogueDigest`, `trivyImageDigest`,
+`databaseDir`, and `databaseDigest`. Both image values are immutable local Docker
+config IDs, not tags or registry manifest IDs. Neither image/path nor a trusted
+catalogue may come from a public API request. Validators must compute their own
+base catalogue and DB identity rather than accepting the scanner's versions.
+
+This is a separate `mcpshield.oci-review.v1` inventory/review phase. Its
+`approvalVerdict` is **always ABSTAIN** and `ready` is false, even if `status` is
+COMPLETE. Missing Docker, bytes, tool/DB configuration, stale DB, incomplete
+package coverage or timeout is INCONCLUSIVE; npm's PASS policy is never reused.
+Full OCI approval still requires bounded source AI/blind-critic coverage, an
+explicit runtime policy, independent validator replay and Gateway binding.
+
+The scanner re-exports both the approved base and the candidate from never-started
+Docker containers. It does not execute or import their code on the host. Exact
+base matches bind **path, type, mode, owner, link target and content hash**. This
+is runtime provenance, not a semantic proof for arbitrary native binaries.
+Added/modified symlinks, hardlinks, directories, special files and privileged
+modes are explicitly unreviewed filesystem structure. Unknown native/bytecode
+and omitted source bytes remain incomplete; UTF-8 text classification means
+`TEXT_REQUIRES_AI_AND_CRITIC`, not a successful semantic review. At most 8 MiB of
+new source bytes are retained. Static inventory is not filesystem syscall tracing.
+
+`readTrivyDatabaseIdentity` makes a stable, private two-file snapshot of an
+already acquired `metadata.json` and `trivy.db`, streaming copy/hash with the
+fixed `trivy-db-1g-v1` 1 GiB ceiling. Metadata is bounded to 64 KiB before reading
+and must be DB schema v2, no more than 24 hours old, not future-dated. It never
+downloads a DB or accepts a candidate configuration. The global review budget is
+180 seconds (including both exports and DB/scan work), with bounded cleanup grace.
+
+`scanOciWithTrivy` passes bounded native `docker image save` archives to the
+approved Trivy container: no network or Docker socket, non-root, no capabilities,
+read-only root/input/DB, fixed empty config/ignore files and bounded tmpfs.
+It scans both base and candidate (one scan if their IDs match). Candidate code
+never runs. Every image save is capped at 512 MiB and every JSON/converted output
+at 16 MiB. Trivy's native `convert --format=cyclonedx` converts its JSON; every
+detected package must appear in that actual CycloneDX output. Report image CID
+and diff IDs must match Docker inspection. HIGH/CRITICAL counts are not ignored
+or downgraded. An empty or mismatching package inventory is not full SBOM coverage;
+this covers Trivy-detected packages, not all source semantics.
+
+Returned `privateEvidence` contains original source bytes, filesystem/catalogue
+paths and native Trivy/CycloneDX documents. **INTERNAL ONLY:** strip that field
+before returning a public API result or telemetry. It may only enter the existing
+encrypted operator-evidence store. Review summaries contain hashes/counts/codes,
+not these source bytes. This first phase has no public API route or signer.
+
+Portable checks (authored data, not real CVE scanning):
+
+```sh
+node --import tsx --test tests/security/oci-review.test.mjs
+```
+
+The opt-in test requires the existing patched CI builder CID, inspected approved
+Trivy tool CID and fresh trusted DB directory; it does no download. It catalogues
+the real base, performs offline scanning, native CycloneDX conversion, and checks
+the HIGH/CRITICAL count is zero. A portable skip is **not** live scanner evidence:
+
+```sh
+MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_RUNTIME_BUILDER_IMAGE=sha256:... MCPSHIELD_TRIVY_IMAGE=sha256:... MCPSHIELD_TRIVY_DATABASE_DIR=/absolute/cache/db node --import tsx --test tests/security/oci-review.test.mjs
+```
+
+Native CLI references: [Trivy image](https://trivy.dev/docs/latest/references/configuration/cli/trivy_image/),
+[offline scanning](https://trivy.dev/docs/latest/advanced/air-gap/),
+[native conversion](https://trivy.dev/docs/latest/references/configuration/cli/trivy_convert/).
