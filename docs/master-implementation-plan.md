@@ -15,6 +15,31 @@
 
 ### 현재 검증 경계
 
+- [Linux CI 34277348109](https://github.com/sihoon-0077/MCPShield/actions/runs/34277348109),
+  `24fa66e`: **종료·전체 실패**. PostgreSQL·Node 24 성공. Node 22 일반 test/build,
+  실제 npm closure, prepared Gateway, OCI native import/관측, prepared scan→독립 단일키
+  validator→V2→두 Gateway는 성공했다. OCI Gateway는 후보 실행 전 fixture Docker build에서 실패했다.
+  별도 OCI Trivy 실패는 실제 Trivy 0.74.0의 CycloneDX **1.7**이 허용 목록 밖인 것이 확인됐다.
+  실제 report identity 일치·Results 2개·SBOM components 169개는 진단에서 확인했지만
+  package coverage 완료를 뜻하지 않는다. `f36927b`는 공식 1.7 component 필드 호환성만 추가하고
+  unknown version/변조된 필드/정확한 package version 누락은 계속 거부한다. Linux 재통과는 미검증이다.
+  `signed-image` job `102236056851`은 실제 non-root 이미지 웹·judge·legacy/modern HTTP MCP
+  smoke 및 취약점/라이선스 inventory/SBOM 검사에 성공했다. 이미지
+  `sha256:b969d301c0389aa9eb6f76fd83d84cb2698debd536691d8d0e2af9740be6f9ec`,
+  앱 의존성 248개·HIGH/CRITICAL 0·SBOM checked. upstream 실패로 **서명·attestation 검증·
+  이미지 보관은 skipped**, 새 공개 배포도 아니다. 앞선 ECONNREFUSED는 이번에는 재현되지 않았다.
+- `63da09d`는 OCI validator가 API의 자기검증 결과 대신 자신의 native trust와 새 전체 스캔을
+  얻고, 독립 scan ID·root 및 결정론적 finding 범위를 대조한 뒤 기존 V2 서명 경로를 사용한다.
+  `36aea06`은 비동기 검증 뒤와 서명 payload 반환 직전에 만료를 다시 검사한다.
+  Main validator/API 관련 17개 및 만료 회귀 포함 validator 11개 통과. 실제 OCI Linux
+  전체 서명·quorum·Gateway 연결은 후속 검증이며 LOCAL_CONTRACT_TEST는 외부 AI 품질 증거가 아니다.
+- `d7beb04`는 여러 tools/call을 묶은 원문 batch의 **전달 직전** 모든 ALLOW lease를
+  wall clock·monotonic clock으로 재검사한다. 뒤 call을 기다리는 동안 앞 call의 승인이
+  만료되면 부분 전달 없이 frame 전체를 거부한다. 기존 긴급 승인 최종 검사는 유지한다.
+  `be88f02`·`a4abd6c`의 OCI safe/canary source fixture는 승인 base native export를 재사용하며
+  numeric/UUID request ID를 지원한다. Main Trivy·fixture·실제 Gateway 만료 관련 10 통과·
+  Linux 2 skip. CI에 지원 프로필의 정상/악성 독립 재스캔 검사를 추가했지만 아직 실행 결과는 없다.
+  현재 후속 commit 전체가 `24fa66e` 이미지에 포함된 것으로 해석하지 않는다.
 - `85a2378`은 OCI pure policy를 scanner 판정에 연결했다. 정확한 원본·실행 identity·관측 effects·
   Trivy/SBOM·두 AI 역할의 근거를 재구성하며, 지원되는 결정론적 유출은 FAIL, 제한된 전체 검사
   충족은 PASS, 나머지는 ABSTAIN이다. `ready:false`를 유지하며 서명/정족수 없이 실행 승인을
