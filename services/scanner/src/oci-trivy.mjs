@@ -89,6 +89,18 @@ export function trivyContractDiagnostics(report, sbom, imageDigest) {
     sbomComponentsShape: shape(sbom?.components), sbomComponentsCount: Array.isArray(sbom?.components) ? sbom.components.length : null };
 }
 
+// Exact task-owned tool containers only. Validate the entire target set before
+// native removal, attempt every cleanup, and never propagate daemon/source text.
+export async function cleanupOciTrivyContainers(containers, run = runRuntimeDocker) {
+  if (!Array.isArray(containers) || containers.length > 5 || new Set(containers).size !== containers.length ||
+    containers.some((name) => typeof name !== 'string' || !/^mcpshield-trivy-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(name))) throw Error('OCI_TRIVY_CLEANUP_TARGET_INVALID');
+  let failed = 0;
+  for (const name of containers) {
+    try { await run(['rm', '-f', '-v', name], 5000); } catch { failed++; }
+  }
+  return { attempted: containers.length, failed };
+}
+
 // Images, tool CID and DB path/hash come only from server/operator configuration.
 // The scanner container sees native save bytes, not a Docker socket or secrets.
 export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform, trust, timeoutMs = 180_000 }) {
@@ -102,6 +114,7 @@ export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform,
   const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-trivy-review-')), input = join(workspace, 'input'), db = join(workspace, 'db');
   const containers = [];
   let stage = 'DATABASE', contract = null, toolVersion = null, targetRole = null;
+  let outcome;
   try {
     const database = await readTrivyDatabaseIdentity({ databaseDir: trust.databaseDir, snapshotDir: db, signal });
     if (database.databaseDigest !== trust.databaseDigest) throw Error('OCI_TRIVY_DATABASE_IDENTITY_MISMATCH');
@@ -151,7 +164,7 @@ export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform,
     stage = 'DATABASE_RECHECK';
     if (await artifactDigest(db, { profile: TRIVY_DATABASE_BUDGET_PROFILE, signal }) !== trust.databaseDigest) throw Error('OCI_TRIVY_DATABASE_IDENTITY_MISMATCH');
     remaining();
-    return { status: images.every(({ status }) => status === 'COMPLETE') ? 'COMPLETE' : 'INCONCLUSIVE',
+    outcome = { status: images.every(({ status }) => status === 'COMPLETE') ? 'COMPLETE' : 'INCONCLUSIVE',
       source: 'LIVE_OFFLINE_TRIVY_CONTAINER', toolImageDigest: trust.trivyImageDigest, toolVersion: version.Version,
       databaseDigest: database.databaseDigest, database: { updatedAt: database.updatedAt, nextUpdate: database.nextUpdate, maxAgeHours: 24 },
       images, highCriticalCount: images.reduce((sum, image) => sum + image.highCriticalCount, 0),
@@ -162,10 +175,15 @@ export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform,
       // never in API public result/logs or UI telemetry.
       privateEvidence: { access: 'ENCRYPTED_OPERATOR_EVIDENCE_ONLY', documents } };
   } catch (error) {
-    return { status: 'INCONCLUSIVE', issues: [signal.aborted ? 'OCI_TRIVY_TOTAL_TIMEOUT' : /^OCI_[A-Z_]+$/.test(error.message) ? error.message : 'OCI_TRIVY_REVIEW_FAILED'],
+    outcome = { status: 'INCONCLUSIVE', issues: [signal.aborted ? 'OCI_TRIVY_TOTAL_TIMEOUT' : /^OCI_[A-Z_]+$/.test(error.message) ? error.message : 'OCI_TRIVY_REVIEW_FAILED'],
       diagnostics: { stage, targetRole, ...(contract ? { contract } : {}), ...(toolVersion ? { toolVersion } : {}) }, privateEvidence: null };
   } finally {
-    for (const container of containers) { try { await runRuntimeDocker(['rm', '-f', container], 5000); } catch { /* exact owned tool container */ } }
-    await removeFixtureSnapshot(workspace);
+    const cleanup = await cleanupOciTrivyContainers(containers);
+    let workspaceRemoved = true;
+    try { await removeFixtureSnapshot(workspace); } catch { workspaceRemoved = false; }
+    if (cleanup.failed || !workspaceRemoved) outcome = { status: 'INCONCLUSIVE',
+      issues: [...new Set([...(outcome?.issues ?? []), 'OCI_TRIVY_CLEANUP_FAILED'])],
+      diagnostics: { ...outcome?.diagnostics, cleanup: { ...cleanup, workspaceRemoved } }, privateEvidence: null };
   }
+  return outcome;
 }

@@ -808,6 +808,12 @@ random canaries/scan IDs make roots different; preserve a local receipt linking
 both roots and the semantic evidence mode. Pure bundle verification alone cannot
 authenticate Trivy/provider/observer execution and must never sign by itself.
 
+The Trivy adapter does not return usable private evidence until cleanup completes.
+At most five exact task-owned tool containers are removed (separate bounded
+5-second cleanup attempts); failure to remove any container or its private
+workspace produces `OCI_TRIVY_CLEANUP_FAILED`, INCONCLUSIVE and null private
+evidence. Diagnostics contain counts/booleans only, never raw daemon/source text.
+
 The shared integration fixture `tests/security/oci-profile-fixture.mjs` exports
 `createOciProfileFixture({builderImageDigest,variant:'safe'|'malicious'})` and
 `OCI_PROFILE_PROBE_PLAN`. It returns `{root,sourceTreeDigest,platform,sourceBytes,
