@@ -7,6 +7,38 @@
 시작 커밋: `6aa370285154f683989f2bf9b219bd2c052e6cee` (`mcp/main`).
 기존 코드·공개 데모를 보존하고 `master/main`에서 통합한다.
 
+## 최신 통합 체크포인트 (2026-09-09 03:30 KST)
+
+아래 기록이 이전 커밋의 진행 중 표기보다 우선한다. 대화에서 설명한 약 70%는
+가중 요구사항별로 계산한 완료율이 아닌 구현 진척 추정치였다. 이를 검증 완료율이나
+공개 배포 완료율로 사용하지 않는다. 전체 목표는 아직 완료되지 않았다.
+
+- `624b702`·`b598271`·`a10b75d`: 누락된 npm lock을 격리된 native npm과
+  메타데이터 전용 broker로 생성하고 기존 SRI 검증·오프라인 설치·전체 스캔에 연결.
+  원본 identity 불변, 후보 코드·설치 스크립트 미실행. 새 builder CID의 Linux 실측은 대기.
+- `457a91d`·`42ba032`·`5dc97c4`: prepared worker의 엄격한 정책·실제 로컬 이미지
+  재확인, 검증자의 독립 재스캔 및 키 하나만 보유하는 CLI 통합. Linux 전용 전체 회귀는
+  worker 2회 + 별도 검증자 프로세스 4회 + V2 정족수 + 두 Gateway 차단을 검사한다.
+  AI 응답은 명시적 루프백 stub이며 외부 기관 참여나 상용 모델 품질 검증이 아니다.
+- `29071a9`: 준비 작업·원본/파생 release·운영자 구성 다운로드·증거 요약·SSE 재조회 UI 통합.
+  통합 후 대시보드 21개 중 1개 테스트가 새 backend 검증 규칙과 불일치해 실패했다.
+  production gate는 유지하고 명시적 synthetic 테스트 계약을 보완 중이다.
+- `d77fbec`: Linux CI에 실제 prepared 전체 회귀를 추가. 기존 공식 MCP client를
+  운영 의존성으로 이동했으며 버전 변경이나 새 라이브러리 도입은 없다.
+- 위 코드의 로컬 backend 71개 통과·4개 외부 환경 명시 skip, 전체 타입 검사와
+  Next production build 성공. 전체 npm test는 대시보드 실패로 미통과다.
+  Windows에서 실제 Docker·PostgreSQL 통과를 주장하지 않는다.
+- Gateway terminal revocation은 release/chain/registry 범위로 정책·tenant 변경을 넘어 유지한다.
+  임시 캐시 쓰기 및 비동기 lock 정리 중 오래된 ALLOW가 반환되는 경합을 발견했다.
+  Main 수정과 별도 프로세스 barrier 회귀 `2f1e03e`를 함께 실행해 11개 테스트 통과.
+  두 경합 모두 차단·캐시 삭제·폐기 증거 보존·새 프로세스 재허용 거부를 확인했다.
+  최종 비동기 파일 정리 뒤 만료/폐기를 다시 검사하고 lock 해제 뒤 추가 await 없이 반환한다.
+
+명시적으로 남은 구현은 범용 OCI 실행/관측, legacy 정책의 검증자 독립 재실행,
+조직 indexer·직접 RPC fallback 및 서명된 break-glass 감사, 문서의 전체 부하·평가 행렬이다.
+실제 AI·Base Sepolia·비공개 S3/KMS·독립 기관·운영 Linux 호스트와 최신 전체 버전 공개 배포는
+설정 및 실측이 필요한 별도 미완료 항목이다. 기존 Railway 공개 데모는 보존했다.
+
 ## 완료의 의미
 
 코드 존재, 자동 테스트 통과, 실제 배포 동작은 서로 다른 증거다.
@@ -24,8 +56,8 @@
 |---|---|---|
 | Main | MCPShield-master-main / master/main | 요구사항·인터페이스, 운영·CI, 병합·교차 리뷰·E2E |
 | Security·AI | MCPShield-master-security-ai / master/security-ai | 안전한 수집, 정적·AI·격리 분석, Merkle 증거, 평가 |
-| Blockchain·Backend | MCPShield-master-blockchain-backend / master/blockchain-backend | 내구성 작업·권한·정책 API, Trust Plane V2, 재처리 |
-| Frontend·Gateway | MCPShield-master-frontend-gateway / master/frontend-gateway | 서명 캐시·폐기 전파·정책 집행, 운영 UI |
+| Blockchain·Backend | MCPShield-master-blockchain-backend / master/backend-prepared | 내구성 작업·권한·정책 API, Trust Plane V2, 재처리 |
+| Frontend·Gateway | MCPShield-master-frontend-gateway / master/frontend-preparation | 서명 캐시·폐기 전파·정책 집행, 운영 UI |
 
 1. 기존 시연 회귀 확인, 공통 계약 승인, 요구사항 동결.
 2. 수집·분석 → 영속 저장·정책·검증 → Gateway·운영 UI 연결.

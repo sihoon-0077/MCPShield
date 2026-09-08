@@ -1,16 +1,21 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { open, rename, unlink, writeFile } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
+import { open, rename, writeFile } from "node:fs/promises";
 import { traceHeaders } from "../../../packages/telemetry/index.mjs";
 
 const FIELDS = ["schemaVersion", "keyId", "decision", "releaseId", "artifactDigest", "toolSurfaceHash", "policyHash", "validatorSetVersion", "chainId", "registryContract", "observedBlock", "blockHash", "issuedAt", "expiresAt", "status", "operationClass", "tenantId", "reasonCode", "reportUrl"].sort();
 const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED", "EXPIRED"]);
 const memory = new Map();
 const pending = new Map();
-const revoked = new Set();
+const revoked = new Map();
 let revocationCapacityExceeded = false;
 const canonical = (value) => JSON.stringify(Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]])));
 // ReleaseRegistryV2.revoked[releaseId] is global across policies and tenants.
 const revocationKey = (value) => canonical(Object.fromEntries(["releaseId", "artifactDigest", "toolSurfaceHash", "chainId", "registryContract"].map(key => [key, typeof value[key] === "string" ? value[key].toLowerCase() : value[key]])));
+function rememberRevocation(key, envelope) {
+  if (revoked.size >= 4096 && !revoked.has(key)) revocationCapacityExceeded = true;
+  else revoked.set(key, envelope);
+}
 
 async function readCacheJson(path, optional = false) {
   let file;
@@ -86,18 +91,9 @@ export function verifyAdmissionSnapshot(envelope, { identity, publicKey, keyId, 
   return value;
 }
 
-export async function getSignedAdmission(options) {
+export function getSignedAdmission(options) {
   const cacheFile = options.cacheFile === undefined ? process.env.MCPSHIELD_ADMISSION_CACHE_FILE : options.cacheFile;
-  let lock, retainLock = false;
-  // A persisted cache belongs to one wrapper. Never race another process's
-  // deny/rename or silently reclaim a lock whose owner may still be running.
-  if (cacheFile) {
-    try { lock = await open(`${cacheFile}.lock`, "wx", 0o600); }
-    catch { throw new Error("Signed cache is locked or unavailable; admission fails closed"); }
-  }
-  try { return await signedAdmission({ ...options, cacheFile }); }
-  catch (error) { retainLock = error.cacheWriteFailed === true; throw error; }
-  finally { if (lock) { try { await lock.close(); } finally { if (!retainLock) await unlink(`${cacheFile}.lock`); } } }
+  return signedAdmission({ ...options, cacheFile });
 }
 
 async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, admissionMode = process.env.MCPSHIELD_ADMISSION_MODE ?? "strict",
@@ -106,6 +102,14 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
   registryContract = process.env.MCPSHIELD_REGISTRY_CONTRACT, validatorSetVersion = Number(process.env.MCPSHIELD_VALIDATOR_SET_VERSION),
   operationClass = "WRITE_EXTERNAL", cacheFile = process.env.MCPSHIELD_ADMISSION_CACHE_FILE, now = Date.now,
   apiToken = process.env.MCPSHIELD_CONTROL_TOKEN, tenantId = process.env.MCPSHIELD_TENANT_ID, controlReleaseId = process.env.MCPSHIELD_CONTROL_RELEASE_ID }) {
+  let lock, lockClosed = false, retainLock = false;
+  // The pathname retains exclusive ownership even after its descriptor closes.
+  // Unknown owners are never reclaimed, including after process crashes.
+  if (cacheFile) {
+    try { lock = await open(`${cacheFile}.lock`, "wx", 0o600); }
+    catch { throw new Error("Signed cache is locked or unavailable; admission fails closed"); }
+  }
+  try {
   if (!["strict", "balanced"].includes(admissionMode)) throw new Error("Admission mode must be strict or balanced");
   const endpoint = new URL(apiBaseUrl);
   const allowedHttp = new Set(["127.0.0.1", "localhost", "[::1]", ...(process.env.MCPSHIELD_API_HTTP_HOSTS ?? "").split(",").map((host) => host.trim()).filter(Boolean)]);
@@ -126,6 +130,7 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
       // rotation. Authenticate the old proof at issuance; never reuse it to allow.
       verifyAdmissionSnapshot(storedRevocation.envelope, { ...context, tenantId: value.tenantId, policyHash: value.policyHash, operationClass: value.operationClass,
         validatorSetVersion: value.validatorSetVersion, now: Date.parse(value.issuedAt) + 1 });
+      rememberRevocation(terminalKey, storedRevocation.envelope);
     }
   }
   const credentialFingerprint = createHash("sha256").update(apiToken ?? "").digest("hex");
@@ -145,6 +150,13 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
       if (value.snapshot.releaseId === identity.releaseId && value.snapshot.tenantId === tenantId) memory.delete(key);
     }
     if (cacheFile) await persistCache(() => writeFile(cacheFile, "null", { mode: 0o600 }));
+  };
+  const persistRevocation = async (proof = revoked.get(terminalKey)) => {
+    if (cacheFile && !storedRevocation && proof) {
+      const record = { schemaVersion: "mcpshield.revocation.v1", envelope: proof };
+      await persistCache(() => writeFile(`${cacheFile}.revoked`, JSON.stringify(record), { mode: 0o600, flag: "wx" }));
+      storedRevocation = record;
+    }
   };
   try {
     response = await admissionFetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/admission/check`, {
@@ -176,20 +188,23 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
   try { snapshot = verifyAdmissionSnapshot(envelope, { ...context, now: now() }); }
   catch (error) { await forget(true); throw error; }
   if (snapshot.decision === "ALLOW" && (storedRevocation || revoked.has(terminalKey) || revocationCapacityExceeded)) {
-    await forget(true); throw new Error("Release was previously revoked or terminal journal is full; admission fails closed");
+    await persistRevocation(); await forget(true);
+    throw Object.assign(new Error("Release was previously revoked or terminal journal is full; admission fails closed"), { cacheWriteFailed: Boolean(cacheFile && revocationCapacityExceeded) });
   }
   if (cacheHit && snapshot.decision !== "ALLOW") throw new Error("Cached admission does not allow execution");
   if (snapshot.decision === "BLOCK" && snapshot.status === "REVOKED") {
     // ponytail: 4096 terminal identities per process. Never evict a revocation
     // to gain capacity; use separate wrappers/private journals at larger scale.
-    if (revoked.size >= 4096 && !revoked.has(terminalKey)) revocationCapacityExceeded = true;
-    else revoked.add(terminalKey);
-    if (cacheFile && !storedRevocation) await persistCache(() => writeFile(`${cacheFile}.revoked`,
-      JSON.stringify({ schemaVersion: "mcpshield.revocation.v1", envelope }), { mode: 0o600, flag: "wx" }));
+    rememberRevocation(terminalKey, envelope);
+    await persistRevocation(envelope);
   }
   if (snapshot.decision === "BLOCK") await forget(true);
-  const superseded = () => snapshot.decision === "ALLOW" && state.epoch !== epoch;
-  if (superseded()) { await forget(); throw new Error("Admission superseded by a newer denial or invalid response"); }
+  const superseded = () => snapshot.decision === "ALLOW" && (state.epoch !== epoch || storedRevocation || revoked.has(terminalKey) || revocationCapacityExceeded);
+  const rejectSuperseded = async () => {
+    await persistRevocation(); await forget();
+    throw Object.assign(new Error("Admission superseded by a newer denial or invalid response"), { cacheWriteFailed: Boolean(cacheFile && revocationCapacityExceeded) });
+  };
+  if (superseded()) return await rejectSuperseded();
   if (!cacheHit && snapshot.decision === "ALLOW") {
     // ponytail: bounded process cache; persistent single-release snapshots cover one wrapper per MCP.
     if (memory.size >= 1_024) memory.delete(memory.keys().next().value);
@@ -202,12 +217,25 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
       });
     }
   }
-  // No await on the successful path after this final fence and before returning ALLOW.
-  if (superseded()) { await forget(); throw new Error("Admission superseded by a newer denial or invalid response"); }
+  if (lock) { await persistCache(() => lock.close()); lockClosed = true; }
+  if (snapshot.decision === "ALLOW") {
+    try { verifyAdmissionSnapshot(envelope, { ...context, now: now() }); }
+    catch (error) { await forget(true); throw error; }
+  }
+  // Closing the handle can race a denial too. Keep pathname ownership through
+  // this fence, then release it synchronously with no remaining successful await.
+  if (superseded()) return await rejectSuperseded();
   return { schemaVersion: "1.0.0", releaseId: snapshot.releaseId, decision: snapshot.decision, releaseStatus: snapshot.status,
     reasonCode: snapshot.reasonCode, reportUrl: snapshot.reportUrl,
     checkedAt: snapshot.issuedAt, source: "LIVE", cacheHit, expiresAt: snapshot.expiresAt, policyHash: snapshot.policyHash };
   } finally {
     state.active--; if (!state.active) pending.delete(pendingKey);
+  }
+  } catch (error) { retainLock = error?.cacheWriteFailed === true; throw error; }
+  finally {
+    if (lock) {
+      if (!lockClosed) await lock.close();
+      if (!retainLock) unlinkSync(`${cacheFile}.lock`);
+    }
   }
 }
