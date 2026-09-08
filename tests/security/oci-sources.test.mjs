@@ -6,6 +6,7 @@ import { createOciRuntimeCatalogue } from '../../services/scanner/src/oci-covera
 import { reconstructOciSemanticSources, verifyOciSemanticReview } from '../../services/scanner/src/oci-sources.mjs';
 import { reviewPreparedSemantics } from '../../services/scanner/src/prepared-review.mjs';
 import { scanOciRuntime } from '../../services/scanner/src/oci-scan.mjs';
+import { readTrustedOciRuntime } from '../../services/scanner/src/oci-trust.mjs';
 import { ociHash, hashOciRuntimeDescriptor, OCI_OBSERVATION_POLICY, OCI_SOURCE_BUDGET_PROFILE } from '../../services/resolver/src/oci-runtime-descriptor.mjs';
 
 const digest = ociHash('synthetic fixture identity'), platform = { os: 'linux', architecture: 'amd64' };
@@ -84,4 +85,6 @@ test('OCI scan orchestration rejects unbound identities and missing local trust 
     { ...input, timeoutMs: 0 }, { ...input, reviewTimeoutMs: 180001 }]) {
     await assert.rejects(() => scanOciRuntime(changed), /OCI_SCAN_INPUT_INVALID/);
   }
+  await assert.rejects(() => readTrustedOciRuntime({ descriptor, expectedDescriptorDigest: input.expectedDescriptorDigest, trust: {} }), /LOCAL_TRUST_INPUT_INVALID/);
+  await assert.rejects(() => readTrustedOciRuntime({ descriptor, expectedDescriptorDigest: ociHash('wrong'), trust: input.trust }), /LOCAL_TRUST_INPUT_INVALID/);
 });

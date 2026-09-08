@@ -19,6 +19,7 @@ import { scanOciRuntime } from '../../services/scanner/src/oci-scan.mjs';
 import { readTrivyDatabaseIdentity } from '../../services/scanner/src/oci-trivy.mjs';
 import { validateOciReleaseBinding } from '../../services/scanner/src/oci-binding.mjs';
 import { reconstructOciSemanticSources, verifyOciSemanticReview } from '../../services/scanner/src/oci-sources.mjs';
+import { readTrustedOciRuntime } from '../../services/scanner/src/oci-trust.mjs';
 
 const platform = { os: 'linux', architecture: 'amd64' };
 function archive(entries, mtime = 1) {
@@ -247,6 +248,13 @@ async function actualOciScenario({ sourceTargetBytes = null, fullScan = false, p
             url: `http://127.0.0.1:${server.address().port}`, maxBatches: 128, totalTimeoutMs: 300_000 } });
         const safe = JSON.stringify({ analysis: scanned.analysis, resultStatus: scanned.result?.scanStatus });
         assert.ok(scanned.binding && validateOciReleaseBinding(scanned.binding), safe);
+        const independentTrust = await readTrustedOciRuntime({ descriptor: scanned.binding.descriptor,
+          expectedDescriptorDigest: scanned.binding.descriptorDigest, trust: {
+            baseImageDigest: builder, sinkImageDigest: builder, trivyImageDigest: process.env.MCPSHIELD_TRIVY_IMAGE,
+            databaseDir, databaseDigest: database.databaseDigest } });
+        assert.deepEqual(independentTrust.anchors, scanned.binding.executionPolicy.trust);
+        assert.equal(independentTrust.rootfsDigest, scanned.binding.descriptor.rootfsDigest);
+        assert.equal(Object.hasOwn(independentTrust, 'databaseDir'), false);
         assert.equal(scanned.result.scanStatus, 'FAILED', safe);
         assert.equal(scanned.analysis.verdict, 'ABSTAIN'); assert.equal(scanned.analysis.ready, false);
         assert.ok(scanned.analysis.issues.includes('OCI_INDEPENDENT_SIGNING_POLICY'));
