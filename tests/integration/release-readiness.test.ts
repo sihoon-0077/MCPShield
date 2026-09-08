@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { buildApp } from '../../apps/api/src/app.js';
 // @ts-expect-error Native ESM release gate, import never invokes Docker.
 import { waitForJudgeBackend, waitForMcpLanding, smokeJudgeExperience } from '../../scripts/ops/smoke-release-image.mjs';
@@ -97,4 +98,18 @@ test('MCP landing readiness cancels stalled fetch/body within its total deadline
   await assert.rejects(waitForMcpLanding(origin, async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }),
     { headers: { 'content-type': 'text/html' } }), 30), /RELEASE_MCP_NOT_READY/);
   assert.equal(cancelled, true);
+});
+
+test('actual HTTP stalled body preserves the readiness deadline code despite native abort rejection', async () => {
+  const server = createServer((request, response) => {
+    response.writeHead(request.url === '/mcp' ? 200 : 503, { 'content-type': request.url === '/mcp' ? 'text/html' : 'application/json' });
+    response.write(request.url === '/mcp' ? '<html>' : '{');
+  });
+  try {
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address(); assert.ok(address && typeof address !== 'string');
+    const local = `http://127.0.0.1:${address.port}`;
+    await assert.rejects(waitForMcpLanding(local, fetch, 50), /RELEASE_MCP_NOT_READY/);
+    await assert.rejects(waitForJudgeBackend(local, fetch, 50), /RELEASE_BACKEND_NOT_READY/);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });

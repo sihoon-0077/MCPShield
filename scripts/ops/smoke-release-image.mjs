@@ -9,7 +9,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 async function judgeRequest(origin, path, method, status, body, fetchImpl, timeoutMs = 20_000) {
   const controller = new AbortController();
   let timer, reader;
-  const deadline = new Promise((_, reject) => { timer = globalThis.setTimeout(() => { controller.abort(); reject(new Error('RELEASE_JUDGE_TIMEOUT')); }, timeoutMs); });
+  const deadline = new Promise((_, reject) => { timer = globalThis.setTimeout(() => { reject(new Error('RELEASE_JUDGE_TIMEOUT')); controller.abort(); }, timeoutMs); });
   try {
     const response = await Promise.race([fetchImpl(`${origin}/api/judge/${path}`, {
       method, headers: { origin, accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
@@ -60,7 +60,7 @@ export async function waitForMcpLanding(value, fetchImpl = fetch, timeoutMs = 20
   // landing check; never retry initialization or stateful demo/tool requests.
   while (performance.now() < until) {
     const controller = new AbortController(); let timer, reader;
-    const deadline = new Promise((_, reject) => { timer = globalThis.setTimeout(() => { controller.abort(); reject(new Error('RELEASE_MCP_TIMEOUT')); }, Math.max(1, Math.min(2000, until - performance.now()))); });
+    const deadline = new Promise((_, reject) => { timer = globalThis.setTimeout(() => { reject(new Error('RELEASE_MCP_TIMEOUT')); controller.abort(); }, Math.max(1, Math.min(2000, until - performance.now()))); });
     try {
       const response = await Promise.race([fetchImpl(`${url.origin}/mcp`, {
         method: 'GET', headers: { accept: 'text/html' }, redirect: 'error', cache: 'no-store', signal: controller.signal,
