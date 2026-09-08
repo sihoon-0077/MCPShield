@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createServer } from "node:http";
-import { latencySummary, measureAdmission, measuredDecision, assertFreshRevocation, admissionMatrixPlan, cacheAttemptAt, benchmarkProxy, benchmarkRpcBatch, measureAdmissionMatrix } from "./admission-measure.js";
+import { latencySummary, measureAdmission, measuredDecision, assertFreshRevocation, admissionMatrixPlan, cacheAttemptAt, benchmarkProxy, benchmarkRpcBatch, measureAdmissionMatrix, assertUnavailableAdmission } from "./admission-measure.js";
 import { sourceSnapshot, withSourceProvenance } from "../../scripts/ops/evaluate-admission.js";
 test("load report uses nearest-rank quantiles, all samples, and bounded opt-in inputs", async () => {
   assert.deepEqual(latencySummary([100, 1, 3, 2]), { samples: 4, p50Ms: 2, p95Ms: 100, p99Ms: 100, maxMs: 100 });
@@ -19,12 +19,27 @@ test("matrix plans exact workload and native setup cost without claiming cache h
   assert.equal(pilot.setupTransactions, 196); assert.equal(pilot.setupAttestationSignatures, 128); assert.equal(pilot.warmupRequests, 585);
   const full = admissionMatrixPlan({ identities: 10_000, requests: 10_000 });
   assert.equal(full.setupTransactions, 30_004); assert.equal(full.warmupRequests, 9 * 1025); assert.equal(full.measuredRequests, 180_000);
+  const optedIn = admissionMatrixPlan({ fullMatrix: true, identities: 10_000, concurrency: 16 });
+  assert.equal(optedIn.measuredRequests, 99_000); assert.equal(optedIn.requestsPerHotCell, 1000); assert.equal(optedIn.requestsPerUniformCell, 10_000);
+  assert.equal(optedIn.setupAttestationSignatures, 20_000); assert.equal(optedIn.totalBudgetMs, 1_200_000); assert.equal(pilot.totalBudgetMs, 180_000);
+  for (const options of [{ fullMatrix: true }, { fullMatrix: true, identities: 10_000, concurrency: 4 }]) assert.throws(() => admissionMatrixPlan(options));
   for (const requests of [1, 7, 40, 10_000]) for (const rate of [0, 50, 95]) {
     assert.equal(Array.from({ length: requests }, (_, index) => Number(cacheAttemptAt(index, rate))).reduce((sum, value) => sum + value, 0), Math.floor(requests * rate / 100));
   }
   for (const options of [{ identities: 10_001 }, { requests: 0 }, { concurrency: 17 }, { identities: NaN }]) assert.throws(() => admissionMatrixPlan(options));
   await assert.rejects(measureAdmissionMatrix({ identities: 10_000 }), /PILOT_LIMIT/);
   await assert.rejects(measureAdmissionMatrix({ requests: 101 }), /PILOT_LIMIT/);
+});
+
+test("uninjected unavailable classification requires the exact unsigned API identity-bound response, not any malformed signature", async () => {
+  const body = { decision: "BLOCK", status: "UNVERIFIED", reasonCode: "STATUS_UNAVAILABLE", source: "EVM", releaseId: "release", policyHash: "policy", traceId: "a".repeat(32), checkedAt: new Date().toISOString() };
+  assertUnavailableAdmission(body, "release", "policy");
+  for (const changed of [{ decision: "ALLOW" }, { status: "REVOKED" }, { snapshot: {} }, { signature: "bad" }, { extra: true }, { releaseId: "other" }, { policyHash: "other" }, { checkedAt: "invalid" }]) {
+    assert.throws(() => assertUnavailableAdmission({ ...body, ...changed }, "release", "policy"));
+  }
+  const result = await measuredDecision(async () => { throw Error("Invalid signed admission snapshot fields"); }, "FRESH_VIEW_UNAVAILABLE_UNSIGNED");
+  assert.equal(result.failureCode, "FRESH_VIEW_UNAVAILABLE_UNSIGNED");
+  await assert.rejects(measuredDecision(async () => { throw Error("Signed admission signature is invalid"); }, "FRESH_VIEW_UNAVAILABLE_UNSIGNED"));
 });
 
 test("matrix uses actual bounded HTTP proxies for delayed RPC and outages, with no upstream request on injected 503", async () => {

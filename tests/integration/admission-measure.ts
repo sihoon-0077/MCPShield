@@ -30,6 +30,7 @@ const expectedFailures = {
   EMPTY_CACHE: "Admission unavailable and no matching signed cache exists",
   // Only used after the injected RPC outage's actual HTTP response is independently checked below.
   RPC_UNAVAILABLE_UNSIGNED: "Invalid signed admission snapshot fields",
+  FRESH_VIEW_UNAVAILABLE_UNSIGNED: "Invalid signed admission snapshot fields",
   SUPERSEDED_BY_DENIAL: "Admission superseded by a newer denial or invalid response",
 } as const;
 type ExpectedFailure = keyof typeof expectedFailures;
@@ -48,17 +49,27 @@ export async function measuredDecision(run: () => Promise<any>, expectedFailure?
   }
 }
 
-export function admissionMatrixPlan({ requests = 40, concurrency = 4, identities = 64 } = {}) {
+export function admissionMatrixPlan({ requests = 40, concurrency = 4, identities = 64, fullMatrix = false } = {}) {
+  assert.equal(typeof fullMatrix, "boolean");
+  if (fullMatrix) assert.ok(identities === 10_000 && concurrency === 16, "FULL_MATRIX_REQUIRES_10000_KEYS_AND_CONCURRENCY_16");
   for (const [value, max] of [[requests, 10_000], [concurrency, 16], [identities, 10_000]]) assert.ok(Number.isInteger(value) && value >= 1 && value <= max, "bounded matrix options required");
-  return { profile: "MATRIX", requestsPerCell: requests, concurrency, identities, cells: 18, measuredRequests: 18 * requests,
+  const requestsPerHotCell = fullMatrix ? 1000 : requests, requestsPerUniformCell = fullMatrix ? 10_000 : requests;
+  return { profile: "MATRIX", fullMatrix, requestsPerHotCell, requestsPerUniformCell, concurrency, identities, cells: 18, measuredRequests: 9 * (requestsPerHotCell + requestsPerUniformCell),
     setupTransactions: 4 + 3 * identities, setupAttestationSignatures: 2 * identities, setupBatchIdentities: 16,
     warmupRequests: 9 * (1 + Math.min(1024, identities)), nativeCacheCapacity: 1024, nativeAllowTtlMs: 30_000,
     targetCacheAttemptRates: [95, 50, 0], rpcConditions: ["NORMAL", "DELAY_50MS", "HTTP_503"],
-    distribution: "ONE_HOT_AND_UNIFORM_CYCLIC", setupBudgetMs: 120_000, totalBudgetMs: 180_000 };
+    distribution: "ONE_HOT_AND_UNIFORM_CYCLIC", setupBudgetMs: fullMatrix ? 600_000 : 120_000, totalBudgetMs: fullMatrix ? 1_200_000 : 180_000 };
 }
 
 // Deterministic spread, not IID sampling or an assertion about actual cache hits.
 export const cacheAttemptAt = (index: number, rate: number) => Math.floor((index + 1) * rate / 100) > Math.floor(index * rate / 100);
+
+export function assertUnavailableAdmission(body: any, releaseId: string, policyHash: string) {
+  assert.deepEqual(Object.keys(body).sort(), ["checkedAt", "decision", "policyHash", "reasonCode", "releaseId", "source", "status", "traceId"]);
+  assert.deepEqual({ decision: body.decision, status: body.status, reasonCode: body.reasonCode, source: body.source, releaseId: body.releaseId, policyHash: body.policyHash },
+    { decision: "BLOCK", status: "UNVERIFIED", reasonCode: "STATUS_UNAVAILABLE", source: "EVM", releaseId, policyHash });
+  assert.ok(typeof body.checkedAt === "string" && Number.isFinite(Date.parse(body.checkedAt)) && typeof body.traceId === "string" && /^[0-9a-f-]{32,36}$/i.test(body.traceId));
+}
 
 /** Actual HTTP fault boundary, never a replacement chainDecision or fabricated proof. */
 export async function benchmarkProxy(upstream: string, kind: "API" | "RPC", signal: AbortSignal) {
@@ -111,12 +122,12 @@ export async function benchmarkRpcBatch(url: string, calls: { method: string; pa
 
 export async function measureAdmissionMatrix(options: Parameters<typeof admissionMatrixPlan>[0] = {}) {
   const plan = admissionMatrixPlan(options);
-  // ponytail: pilot ceiling stays enforced until measured setup cost justifies a larger run budget.
-  assert.ok(plan.identities <= 64 && plan.requestsPerCell <= 100, "PILOT_LIMIT: execution is limited to 64 identities / 100 requests per cell; --plan can size 10,000");
+  assert.ok(plan.fullMatrix || plan.identities <= 64 && plan.requestsPerUniformCell <= 100, "PILOT_LIMIT: use explicit --full-matrix for the fixed 10,000-key / 99,000-request workload");
   const began = performance.now(), started = new Date().toISOString(), controller = new AbortController();
   // CLI parent additionally kills its child at 180s, including synchronous compiler stalls.
   const deadline = setTimeout(() => controller.abort(new Error("BENCHMARK_TOTAL_BUDGET_EXCEEDED")), plan.totalBudgetMs - 5000);
   const budget = (setup = false) => { controller.signal.throwIfAborted(); assert.ok(!setup || performance.now() - began < plan.setupBudgetMs, "BENCHMARK_SETUP_BUDGET_EXCEEDED"); };
+  const progress = (phase: string, completed: number, total: number) => process.stderr.write(`${JSON.stringify({ benchmarkProgress: phase, completed, total, elapsedMs: Math.round(performance.now() - began) })}\n`);
   const chain: any = ganache.server({ logging: { quiet: true }, wallet: { deterministic: true, totalAccounts: 4 }, miner: { blockTime: 1 } });
   const directory = await mkdtemp(join(tmpdir(), "mcpshield-admission-matrix-"));
   let provider: JsonRpcProvider | undefined, app: Awaited<ReturnType<typeof buildApp>> | undefined, store: ControlStore | undefined;
@@ -145,7 +156,7 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
     const validatorNonces = await Promise.all(validators.slice(0, 2).map(async validator => Number(await registry.nonces(validator.address))));
     const releases: Record<string, any>[] = [], receiptHashes: string[] = [];
     store = await ControlStore.open(join(directory, "control.sqlite"));
-    const registrationStart = performance.now();
+    const registrationStart = performance.now(); let nextSetupProgress = 1000;
     await batch([{ method: "miner_stop", params: [] }]);
     for (let offset = 0; offset < plan.identities; offset += plan.setupBatchIdentities) {
       budget(true);
@@ -181,6 +192,7 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
       });
       const decisions = await batch(releases.slice(offset).map(release => ({ method: "eth_call", params: [{ to: deployment.releaseRegistry.address, data: registry.interface.encodeFunctionData("getDecision", [release.releaseId, policyHash]) }, "latest"] })));
       decisions.forEach(value => { const decision = registry.interface.decodeFunctionResult("getDecision", value)[0]; assert.equal(Number(decision.status), 1); assert.equal(Number(decision.approvals), 2); });
+      if (releases.length >= nextSetupProgress || releases.length === plan.identities) { progress("ACTUAL_CHAIN_SETUP", releases.length, plan.identities); nextSetupProgress += 1000; }
     }
     await batch([{ method: "miner_start", params: [1] }]);
     assert.equal(receiptHashes.length, plan.identities * 3);
@@ -197,59 +209,69 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
       budget();
       // A fresh real loopback endpoint namespaces the native cache; no internal cache mutation.
       apiProxy = await benchmarkProxy(`http://127.0.0.1:${(app.server.address() as any).port}`, "API", controller.signal);
-      const api = apiProxy, keyspace = distribution === "HOT" ? 1 : plan.identities;
+      const api = apiProxy, keyspace = distribution === "HOT" ? 1 : plan.identities, requests = distribution === "HOT" ? plan.requestsPerHotCell : plan.requestsPerUniformCell;
       const proxy: Awaited<ReturnType<typeof benchmarkProxy>> = rpcProxy;
       let verifiedUnsignedResponses = 0;
       const check = async (index: number, cacheAttempt: boolean, fault: boolean) => {
         const release = releases[index % keyspace];
+        let verifiedUnsigned = false;
         const fetchImpl: typeof fetch = async (input, init) => {
           const headers = new Headers(init?.headers); if (cacheAttempt) headers.set("x-benchmark-cache-attempt", "1");
           const response = await fetch(input, { ...init, headers, signal: init?.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal });
-          if (fault && !cacheAttempt) {
+          if (!cacheAttempt) {
             assert.equal(response.status, 200); const body = await response.clone().json();
-            assert.deepEqual({ decision: body.decision, status: body.status, reasonCode: body.reasonCode, source: body.source, snapshot: body.snapshot, signature: body.signature },
-              { decision: "BLOCK", status: "UNVERIFIED", reasonCode: "STATUS_UNAVAILABLE", source: "EVM", snapshot: undefined, signature: undefined });
-            verifiedUnsignedResponses++;
+            if (fault || body.reasonCode === "STATUS_UNAVAILABLE") {
+              assertUnavailableAdmission(body, release.releaseId, policyHash); verifiedUnsigned = true; verifiedUnsignedResponses++;
+            }
           }
           return response;
         };
-        const expected: ExpectedFailure[] = cacheAttempt ? ["EMPTY_CACHE", "EXPIRED_CACHE", ...(fault ? ["SUPERSEDED_BY_DENIAL" as const] : [])] : fault ? ["RPC_UNAVAILABLE_UNSIGNED"] : [];
+        const expected: ExpectedFailure[] = cacheAttempt ? ["EMPTY_CACHE", "EXPIRED_CACHE", "SUPERSEDED_BY_DENIAL"] : [fault ? "RPC_UNAVAILABLE_UNSIGNED" : "FRESH_VIEW_UNAVAILABLE_UNSIGNED"];
         const result = await measuredDecision(() => getSignedAdmission({ ...base, apiBaseUrl: api.url, fetchImpl, identity: release, controlReleaseId: release.releaseId }), expected);
-        if (result.failureCode === "SUPERSEDED_BY_DENIAL") assert.ok(verifiedUnsignedResponses > 0, "Supersession must follow an independently checked unsigned RPC outage response");
-        if (!cacheAttempt) assert.equal(result.outcome, fault ? "FAIL_CLOSED_ERROR" : "ALLOW");
+        if (result.failureCode === "SUPERSEDED_BY_DENIAL") assert.ok(verifiedUnsignedResponses > 0, "Supersession must follow an independently checked unsigned unavailable response");
+        if (!cacheAttempt && result.outcome === "FAIL_CLOSED_ERROR") assert.ok(verifiedUnsigned, "An unknown signature/protocol failure is never an expected unavailable sample");
+        if (!cacheAttempt && fault) assert.equal(result.outcome, "FAIL_CLOSED_ERROR");
         if (result.outcome === "ALLOW") assert.equal(result.cacheHit, cacheAttempt);
         assert.notEqual(result.outcome, "BLOCK", "Verified setup has no revocations; unexpected signed BLOCK is not an outage sample");
         return result;
       };
       proxy.state.mode = "NORMAL";
       const warmupStarted = performance.now(), warmupRequests = Math.min(1024, keyspace), warmupRpcStart = proxy.state.received;
-      await parallel(warmupRequests, async index => { assert.equal((await check(index, false, false)).outcome, "ALLOW"); });
+      let warmupAllowed = 0;
+      await parallel(warmupRequests, async index => { warmupAllowed += Number((await check(index, false, false)).outcome === "ALLOW"); });
       const warmupMs = performance.now() - warmupStarted, warmupRpcRequests = proxy.state.received - warmupRpcStart;
+      const warmupUnavailable = verifiedUnsignedResponses; verifiedUnsignedResponses = 0;
       proxy.state.mode = rpcCondition as typeof proxy.state.mode;
       const rpcStart = { received: proxy.state.received, forwarded: proxy.state.forwarded, rejected: proxy.state.rejected };
       const apiStart = { received: api.state.received, forwarded: api.state.forwarded, rejected: api.state.rejected };
-      const latencies: number[] = [], failureCodes: Partial<Record<ExpectedFailure, number>> = {}; let allowed = 0, attempts = 0, cacheHits = 0;
+      const latencies: number[] = [], failureCodes: Partial<Record<ExpectedFailure, number>> = {}; let allowed = 0, attempts = 0, cacheHits = 0, completed = 0;
+      const visited = new Set<number>();
       const cellStart = performance.now();
-      await parallel(plan.requestsPerCell, async index => {
+      await parallel(requests, async index => {
+        visited.add(index % keyspace);
         const cacheAttempt = cacheAttemptAt(index, targetCacheAttemptRate); attempts += Number(cacheAttempt);
         const requestStart = performance.now(), result = await check(index, cacheAttempt, rpcCondition === "HTTP_503");
         latencies.push(performance.now() - requestStart); allowed += Number(result.outcome === "ALLOW"); cacheHits += Number(result.cacheHit);
         if (result.failureCode) failureCodes[result.failureCode] = (failureCodes[result.failureCode] ?? 0) + 1;
+        completed++; if (completed % 1000 === 0) progress(`${distribution}:${targetCacheAttemptRate}:${rpcCondition}`, completed, requests);
       });
-      assert.equal(api.state.rejected - apiStart.rejected, attempts); assert.equal(api.state.received - apiStart.received, plan.requestsPerCell);
-      assert.equal(verifiedUnsignedResponses, rpcCondition === "HTTP_503" ? plan.requestsPerCell - attempts : 0);
+      assert.equal(api.state.rejected - apiStart.rejected, attempts); assert.equal(api.state.received - apiStart.received, requests);
+      assert.equal(verifiedUnsignedResponses, rpcCondition === "HTTP_503" ? requests - attempts : failureCodes.FRESH_VIEW_UNAVAILABLE_UNSIGNED ?? 0);
+      assert.equal(visited.size, Math.min(keyspace, requests));
+      if (plan.fullMatrix && distribution === "UNIFORM_CYCLIC") assert.equal(visited.size, 10_000);
       assert.equal(api.state.errors.length, 0); assert.equal(proxy.state.errors.length, 0);
       const elapsedMs = performance.now() - cellStart;
-      cells.push({ distribution, keyspace, uniqueKeysVisited: Math.min(keyspace, plan.requestsPerCell), keyspaceCoverage: Math.min(keyspace, plan.requestsPerCell) / keyspace,
-        targetCacheAttemptRate, actualCacheAttempts: attempts, actualCacheAttemptRate: 100 * attempts / plan.requestsPerCell, observedCacheHitRate: 100 * cacheHits / plan.requestsPerCell,
-        rpcCondition, ...latencySummary(latencies), elapsedMs: Math.round(elapsedMs), throughputQps: Number((plan.requestsPerCell * 1000 / elapsedMs).toFixed(2)),
-        allowed, failClosedErrors: plan.requestsPerCell - allowed, failClosedErrorRate: (plan.requestsPerCell - allowed) / plan.requestsPerCell, unexpectedErrors: 0, failureCodes, cacheHits,
-        warmup: { requests: warmupRequests, elapsedMs: Math.round(warmupMs), rpcRequests: warmupRpcRequests, rpcCondition: "NORMAL", includedInRequestLatencies: false },
+      cells.push({ distribution, keyspace, uniqueKeysVisited: visited.size, keyspaceCoverage: visited.size / keyspace,
+        targetCacheAttemptRate, actualCacheAttempts: attempts, actualCacheAttemptRate: 100 * attempts / requests, observedCacheHitRate: 100 * cacheHits / requests,
+        rpcCondition, ...latencySummary(latencies), elapsedMs: Math.round(elapsedMs), throughputQps: Number((requests * 1000 / elapsedMs).toFixed(2)),
+        allowed, failClosedErrors: requests - allowed, failClosedErrorRate: (requests - allowed) / requests, unexpectedErrors: 0, failureCodes, cacheHits,
+        warmup: { requests: warmupRequests, allowed: warmupAllowed, failClosedErrors: warmupUnavailable, elapsedMs: Math.round(warmupMs), rpcRequests: warmupRpcRequests, rpcCondition: "NORMAL", includedInRequestLatencies: false },
         transport: { apiForwarded: api.state.forwarded - apiStart.forwarded, api503: api.state.rejected - apiStart.rejected,
           rpcRequests: proxy.state.received - rpcStart.received, rpcForwarded: proxy.state.forwarded - rpcStart.forwarded, rpc503: proxy.state.rejected - rpcStart.rejected, verifiedUnsignedResponses } });
       await api.close(); apiProxy = undefined;
+      progress("CELLS_COMPLETED", cells.length, plan.cells);
     }
-    return { status: "MEASURED", profile: "64_KEY_BOUNDED_PILOT", measuredAt: started, inputs: plan,
+    return { status: "MEASURED", profile: plan.fullMatrix ? "10000_KEY_OPT_IN_MATRIX" : "64_KEY_BOUNDED_PILOT", measuredAt: started, inputs: plan,
       environment: { chain: "LOCAL_GANACHE_EVM", blockTimeSeconds: 1, setupMining: "NATIVE_MANUAL_BATCH_THEN_PERIODIC", database: "SQLITE_WAL", http: "LOOPBACK_ACTUAL_HTTP_PROXIES", node: process.version, platform: process.platform, logicalProcessors: availableParallelism() },
       setup: { elapsedMs: Math.round(setupMs), deploymentMs: Math.round(deploymentMs), registrationsAndVotesMs: Math.round(registrationMs), confirmedTransactions: 4 + receiptHashes.length,
         receiptDigest: hash(receiptHashes), registeredAndVerifiedOnChain: releases.length, validatorExecution: "EXPLICIT_TEST_ONLY_SIGNING", wallClockUnmodified: true, attestationLifetimeSeconds: 86400 },
@@ -261,7 +283,9 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
         "Each cell starts at a new real loopback URL and warms at most 1024 entries using normal RPC; warming time and traffic are disclosed, not included in request latency.",
         "Uniform means deterministic cyclic visits, not IID random requests. Keyspace coverage is reported; 40 pilot requests do not visit all 64 keys.",
         "RPC delay is an added 50ms per real HTTP request; HTTP 503 is immediate failure, not a TCP timeout or public-network outage.",
-        "Local closed-loop 40-sample cells are not production capacity, a 10,000-key run, or a production p99 SLO. Existing smoke separately measures fresh revocation."] };
+        "FRESH_VIEW_UNAVAILABLE_UNSIGNED records the actual unsigned STATUS_UNAVAILABLE response without injected RPC faults; the API does not expose whether canonical-head movement, RPC budget, or another fresh-reader rejection caused it. It is not relabeled as an injected outage.",
+        "Warmup unavailability is counted without retrying until success; no clock freeze, cache TTL change, or forced hit rate is used.",
+        "Local closed-loop samples are not production capacity or a production p99 SLO. Only the explicit full profile visits 10,000 keys; existing smoke separately measures fresh revocation."] };
   } finally {
     clearTimeout(deadline); controller.abort(); reader?.close();
     if (apiProxy) await apiProxy.close(); if (app) await app.close(); else if (store) await store.close();

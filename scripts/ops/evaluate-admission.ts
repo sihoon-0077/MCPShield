@@ -34,10 +34,13 @@ export async function withSourceProvenance<T extends object>(run: () => Promise<
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { requests: { type: "string", default: "40" }, concurrency: { type: "string", default: "4" }, identities: { type: "string" },
-    profile: { type: "string", default: "smoke" }, plan: { type: "boolean", default: false }, "matrix-child": { type: "boolean", default: false } } });
+  const { values } = parseArgs({ options: { requests: { type: "string" }, concurrency: { type: "string" }, identities: { type: "string" },
+    profile: { type: "string", default: "smoke" }, plan: { type: "boolean", default: false }, "matrix-child": { type: "boolean", default: false }, "full-matrix": { type: "boolean", default: false } } });
   if (!["smoke", "matrix"].includes(values.profile)) throw Error("Profile must be smoke or matrix");
-  const options = { requests: Number(values.requests), concurrency: Number(values.concurrency), identities: Number(values.identities ?? (values.profile === "matrix" ? 64 : 4)) };
+  const fullMatrix = values["full-matrix"];
+  if (fullMatrix && (values.profile !== "matrix" || values.requests !== undefined)) throw Error("--full-matrix requires --profile matrix and fixes hot=1000/uniform=10000 requests; omit --requests");
+  const options = { requests: Number(values.requests ?? 40), concurrency: Number(values.concurrency ?? (fullMatrix ? 16 : 4)),
+    identities: Number(values.identities ?? (fullMatrix ? 10_000 : values.profile === "matrix" ? 64 : 4)), fullMatrix };
   if (values.plan) {
     if (values.profile !== "matrix") throw Error("--plan requires --profile matrix");
     const { admissionMatrixPlan } = await import("../../tests/integration/admission-measure.js");
@@ -48,14 +51,16 @@ async function main() {
     // event-loop AbortSignal alone cannot interrupt. No grandchild processes.
     const child = spawn(process.execPath, [...process.execArgv, process.argv[1], ...process.argv.slice(2), "--matrix-child"], { stdio: "inherit", windowsHide: true });
     let timedOut = false;
-    const deadline = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 180_000);
+    const budgetMs = fullMatrix ? 1_200_000 : 180_000;
+    const deadline = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, budgetMs);
     try {
       const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
-      if (timedOut) throw Error("BENCHMARK_TOTAL_BUDGET_EXCEEDED: child terminated at 180 seconds; no completed measurement");
+      if (timedOut) throw Error(`BENCHMARK_TOTAL_BUDGET_EXCEEDED: child terminated at ${budgetMs / 1000} seconds; no completed measurement`);
       if (code !== 0) throw Error("Benchmark child failed; no completed measurement");
     } finally { clearTimeout(deadline); }
     return;
   }
+  if (fullMatrix && sourceSnapshot().dirty) throw Error("FULL_MATRIX_REQUIRES_CLEAN_SOURCE");
   const result = await withSourceProvenance(async () => {
     // Snapshot before importing the code that will actually be measured.
     const { measureAdmission, measureAdmissionMatrix } = await import("../../tests/integration/admission-measure.js");
