@@ -17,27 +17,30 @@ export async function syntheticRpc(name = "reader-test") {
     difficulty: "0x0", totalDifficulty: "0x0", extraData: "0x", gasLimit: "0x1c9c380", gasUsed: "0x0", timestamp: `0x${(now + (state.mode === "stale-head" ? -31 : state.mode === "future-head" ? 10 : 0)).toString(16)}`, transactions: [], uncles: [] });
   const server = createServer(async (request, response) => {
     const chunks = []; for await (const chunk of request) chunks.push(chunk);
-    const call = JSON.parse(Buffer.concat(chunks).toString("utf8")); requests.push({ method: call.method, path: request.url, authorization: request.headers.authorization });
+    const call = JSON.parse(Buffer.concat(chunks).toString("utf8")); requests.push({ method: call.method, path: request.url, params: call.params, authorization: request.headers.authorization });
     if (state.mode === "timeout") return;
     let result;
     if (call.method === "eth_chainId") result = "0x539";
     else if (call.method === "eth_getBlockByNumber") {
       const tag = call.params[0], count = (counts.get(tag) ?? 0) + 1; counts.set(tag, count);
+      if (state.mode === "advance-budget" && tag === "latest" && count >= 3) return;
       result = block(tag === "latest" ? 3 : Number(BigInt(tag)));
       if (state.mode === "zero-head" && tag === "latest" || state.mode === "zero-confirmed" && tag === "0x2") result.hash = h("0");
       if ((state.mode === "latest-reorg" && tag === "latest" || state.mode === "confirmed-reorg" && tag === "0x2") && count > 1) result.hash = h("f");
-      if (state.mode === "moving-head" && tag === "latest" && count > 1) result = block(4);
+      if ((state.mode === "moving-head" || state.mode.startsWith("advance-")) && tag === "latest" && count > 1) result = block(4);
+      if (state.mode === "continuous-head" && tag === "latest") result = block(3 + Math.floor(count / 2));
     } else if (call.method === "eth_call") {
       if (call.params[0].to.toLowerCase() === validators) result = validatorIface.encodeFunctionResult("version", [1]);
       else {
         const parsed = iface.parseTransaction({ data: call.params[0].data });
         if (parsed.name === "validators") result = iface.encodeFunctionResult(parsed.name, [validators]);
-        else if (parsed.name === "releases") result = iface.encodeFunctionResult(parsed.name, [state.mode === "identity" ? h("e") : identity.toolId,
+        else if (parsed.name === "releases") result = iface.encodeFunctionResult(parsed.name, [state.mode === "identity" || state.mode === "advance-identity" && call.params[1] === "0x4" ? h("e") : identity.toolId,
           bytes32(identity.artifactDigest), bytes32(identity.manifestDigest), bytes32(identity.toolSurfaceHash), true]);
         else {
           const confirmed = call.params[1] === "0x2";
-          result = iface.encodeFunctionResult("getDecision", [[state.mode === "attestation-drift" && confirmed ? h("e") : h("d"),
-            now + (state.mode === "future-validity" ? 30 : -10), now + (state.mode === "expired" ? -1 : 3600), 0, 1, 2, 0, state.mode === "revoked" && !confirmed ? 3 : 1]]);
+          result = iface.encodeFunctionResult("getDecision", [[state.mode === "attestation-drift" && confirmed || state.mode === "advance-drift" && call.params[1] === "0x3" && (counts.get("latest") ?? 0) >= 3 ? h("e") : h("d"),
+            now + (state.mode === "future-validity" ? 30 : -10), now + (state.mode === "expired" || state.mode === "advance-expired" && call.params[1] === "0x4" ? -1 : 3600), 0, 1, 2, 0,
+            (state.mode === "revoked" || state.mode === "advance-negative") && !confirmed || state.mode === "advance-revoked" && call.params[1] === "0x4" ? 3 : 1]]);
         }
       }
     } else { response.writeHead(400).end(); return; }

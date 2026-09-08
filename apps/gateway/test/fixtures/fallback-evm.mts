@@ -10,6 +10,7 @@ import { deployV2 } from "../../../../contracts/scripts/deploy-v2.ts";
 import { attestationV2Domain, attestationV2Types, bytes32, createReleaseRegistryV2, exactReleaseIdentity } from "../../../../packages/contracts-sdk/src/v2.ts";
 import { createArtifactSnapshot } from "../../src/artifact.mjs";
 import { getSignedAdmission } from "../../src/signed-admission.mjs";
+import { v2ChainReader } from "../../../../packages/contracts-sdk/src/v2-chain-reader.mjs";
 
 // Actual contracts and signatures, but ephemeral local Ganache accounts; not independent institutions.
 const chain = ganache.server({ logging: { quiet: true }, wallet: { deterministic: true, totalAccounts: 5 } });
@@ -47,6 +48,23 @@ try {
   const allowed = await getSignedAdmission(options);
   assert.equal(allowed.decision, "ALLOW"); assert.equal(allowed.decisionSource, "DIRECT_RPC"); assert.equal(allowed.cacheHit, false);
   assert.equal(await readFile(cacheFile, "utf8"), "null");
+  if (process.env.MCPSHIELD_TEST_MINING_PILOT === "1") {
+    const read = v2ChainReader({ rpcUrls: [url], registryContract: deployment.releaseRegistry.address, chainId: 1337, confirmations: 2, timeoutMs: 1500 });
+    const { setTimeout: pause } = await import("node:timers/promises");
+    let mining = true, minedBlocks = 0, allow = 0, unavailable = 0;
+    const miner = (async () => { while (mining) { await pause(1000); if (mining) { await chain.provider.request({ method: "evm_mine", params: [] }); minedBlocks++; } } })();
+    try {
+      for (let batch = 0; batch < 8; batch++) {
+        await Promise.all(Array.from({ length: 16 }, async () => {
+          try { const state = await read({ ...snapshot, releaseId: identity.releaseId }, { policyHash }); assert.equal(state.status, "VERIFIED"); allow++; }
+          catch (error) { if (error?.message === "STATUS_UNAVAILABLE") unavailable++; else throw error; }
+        }));
+        await pause(400);
+      }
+      assert.equal(allow + unavailable, 128); assert.ok(minedBlocks >= 2);
+      console.log(JSON.stringify({ scope: "LOCAL_EVM_READER_MINING_PILOT", concurrency: 16, samples: 128, miningIntervalMs: 1000, minedBlocks, allow, unavailable }));
+    } finally { mining = false; await miner; read.close(); }
+  }
   // Two FAIL votes under another policy globally revoke the same exact release.
   await vote(alternatePolicy, 1, 1);
   const blocked = await getSignedAdmission(options);
