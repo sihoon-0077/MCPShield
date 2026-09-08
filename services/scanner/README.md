@@ -702,9 +702,21 @@ All arguments are server/operator-owned, never API body image/path/command
 overrides. `trust` contains `baseImageDigest`, optional `baseCatalogueDigest`,
 `trivyImageDigest`, `databaseDir`, `databaseDigest`, and `sinkImageDigest`.
 `preparation` is the existing `importOciRuntime` input. The wrapper transfers its
-private `runtimeTag` and exact-resource `cleanup` ownership to the job; exceptions
+private `runtimeTag`, `runtimeOwnership` and exact-resource `cleanup` contract to the job; exceptions
 clean the imported image. Registration must retain durable ownership, and failed
 or stale jobs must clean their own image rather than deleting unrelated tags.
+`runtimeOwnership:'OWNED'` has a UUID tag and may remove only that tag, without
+force. An already-present CID is `BORROWED` with `runtimeTag:null`; its cleanup
+does not mutate the image, even when it was originally dangling or another actor
+removes its other references. Persist this distinction in the job/release row.
+Borrowed availability is operator-managed, not a durable owned-image guarantee;
+missing bytes at use time fail closed. Failed inspect is not inferred absence:
+only a successful bounded native image inventory may establish absence, otherwise
+import is NOT_RUN. Normal image lifecycle assumes a trusted local Docker daemon,
+not protection from an administrator deliberately racing image deletion/loading.
+Docker's [image removal semantics](https://docs.docker.com/reference/cli/docker/image/rm/)
+delete the underlying image when its last tag is removed; `--no-prune` does not
+provide an untag-only primitive.
 
 The result is `{result,binding,analysis,bundle}`. Missing discovery/catalogue
 returns `result:null,binding:null`. A deterministic observed canary effect can
