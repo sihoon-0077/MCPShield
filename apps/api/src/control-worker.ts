@@ -27,7 +27,7 @@ export async function runControlWorkerOnce(store: ControlStore, options: Control
     if (!result.bundle?.manifest?.root) throw new Error("EVIDENCE_ROOT_MISSING");
     if (!verifyEvidenceBundle(result.bundle, result.bundle.manifest.root)) throw new Error("EVIDENCE_INTEGRITY_MISMATCH");
     const verdict = policyVerdict(result.bundle, result.result);
-    const validFrom = new Date().toISOString(), validUntil = new Date(Date.now() + policy.document.validitySeconds * 1000).toISOString();
+    const completedAt = Date.now(), validFrom = new Date(completedAt).toISOString(), validUntil = new Date(completedAt + policy.document.validitySeconds * 1000).toISOString();
     const evidenceKey = await saveEvidence(options, scan.tenantId, result.bundle);
     const completed = await store.finish(scan, owner, { scanResult: result.result, reportRoot: result.bundle.manifest.root,
       analysis: result.analysis, policyHash: scan.policyHash, validFrom, validUntil, evidenceKey, verdict, state: "READY_FOR_VALIDATORS" });

@@ -1,9 +1,10 @@
-import { ContractFactory, FetchRequest, JsonRpcProvider, NonceManager, Wallet } from "ethers";
+import { ContractFactory, JsonRpcProvider, NonceManager, Wallet } from "ethers";
+import { v2RpcRequest } from "../../packages/contracts-sdk/src/transport.js";
 import { pathToFileURL } from "node:url";
 import { compileReleaseRegistry } from "./compile.js";
 
 export async function deployV2(rpcUrl: string, key: string, validators: string[], expectedChainId: number, admin?: string) {
-  const request = new FetchRequest(rpcUrl); request.timeout = 5000;
+  const request = v2RpcRequest(rpcUrl);
   const provider = new JsonRpcProvider(request, undefined, { batchMaxCount: 1 });
   const wallet = new Wallet(key, provider), signer = new NonceManager(wallet);
   const network = await provider.getNetwork();
@@ -29,7 +30,7 @@ async function main() {
   if (!CONTROL_V2_RPC_URLS || !DEPLOYER_PRIVATE_KEY || !VALIDATOR_ADDRESSES || !CONTROL_V2_CHAIN_ID) throw new Error("V2_RPC_KEY_VALIDATORS_CHAIN_ID_REQUIRED");
   const rpc = CONTROL_V2_RPC_URLS.split(",")[0];
   if (!process.argv.includes("--deploy")) {
-    const provider = new JsonRpcProvider(rpc), wallet = new Wallet(DEPLOYER_PRIVATE_KEY, provider), network = await provider.getNetwork();
+    const provider = new JsonRpcProvider(v2RpcRequest(rpc)), wallet = new Wallet(DEPLOYER_PRIVATE_KEY, provider), network = await provider.getNetwork();
     if (network.chainId !== BigInt(CONTROL_V2_CHAIN_ID)) throw new Error("CHAIN_ID_MISMATCH");
     console.log(JSON.stringify({ preflight: true, chainId: Number(network.chainId), deployer: wallet.address, balanceWei: (await provider.getBalance(wallet.address)).toString(), deployFlagRequired: true }));
     provider.destroy(); return;

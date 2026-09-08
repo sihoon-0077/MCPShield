@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { AbiCoder, Contract, FetchRequest, JsonRpcProvider, TypedDataEncoder, Wallet, keccak256, verifyTypedData } from "ethers";
+import { AbiCoder, Contract, JsonRpcProvider, TypedDataEncoder, Wallet, keccak256, verifyTypedData } from "ethers";
 import { attestationV2Domain, attestationV2Types, bytes32, createReleaseRegistryV2, quarantineV2Types } from "../../../packages/contracts-sdk/src/v2.js";
 import { ControlStore } from "./control-store.js";
 import { hash } from "./control-plane.js";
 import { traceHeaders, withSpan } from "../../../packages/telemetry/index.mjs";
+import { v2RpcRequest } from "../../../packages/contracts-sdk/src/transport.js";
 
 export type ChainActionKind = "REGISTER_RELEASE" | "PUBLISH_POLICY" | "DEPRECATE_POLICY" | "ATTEST" | "QUARANTINE" | "SYNC_EXPIRY";
 export const chainActionId = (relayer: V2Relayer, tenantId: string, kind: ChainActionKind, payload: Record<string, any>) =>
@@ -13,7 +14,7 @@ export class V2Relayer {
   readonly signer: Wallet;
   readonly registry: ReturnType<typeof createReleaseRegistryV2>;
   constructor(readonly rpcUrl: string, readonly registryAddress: string, readonly chainId: number, key: string) {
-    const request = new FetchRequest(rpcUrl); request.timeout = 5000;
+    const request = v2RpcRequest(rpcUrl);
     this.provider = new JsonRpcProvider(request, undefined, { batchMaxCount: 1 });
     this.signer = new Wallet(key, this.provider);
     this.registry = createReleaseRegistryV2(registryAddress, this.signer);

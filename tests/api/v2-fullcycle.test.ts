@@ -17,6 +17,7 @@ import { runControlWorkerOnce } from "../../apps/api/src/control-worker.js";
 import { V2Relayer, enqueueChainAction, runChainActionOnce, reconcileV2Actions } from "../../apps/api/src/chain-outbox.js";
 import { v2ChainReader } from "../../apps/api/src/registry-v2-client.js";
 import { indexV2 } from "../../apps/indexer/src/v2-indexer.js";
+import { runValidatorFanout } from "../../apps/validator/src/v2.js";
 import { defaultPolicy, hash, type ControlOptions } from "../../apps/api/src/control-plane.js";
 // @ts-expect-error Shared scanner/Gateway are ESM JavaScript.
 import { createEvidenceBundle } from "../../services/scanner/src/evidence.mjs";
@@ -93,7 +94,13 @@ async function fullCycle(realDocker: boolean) {
     const beforeVotes = await post("/v1/admission/check", { releaseId: safe.release.releaseId, artifactDigest: safe.release.artifactDigest,
       toolSurfaceHash: safe.release.toolSurfaceHash, policyHash: hash(defaultPolicy), mode: "strict", operationClass: "READ_PRIVATE" });
     assert.equal(beforeVotes.decision, "BLOCK");
-    await vote(safe.scan.scanId, validators[0]); await vote(safe.scan.scanId, validators[1]);
+    let pumping = true;
+    const pump = (async () => { while (pumping) { await chain.provider.request({ method: "evm_mine", params: [] }); await runChainActionOnce(store, relayer); await pause(100); } })();
+    try {
+      const fanout = await runValidatorFanout({ apiUrl, token, scanId: safe.scan.scanId, privateKeys: accounts.slice(1, 3).map((account) => account.secretKey),
+        chainId: 1337, registryAddress: deployment.releaseRegistry.address, policyHash: hash(defaultPolicy), rpcUrl: rpc });
+      assert.equal(fanout.operations.length, 2); assert.equal(fanout.mode, "SINGLE_INSTITUTION_DEMO");
+    } finally { pumping = false; await pump; }
     const gatewayOptions = (release: any, agent: string) => ({ identity: { releaseId: release.legacyReleaseId,
       artifactDigest: release.artifactDigest, toolSurfaceHash: release.toolSurfaceHash }, mode: "live", apiBaseUrl: apiUrl,
       timeoutMs: 3000, policyHash: hash(defaultPolicy), controlReleaseId: release.releaseId, tenantId: "test-team",

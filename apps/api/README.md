@@ -145,6 +145,16 @@ each independently retrieves and checks the report Merkle root. Supply `CONTROL_
 `CONTROL_API_TOKEN`, `CONTROL_SCAN_ID`, and `VALIDATOR_PRIVATE_KEYS` (JSON array) privately.
 This convenience command is explicitly `SINGLE_INSTITUTION_DEMO`, not independent organizations.
 
+Validators also require pinned `CONTROL_V2_CHAIN_ID`, `CONTROL_V2_REGISTRY_ADDRESS`,
+`CONTROL_V2_RPC_URLS`, and `CONTROL_VALIDATOR_POLICY_HASH`. They reconstruct the local
+EIP-712 domain/types, verify evidence/identity/policy/expiry against that trust context,
+and check active-validator membership and nonce directly through the configured RPC.
+Completion is checked against the exact transaction calldata and successful receipt;
+an API-supplied completed flag alone is insufficient. Public HTTP RPC URLs, URL userinfo,
+and redirects are rejected. Explicit private hosts may be listed in
+`CONTROL_V2_ALLOW_HTTP_HOSTS`; loopback is already allowed. Admission permits at most
+three configured RPC endpoints within one 1500 ms total budget, then fails closed.
+
 Remote semantic analysis is disabled unless `CONTROL_ALLOW_REMOTE_AI=true`. For OpenAI,
 set `CONTROL_AI_PROVIDER=openai`, `CONTROL_AI_MODEL`, and server-only `OPENAI_API_KEY`
 (or `CONTROL_AI_TOKEN`). For an existing compatible service use `CONTROL_AI_PROVIDER=custom`
