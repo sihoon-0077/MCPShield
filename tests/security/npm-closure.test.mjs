@@ -86,6 +86,7 @@ test('generated lock is committed separately and injected only into private acqu
   const original = await artifactDigest(root);
   const acquired = await acquireNpmClosure({ ...options, sourceDigest: original, sourceTreeDigest: original, generatedLock }, { download: async () => bytes });
   try {
+    assert.deepEqual(acquired.issues, [], 'private generated lock injection must succeed on POSIX read-only snapshots');
     assert.equal(acquired.acquisitionPerformed, true);
     assert.equal(acquired.descriptor.lockOrigin, 'RESOLVER_GENERATED');
     assert.equal(acquired.descriptor.sourceTreeDigest, original);

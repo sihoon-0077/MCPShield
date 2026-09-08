@@ -49,7 +49,13 @@ export async function acquireNpmClosure(options, { download = downloadRegistryUr
     // committed resolver-generated lock. Never modify the caller's source tree.
     if (options.generatedLock !== undefined) {
       if (!Buffer.isBuffer(options.generatedLock) || sha256(options.generatedLock) !== preflight.descriptor.lockDigest) throw Error('RUNTIME_LOCK_DIGEST_MISMATCH');
-      await writeFile(join(artifact, 'package-lock.json'), options.generatedLock, { flag: 'wx', mode: 0o444 });
+      // Snapshot directories are owner-read/execute only. Open only this
+      // task-owned copy for one exclusive write, then restore its closed mode.
+      try {
+        await chmod(artifact, 0o700);
+        await writeFile(join(artifact, 'package-lock.json'), options.generatedLock, { flag: 'wx', mode: 0o444 });
+      } catch { throw Error('RUNTIME_GENERATED_LOCK_WRITE_FAILED'); }
+      finally { await chmod(artifact, 0o500); }
     }
     let lockBytes;
     let lockFile = 'npm-shrinkwrap.json';
