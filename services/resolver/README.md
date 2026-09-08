@@ -283,7 +283,13 @@ Required setting: `MCPSHIELD_RUNTIME_BUILDER_IMAGE` is the operator-approved
 Linux amd64 builder config ID. No actual Docker result is claimed when unset.
 OCI acquisition/import now uses a fixed named source profile with **100 MiB**
 actual source bytes and **50,000 entries** (including directories). JSON
-index/config documents are capped at 1 MiB. Original npm/fixture calls retain
+index/config documents are capped at 1 MiB.
+One 120-second total acquisition deadline covers every registry request,
+anonymous-token exchange, retry and body read; individual native fetch requests
+retain their 15-second cap. The initial unauthorized body is cancelled before
+requesting a fixed-destination anonymous token. Portable stalled-token/body
+regressions check the shared deadline without contacting a public registry.
+Original npm/fixture calls retain
 the default 16 MiB profile and exact existing sorted-path/content hash encoding.
 Snapshot copying and hashing use a fixed 64 KiB working buffer, enforce actual
 read counts, and compare before/during/after file identity/size/timestamps.
