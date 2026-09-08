@@ -77,7 +77,7 @@ jobs:
           findings="$(git grep -nEIi -f .github/secret-scan-patterns.regex -- . ':!package-lock.json' ':!.github/secret-scan-patterns.regex' ':!.github/secret-scan-allowlist.regex' || true)"
           unexpected="$(printf '%s\n' "$findings" | grep -Evf .github/secret-scan-allowlist.regex || true)"
           if [ -n "$unexpected" ]; then
-            printf '%s\n' "$unexpected"
+            printf '%s\n' "$unexpected" | cut -d: -f1,2
             exit 1
           fi
 

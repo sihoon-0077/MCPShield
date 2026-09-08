@@ -9,6 +9,10 @@ import { test } from 'node:test';
 import { controlConfig } from '../../apps/api/src/control-config.js';
 
 test('local configuration generates distinct credentials and never overwrites evidence keys', async () => {
+  const ignore = await readFile(new URL('../../.dockerignore', import.meta.url), 'utf8');
+  for (const entry of ['data', '.env.*', '**/*.sqlite', '**/*.pem', '**/*.key']) {
+    assert.ok(ignore.split(/\r?\n/).includes(entry), `private build exclusion: ${entry}`);
+  }
   const dir = await mkdtemp(join(tmpdir(), 'mcpshield-config-test-'));
   const output = join(dir, '.env.local');
   const script = fileURLToPath(new URL('../../scripts/ops/init-control.mjs', import.meta.url));
@@ -21,7 +25,8 @@ test('local configuration generates distinct credentials and never overwrites ev
     assert.equal(new Set(config?.credentials.map((credential) => credential.token)).size, 3);
     assert.equal(config?.chainDecision, undefined);
     for (const secret of [env.ADMIN_API_TOKEN, env.SCANNER_API_TOKEN, env.CONTROL_EVIDENCE_KEY, ...config!.credentials.map((credential) => credential.token)]) {
-      assert.doesNotMatch(run.stdout + run.stderr, new RegExp(secret));
+      assert.ok(secret && secret.length >= 32);
+      assert.ok(!(run.stdout + run.stderr).includes(secret));
     }
     await assert.rejects(promisify(execFile)(process.execPath, [script, '--output', output], { windowsHide: true }));
     assert.equal(await readFile(output, 'utf8'), original);
