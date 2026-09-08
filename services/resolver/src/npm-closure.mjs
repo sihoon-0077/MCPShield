@@ -164,6 +164,7 @@ export async function prepareNpmClosure(options, acquisitionOptions) {
     const info = JSON.parse(await run(['image', 'inspect', options.builderImageDigest, '--format', '{{json .}}']));
     if (info.Id !== options.builderImageDigest || info.Os !== 'linux' || info.Architecture !== options.platform.architecture ||
       info.Config?.Labels?.['io.mcpshield.runtime-builder'] !== 'node-closure-v1' || info.Config?.Labels?.['io.mcpshield.npm-version'] !== '12.0.2' ||
+      info.Config?.Labels?.['io.mcpshield.npm-patches'] !== 'brace-expansion@5.0.9,ip-address@10.3.1,tar@7.5.22' ||
       JSON.stringify(info.Config?.Entrypoint) !== JSON.stringify(['/usr/local/bin/node', '/trusted/prepare-container.mjs'])) throw Error('RUNTIME_BUILDER_IDENTITY_MISMATCH');
     await run(['volume', 'create', volume]);
     const output = await run(['run', '--pull=never', '--name', container, '--network=none', '--read-only', '--user=1000:1000',
@@ -185,6 +186,7 @@ export async function prepareNpmClosure(options, acquisitionOptions) {
     const verified = inspectClosureArchive(archive);
     if (report.digest !== verified.digest || report.sourceDescriptorDigest !== acquired.descriptorDigest ||
       report.installScripts !== false || report.installNetwork !== 'NONE' || report.npmVersion !== '12.0.2' ||
+      report.toolchainPatches !== 'brace-expansion@5.0.9,ip-address@10.3.1,tar@7.5.22' ||
       verified.entries.find((entry) => entry.path === acquired.descriptor.entrypoint.path)?.digest !== acquired.descriptor.entrypoint.digest) throw Error('CLOSURE_REPORT_MISMATCH');
     await writeFile(join(workspace, 'closure.tar'), archive);
     await writeFile(join(workspace, 'closure-report.json'), reports[0]);

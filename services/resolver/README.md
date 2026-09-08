@@ -71,6 +71,11 @@ never READY. A separate approved toolchain image uses the pinned official Node
 the official npm tarball SRI. Candidate input is never present during this
 network-enabled trusted builder build. CI must vulnerability-scan the resulting
 builder ID before approving it; no clean vulnerability result is implied here.
+The toolchain additionally replaces npm's vulnerable bundled brace-expansion,
+ip-address and tar with SRI-verified 5.0.9, 10.3.1 and 7.5.22 archives. Only native
+tar extraction runs for these three replacements: no dependency solver, lifecycle
+script or dev/audit install. The patch-set label and installed versions are checked
+before candidate preparation; an unpatched npm 12.0.2 image is refused.
 
 The installer has no network, capabilities, host secrets or Docker socket; it
 runs as UID/GID 1000 with a read-only root filesystem, memory/pid/CPU limits,

@@ -16,6 +16,9 @@ function npm(args, cwd = '/work') {
 
 try {
   if (process.getuid() === 0 || process.getgid() === 0) throw Error('NON_ROOT_REQUIRED');
+  for (const [name, version] of [['brace-expansion', '5.0.9'], ['ip-address', '10.3.1'], ['tar', '7.5.22']]) {
+    if (JSON.parse(await readFile(`/usr/local/lib/node_modules/npm/node_modules/${name}/package.json`)).version !== version) throw Error('TOOLCHAIN_PATCH_REQUIRED');
+  }
   await mkdir('/work/home');
   await mkdir('/work/cache');
   await cp('/input/artifact', '/work/app', { recursive: true, dereference: false });
@@ -33,7 +36,8 @@ try {
   npm(['ci', '--omit=dev'], '/work/app');
   const manifest = await inspectClosure('/work/app', true);
   await writeFile('/work/closure-report.json', JSON.stringify({ ...manifest, installScripts: false, installNetwork: 'NONE',
-    nodeVersion: process.version, npmVersion: '12.0.2', sourceDescriptorDigest: supplied.sourceDescriptorDigest }));
+    nodeVersion: process.version, npmVersion: '12.0.2', toolchainPatches: 'brace-expansion@5.0.9,ip-address@10.3.1,tar@7.5.22',
+    sourceDescriptorDigest: supplied.sourceDescriptorDigest }));
   process.stdout.write('MCPSHIELD_CLOSURE_PREPARED\n');
 } catch {
   // npm output and candidate paths are private; never echo them through Docker build/run logs.
