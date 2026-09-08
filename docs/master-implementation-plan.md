@@ -15,6 +15,26 @@
 
 ### 현재 검증 경계
 
+- `c198a20` 통합: OCI API 준비/재스캔 worker가 기존 tenant ACL·queue·lease·CAS를 재사용하고,
+  Gateway는 로컬 native CID/rootfs/entrypoint/env와 실행 격리 및 매 호출 서명 승인을 확인한다.
+  `LOCAL_CONTRACT_TEST`/`PROVIDER_QUALITY_NOT_MEASURED` 표기를 정책과 공개 요약에 유지한다.
+  기존 이미지(BORROWED)는 태그를 추가하거나 삭제하지 않으며, 새 import만 정확한 OWNED UUID
+  태그를 정리한다. Docker 조회 실패는 이미지 부재로 추정하지 않는다. 독립 OCI 승인 정책·signer와
+  정상/악성 전체 Linux 흐름은 아직 진행 중이다. OCI의 balanced/RPC/emergency 호환도 후속 작업이다.
+  Main focused OCI 18 통과·Linux 5 skip, 실제 API HTTP를 통과하는 정상/악성 judge 체험 포함
+  release-readiness 5 통과, 타입 검사와 CI YAML parse 성공. 전체 통합 회귀는 실행 중이다.
+- [Linux CI 34275352307](https://github.com/sihoon-0077/MCPShield/actions/runs/34275352307),
+  `229f147`: 전체 run은 완료 실패. Node 24·PostgreSQL 성공. 실제 Docker→EVM quorum→두 Gateway
+  차단이 새 초기 상태에서 **10회 연속 통과**했다(job `102229697837`, 각 회 pass 1/fail 0).
+  앞선 sink startup 실패는 이번 반복에서 재현되지 않았다. 이는 OCI/실제 외부 AI 승인을 증명하지 않는다.
+  Node 22 OCI Trivy의 실제 DB 1,371,783,168 bytes는 새 2GiB 한도를 통과했지만,
+  `SBOM_CONVERSION`에서 `OCI_TRIVY_REPORT_IDENTITY_INVALID`로 실패했다.
+  정확한 schema 불일치 필드는 아직 미확정이며, `9f317ce`는 원문 없이 schema/version/count만
+  진단하도록 보강했다. 형식 허용 목록이나 취약점 gate를 추정으로 완화하지 않았다.
+  배포 이미지(job `102229697753`)는 실행 중·OOM 아님 상태에서 smoke가 실패했고,
+  로그의 허용된 고정 진단은 `ECONNREFUSED`다. 이것만으로 연결 실패 지점은 확정할 수 없다.
+  `e74a85b`는 단계명을 기록하며 실제 API를 통한 같은 judge 계약은 로컬에서 통과했다.
+  이미지 서명·다운로드 및 새 Railway 공개 배포는 완료되지 않았다. 원본 데모는 변경하지 않았다.
 - `8f48705` Main 전체 `npm test` 성공: backend 88 통과·외부 환경 6 skip,
   Security 103 통과·Linux 16 skip, Gateway 98 통과·Docker 1 skip, dashboard 23 통과,
   replay·실제 MCP stdio E2E·live smoke 성공. 타입 검사 성공; `03318bb` dashboard production build도 성공.
