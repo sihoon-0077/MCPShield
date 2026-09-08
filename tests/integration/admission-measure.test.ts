@@ -20,6 +20,12 @@ test("measurement rejects unexpected errors and distinguishes signed BLOCK from 
   }
   const failClosed = await measuredDecision(async () => { throw Error("Admission unavailable; strict or non-read-only calls fail closed"); }, "OFFLINE_STRICT_OR_WRITE");
   assert.equal(failClosed.outcome, "FAIL_CLOSED_ERROR"); assert.equal(failClosed.failureCode, "OFFLINE_STRICT_OR_WRITE");
+  const expiredThenDeleted: any[] = [];
+  for (const message of ["Signed admission expired or has an invalid lifetime", "Admission unavailable and no matching signed cache exists"]) {
+    expiredThenDeleted.push(await measuredDecision(async () => { throw Error(message); }, ["EXPIRED_CACHE", "EMPTY_CACHE"]));
+  }
+  assert.deepEqual(expiredThenDeleted.map(result => result.failureCode), ["EXPIRED_CACHE", "EMPTY_CACHE"]);
+  await assert.rejects(measuredDecision(async () => { throw Error("Signed admission signature is invalid"); }, ["EXPIRED_CACHE", "EMPTY_CACHE"]), /signature is invalid/);
   assert.throws(() => assertFreshRevocation(failClosed));
   const revoked = await measuredDecision(async () => ({ decision: "BLOCK", releaseStatus: "REVOKED", reasonCode: "RELEASE_REVOKED", cacheHit: false }));
   assertFreshRevocation(revoked);

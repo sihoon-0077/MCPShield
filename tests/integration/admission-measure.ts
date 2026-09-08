@@ -32,14 +32,16 @@ const expectedFailures = {
 type ExpectedFailure = keyof typeof expectedFailures;
 type MeasuredDecision = { outcome: "ALLOW" | "BLOCK" | "FAIL_CLOSED_ERROR"; cacheHit: boolean; releaseStatus?: string; reasonCode?: string; failureCode?: ExpectedFailure };
 
-export async function measuredDecision(run: () => Promise<any>, expectedFailure?: ExpectedFailure): Promise<MeasuredDecision> {
+export async function measuredDecision(run: () => Promise<any>, expectedFailure?: ExpectedFailure | ExpectedFailure[]): Promise<MeasuredDecision> {
   try {
     const result = await run();
     assert.ok(["ALLOW", "BLOCK"].includes(result.decision), "Unexpected admission decision");
     return { outcome: result.decision, cacheHit: result.cacheHit, releaseStatus: result.releaseStatus, reasonCode: result.reasonCode };
   } catch (error) {
-    if (!expectedFailure || !(error instanceof Error) || error.name !== "Error" || error.message !== expectedFailures[expectedFailure]) throw error;
-    return { outcome: "FAIL_CLOSED_ERROR", cacheHit: false, failureCode: expectedFailure };
+    const expected = Array.isArray(expectedFailure) ? expectedFailure : expectedFailure ? [expectedFailure] : [];
+    const failureCode = error instanceof Error && error.name === "Error" ? expected.find(code => error.message === expectedFailures[code]) : undefined;
+    if (!failureCode) throw error;
+    return { outcome: "FAIL_CLOSED_ERROR", cacheHit: false, failureCode };
   }
 }
 
@@ -118,7 +120,7 @@ export async function measureAdmission({ requests = 40, concurrency = 4, identit
       const elapsedMs = performance.now() - start;
       phases.push({ name, ...latencySummary(latencies), elapsedMs: Number(elapsedMs.toFixed(3)), throughputQps: Number((requests * 1000 / elapsedMs).toFixed(2)), allowed, blocked, failClosedErrors, deniedTotal: blocked + failClosedErrors, failureCodes, cacheHits });
     };
-    const check = (index: number, options: Record<string, any> = {}, expectedFailure?: ExpectedFailure) =>
+    const check = (index: number, options: Record<string, any> = {}, expectedFailure?: ExpectedFailure | ExpectedFailure[]) =>
       measuredDecision(() => getSignedAdmission({ ...base, identity: releases[index % identities], controlReleaseId: releases[index % identities].releaseId, ...options }), expectedFailure);
     await measure("actual_http_evm_strict_hot_key", () => check(0), "ALLOW");
     await measure("actual_http_evm_strict_uniform_keys", (index) => check(index), "ALLOW");
@@ -128,7 +130,9 @@ export async function measureAdmission({ requests = 40, concurrency = 4, identit
     await measure("injected_api_offline_balanced_read_signed_cache", async (index) => { const result = await check(index, { admissionMode: "balanced", fetchImpl: offline }); assert.equal(result.cacheHit, true); return result; }, "ALLOW");
     await measure("injected_api_offline_strict_read", (index) => check(index, { fetchImpl: offline }, "OFFLINE_STRICT_OR_WRITE"), "FAIL_CLOSED_ERROR");
     await measure("injected_api_offline_balanced_write", (index) => check(index, { admissionMode: "balanced", operationClass: "WRITE_EXTERNAL", fetchImpl: offline }, "OFFLINE_STRICT_OR_WRITE"), "FAIL_CLOSED_ERROR");
-    await measure("injected_api_offline_expired_signed_cache", (index) => check(index, { admissionMode: "balanced", fetchImpl: offline, now: () => Date.now() + 60000 }, "EXPIRED_CACHE"), "FAIL_CLOSED_ERROR");
+    // The first expired proof is deleted. Later calls for that same identity
+    // correctly find no cache; retain the two distinct counts, never relabel them.
+    await measure("injected_api_offline_expired_signed_cache", (index) => check(index, { admissionMode: "balanced", fetchImpl: offline, now: () => Date.now() + 60000 }, ["EXPIRED_CACHE", "EMPTY_CACHE"]), "FAIL_CLOSED_ERROR");
     rpcFault = true;
     const rpcUnavailableFetch: typeof fetch = async (input, options) => {
       const response = await fetch(input, options); assert.equal(response.status, 200);
