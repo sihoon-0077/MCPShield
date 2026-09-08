@@ -11,6 +11,7 @@ COPY packages/telemetry ./packages/telemetry
 COPY packages/contracts-sdk/src ./packages/contracts-sdk/src
 COPY services/scanner/src ./services/scanner/src
 COPY services/resolver/src ./services/resolver/src
+COPY services/exfil-sink/server.mjs ./services/exfil-sink/server.mjs
 COPY packages/protocol/schemas ./packages/protocol/schemas
 COPY demo/fixtures/mail-mcp-1.0.1 /fixtures/mail-mcp-1.0.1
 COPY scripts/demo/gateway-probe.mjs ./gateway-probe.mjs

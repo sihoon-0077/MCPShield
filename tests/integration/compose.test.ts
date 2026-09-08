@@ -40,7 +40,7 @@ test('persistent control plane separates private storage and cannot spawn host c
 
 test('Gateway image includes OCI validation dependencies and checks imports without adding host Docker authority', () => {
   const dockerfile = readFileSync(new URL('../../apps/gateway/Dockerfile', import.meta.url), 'utf8');
-  for (const path of ['services/scanner/src', 'services/resolver/src', 'packages/protocol/schemas'])
+  for (const path of ['services/scanner/src', 'services/resolver/src', 'services/exfil-sink/server.mjs', 'packages/protocol/schemas'])
     assert.ok(dockerfile.includes(`COPY ${path} ./${path}`), path);
   assert.match(dockerfile, /USER node[\s\S]*RUN MCPSHIELD_TELEMETRY_ENABLED=false node --input-type=module -e "await import\('\.\/services\/resolver\/src\/oci-runtime\.mjs'\)"/);
   assert.doesNotMatch(dockerfile, /apk add[^\n]*docker|\/var\/run\/docker\.sock|USER root/);
