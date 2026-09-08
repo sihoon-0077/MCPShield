@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import * as tar from 'tar';
 import { canonicalJson } from '../../services/scanner/src/evidence.mjs';
 import { createOciRuntimeCatalogue, readOciRuntimeCatalogue, inspectOciCoverage } from '../../services/scanner/src/oci-coverage.mjs';
-import { checkedTrivyDatabaseMetadata, readTrivyDatabaseIdentity, assessTrivyDocuments, scanOciWithTrivy } from '../../services/scanner/src/oci-trivy.mjs';
+import { checkedTrivyDatabaseMetadata, readTrivyDatabaseIdentity, assessTrivyDocuments, scanOciWithTrivy, trivyContractDiagnostics } from '../../services/scanner/src/oci-trivy.mjs';
 import { reviewOciImage } from '../../services/scanner/src/oci-review.mjs';
 import { inspectOciFilesystem, ociHash } from '../../services/resolver/src/oci-runtime-descriptor.mjs';
 import { removeFixtureSnapshot } from '../../services/scanner/src/snapshot.mjs';
@@ -118,6 +118,19 @@ test('OCI review failure never becomes READY or reuses npm approval', async () =
   assert.equal(result.ready, false); assert.equal(result.candidateExecutionPerformed, false);
   assert.equal(result.privateEvidence, null);
   assert.ok(result.pendingChecks.includes('VALIDATOR_INDEPENDENT_REPLAY'));
+});
+
+test('native Trivy contract diagnostics expose shapes/counts/numeric versions but never raw private metadata', () => {
+  const report = packageReport(), bom = sbom();
+  assert.deepEqual(trivyContractDiagnostics(report, bom, imageDigest), {
+    reportSchemaVersion: 2, reportArtifactType: 'container_image', reportImageIdMatches: true,
+    reportResultsShape: 'ARRAY', reportResultsCount: 1, sbomFormat: 'CycloneDX', sbomSpecVersion: '1.6',
+    sbomComponentsShape: 'ARRAY', sbomComponentsCount: 2 });
+  const sentinel = 'PRIVATE_SOURCE_OR_CREDENTIAL';
+  const diagnostic = trivyContractDiagnostics({ SchemaVersion: sentinel, ArtifactType: sentinel, Results: sentinel },
+    { bomFormat: sentinel, specVersion: sentinel, components: sentinel }, imageDigest);
+  assert.equal(JSON.stringify(diagnostic).includes(sentinel), false);
+  assert.equal(diagnostic.sbomComponentsShape, 'OTHER');
 });
 
 test('actual Linux approved image catalogue, offline Trivy vulnerability scan and native CycloneDX conversion', {

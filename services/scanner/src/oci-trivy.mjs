@@ -74,6 +74,19 @@ export function assessTrivyDocuments(report, sbom, imageDigest) {
     reportDigest: ociHash(canonicalJson(report)), sbomDigest: ociHash(canonicalJson(sbom)), issues };
 }
 
+// Only schema shapes/counts and numeric versions; no package names, paths,
+// candidate source, raw CLI output or exception strings enter diagnostics.
+export function trivyContractDiagnostics(report, sbom, imageDigest) {
+  const shape = (value) => Array.isArray(value) ? 'ARRAY' : value === undefined ? 'MISSING' : value === null ? 'NULL' : 'OTHER';
+  return { reportSchemaVersion: Number.isSafeInteger(report?.SchemaVersion) ? report.SchemaVersion : null,
+    reportArtifactType: report?.ArtifactType === 'container_image' ? 'container_image' : 'OTHER',
+    reportImageIdMatches: report?.Metadata?.ImageID === imageDigest,
+    reportResultsShape: shape(report?.Results), reportResultsCount: Array.isArray(report?.Results) ? report.Results.length : null,
+    sbomFormat: sbom?.bomFormat === 'CycloneDX' ? 'CycloneDX' : 'OTHER',
+    sbomSpecVersion: typeof sbom?.specVersion === 'string' && /^[0-9]{1,3}\.[0-9]{1,3}$/.test(sbom.specVersion) ? sbom.specVersion : 'OTHER',
+    sbomComponentsShape: shape(sbom?.components), sbomComponentsCount: Array.isArray(sbom?.components) ? sbom.components.length : null };
+}
+
 // Images, tool CID and DB path/hash come only from server/operator configuration.
 // The scanner container sees native save bytes, not a Docker socket or secrets.
 export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform, trust, timeoutMs = 180_000 }) {
@@ -86,7 +99,7 @@ export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform,
   const run = (args, size = jsonLimit) => runRuntimeDocker(args, remaining(), size);
   const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-trivy-review-')), input = join(workspace, 'input'), db = join(workspace, 'db');
   const containers = [];
-  let stage = 'DATABASE';
+  let stage = 'DATABASE', contract = null, toolVersion = null;
   try {
     const database = await readTrivyDatabaseIdentity({ databaseDir: trust.databaseDir, snapshotDir: db, signal });
     if (database.databaseDigest !== trust.databaseDigest) throw Error('OCI_TRIVY_DATABASE_IDENTITY_MISMATCH');
@@ -110,6 +123,7 @@ export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform,
     };
     const version = JSON.parse(await invoke(['version', '--format=json']));
     if (typeof version.Version !== 'string' || !/^v?[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(version.Version)) throw Error('OCI_TRIVY_VERSION_INVALID');
+    toolVersion = /^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/.test(version.Version) ? version.Version : 'OTHER';
     const images = [], documents = [];
     for (const target of [...new Set([baseImageDigest, imageDigest])]) {
       stage = 'IMAGE_SAVE';
@@ -127,6 +141,7 @@ export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform,
       await writeFile(join(input, `report-${ordinal}.json`), raw, { flag: 'wx', mode: 0o444 });
       stage = 'SBOM_CONVERSION';
       const sbom = JSON.parse(await invoke(['convert', '--format=cyclonedx', '--ignorefile=/input/empty.ignore', `/input/report-${ordinal}.json`]));
+      contract = trivyContractDiagnostics(report, sbom, target);
       images.push(assessTrivyDocuments(report, sbom, target));
       documents.push({ imageDigest: target, archiveDigest: ociHash(archive), report, sbom });
     }
@@ -145,7 +160,7 @@ export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform,
       privateEvidence: { access: 'ENCRYPTED_OPERATOR_EVIDENCE_ONLY', documents } };
   } catch (error) {
     return { status: 'INCONCLUSIVE', issues: [signal.aborted ? 'OCI_TRIVY_TOTAL_TIMEOUT' : /^OCI_[A-Z_]+$/.test(error.message) ? error.message : 'OCI_TRIVY_REVIEW_FAILED'],
-      diagnostics: { stage }, privateEvidence: null };
+      diagnostics: { stage, ...(contract ? { contract } : {}), ...(toolVersion ? { toolVersion } : {}) }, privateEvidence: null };
   } finally {
     for (const container of containers) { try { await runRuntimeDocker(['rm', '-f', container], 5000); } catch { /* exact owned tool container */ } }
     await removeFixtureSnapshot(workspace);
