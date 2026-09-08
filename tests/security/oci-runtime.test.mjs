@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import * as tar from 'tar';
 import { checkedOciConfig, hashOciRuntimeDescriptor, inspectOciFilesystem, resolveOciEntrypoint,
   ociHash, OCI_OBSERVATION_POLICY, OCI_SOURCE_BUDGET_PROFILE } from '../../services/resolver/src/oci-runtime-descriptor.mjs';
-import { inspectOciLayerBudget, importOciRuntime, inspectImportedOciRuntime, cleanupOciExport } from '../../services/resolver/src/oci-runtime.mjs';
+import { inspectOciLayerBudget, importOciRuntime, inspectImportedOciRuntime, cleanupOciExport, ociImagePresent } from '../../services/resolver/src/oci-runtime.mjs';
 import { collectOciMcp, observeOciRuntime } from '../../services/scanner/src/oci-observer.mjs';
 import { runRuntimeDocker } from '../../services/resolver/src/npm-closure.mjs';
 import { removeFixtureSnapshot } from '../../services/scanner/src/snapshot.mjs';
@@ -95,6 +95,17 @@ test('OCI export cleanup failure is fail-closed with exact task-owned target and
   }
 });
 
+test('OCI presence never treats failed inspect, malformed inventory or daemon outage as absence', async () => {
+  const digest = ociHash('authored-image');
+  assert.equal(await ociImagePresent(digest, async () => Buffer.from(JSON.stringify({ Id: digest }))), true);
+  const fallback = (value) => async (args) => { if (args[1] === 'inspect') throw Error('PRIVATE_DOCKER_FAILURE'); return Buffer.from(value); };
+  assert.equal(await ociImagePresent(digest, fallback('')), false);
+  assert.equal(await ociImagePresent(digest, fallback(digest + '\n' + digest)), true);
+  await assert.rejects(() => ociImagePresent(digest, fallback('malformed')), /PRESENCE_UNCONFIRMED/);
+  await assert.rejects(() => ociImagePresent(digest, async () => { throw Error('PRIVATE_DAEMON_OUTAGE'); }), /PRESENCE_UNCONFIRMED/);
+  await assert.rejects(() => ociImagePresent(digest, async () => Buffer.from('{"Id":"wrong"}')), /PRESENCE_UNCONFIRMED/);
+});
+
 async function copiedFile(container, path) {
   const files = [];
   const listing = tar.t({ strict: true, sync: true, onReadEntry(entry) {
@@ -105,11 +116,11 @@ async function copiedFile(container, path) {
   assert.equal(files.length, 1); return files[0];
 }
 
-async function actualOciScenario({ sourceTargetBytes = null, fullScan = false } = {}) {
+async function actualOciScenario({ sourceTargetBytes = null, fullScan = false, preexistingDangling = false } = {}) {
   const builder = process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE;
   const sourceContainer = 'mcpshield-oci-fixture-source-' + randomUUID();
   const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-oci-runtime-test-'));
-  let imported;
+  let imported, danglingWorkspace, danglingImage;
   try {
     // Read the existing approved CI builder's native BusyBox/musl bytes through
     // an unstarted container. Never import or run these binaries on the host.
@@ -128,7 +139,8 @@ async function actualOciScenario({ sourceTargetBytes = null, fullScan = false } 
       { path: 'server.sh', bytes: script }, { path: 'synthetic-padding.bin', bytes: padding, mode: 0o444 }]);
     const layerBytes = sourceTargetBytes ? layer : gzipSync(layer), configBytes = Buffer.from(JSON.stringify({ architecture: 'amd64', os: 'linux',
       config: { Entrypoint: ['/bin/sh'], Cmd: ['/server.sh'], WorkingDir: '/', Env: ['PATH=/bin'], User: '1000:1000' },
-      rootfs: { type: 'layers', diff_ids: [ociHash(layer)] }, history: [{ created_by: 'AUTHORED_SYNTHETIC_OCI_FIXTURE' }] }));
+      rootfs: { type: 'layers', diff_ids: [ociHash(layer)] },
+      history: [{ created_by: 'AUTHORED_SYNTHETIC_OCI_FIXTURE' + (preexistingDangling ? ':' + randomUUID() : '') }] }));
     const config = { mediaType: 'application/vnd.oci.image.config.v1+json', digest: ociHash(configBytes), size: configBytes.length };
     const layerDescriptor = { mediaType: sourceTargetBytes ? 'application/vnd.oci.image.layer.v1.tar' : 'application/vnd.oci.image.layer.v1.tar+gzip',
       digest: ociHash(layerBytes), size: layerBytes.length };
@@ -148,6 +160,21 @@ async function actualOciScenario({ sourceTargetBytes = null, fullScan = false } 
       assert.ok(sourceBytes > sourceTargetBytes - 64 * 1024 && sourceBytes < sourceTargetBytes);
       await writeFile(join(workspace, 'acceptance-alignment.bin'), Buffer.alloc(sourceTargetBytes - sourceBytes, 7));
     }
+    if (preexistingDangling) {
+      // A native Docker-save archive with no RepoTags creates an authored dangling
+      // image. No layer application or candidate code is performed by this host.
+      danglingWorkspace = await mkdtemp(join(tmpdir(), 'mcpshield-oci-dangling-test-'));
+      await mkdir(join(danglingWorkspace, 'blobs'));
+      for (const bytes of [configBytes, layerBytes]) await writeFile(join(danglingWorkspace, 'blobs', ociHash(bytes).slice(7)), bytes);
+      await writeFile(join(danglingWorkspace, 'manifest.json'), JSON.stringify([{ Config: 'blobs/' + config.digest.slice(7),
+        Layers: ['blobs/' + layerDescriptor.digest.slice(7)], RepoTags: [] }]));
+      const nativeArchive = join(danglingWorkspace, 'image.tar');
+      await tar.c({ cwd: danglingWorkspace, file: nativeArchive, portable: true }, ['manifest.json', 'blobs']);
+      danglingImage = config.digest;
+      await runRuntimeDocker(['image', 'load', '--quiet', '--input', nativeArchive], 60_000);
+      const before = JSON.parse(await runRuntimeDocker(['image', 'inspect', danglingImage, '--format', '{{json .}}'], 5000));
+      assert.equal(before.Id, danglingImage); assert.equal(before.RepoTags?.length ?? 0, 0);
+    }
     const original = await artifactDigest(workspace, { profile: OCI_SOURCE_BUDGET_PROFILE });
     imported = await importOciRuntime({ root: workspace, sourceTreeDigest: original, platform });
     assert.deepEqual(imported.issues, [], JSON.stringify({ issues: imported.issues, diagnostics: imported.diagnostics }));
@@ -158,13 +185,19 @@ async function actualOciScenario({ sourceTargetBytes = null, fullScan = false } 
     assert.ok(imported.descriptor.layerArchiveBytes + imported.descriptor.exportArchiveBytes <= 512 * 1024 * 1024);
     assert.equal(imported.descriptor.finalImageDigest, config.digest);
     assert.equal(imported.descriptor.entrypoint.resolvedPath, '/bin/busybox');
-    if (!sourceTargetBytes) {
+    if (preexistingDangling) {
+      assert.equal(imported.runtimeOwnership, 'BORROWED'); assert.equal(imported.runtimeTag, null);
+      await imported.cleanup();
+      const retained = JSON.parse(await runRuntimeDocker(['image', 'inspect', danglingImage, '--format', '{{json .}}'], 5000));
+      assert.equal(retained.Id, danglingImage); assert.equal(retained.RepoTags?.length ?? 0, 0);
+    }
+    if (!sourceTargetBytes && !preexistingDangling) {
       const secondOwner = await importOciRuntime({ root: workspace, sourceTreeDigest: original, platform });
       try {
         assert.equal(secondOwner.phase, 'IMPORTED', JSON.stringify({ issues: secondOwner.issues, diagnostics: secondOwner.diagnostics }));
         assert.equal(secondOwner.descriptor.finalImageDigest, imported.descriptor.finalImageDigest);
-        assert.match(secondOwner.runtimeTag, /^mcpshield-oci-[a-f0-9-]{36}:local$/);
-        assert.notEqual(secondOwner.runtimeTag, imported.runtimeTag);
+        assert.equal(secondOwner.runtimeOwnership, 'BORROWED');
+        assert.equal(secondOwner.runtimeTag, null);
       } finally { await secondOwner.cleanup?.(); }
       const retained = JSON.parse(await runRuntimeDocker(['image', 'inspect', imported.runtimeTag, '--format', '{{json .}}'], 5000));
       assert.equal(retained.Id, imported.descriptor.finalImageDigest, 'second owner cleanup must retain the first own reference');
@@ -237,6 +270,10 @@ async function actualOciScenario({ sourceTargetBytes = null, fullScan = false } 
     }
   } finally {
     await imported?.cleanup?.();
+    // Only this authored randomized-CID fixture is removed by its test owner;
+    // the production BORROWED cleanup above must leave it completely untouched.
+    if (danglingImage) await runRuntimeDocker(['image', 'rm', danglingImage], 5000).catch(() => {});
+    if (danglingWorkspace) await removeFixtureSnapshot(danglingWorkspace);
     await runRuntimeDocker(['rm', '-f', sourceContainer], 5000).catch(() => {});
     await removeFixtureSnapshot(workspace);
   }
@@ -245,6 +282,10 @@ async function actualOciScenario({ sourceTargetBytes = null, fullScan = false } 
 test('actual Linux native OCI import and external MCP collector run a non-Node shell image larger than 16 MiB', {
   skip: process.env.MCPSHIELD_DOCKER_TESTS !== '1' || !process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE, timeout: 180_000,
 }, () => actualOciScenario());
+
+test('actual Linux borrowed dangling OCI image retains its CID and zero tags after import and cleanup', {
+  skip: process.env.MCPSHIELD_DOCKER_TESTS !== '1' || !process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE, timeout: 240_000,
+}, () => actualOciScenario({ preexistingDangling: true }));
 
 test('actual Linux 100 MiB original OCI source imports and executes the same restricted MCP observation profile', {
   skip: process.env.MCPSHIELD_DOCKER_TESTS !== '1' || process.env.MCPSHIELD_OCI_100M_TESTS !== '1' ||

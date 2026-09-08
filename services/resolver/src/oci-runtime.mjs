@@ -15,6 +15,24 @@ import { validateRuntimePlatform } from './runtime-descriptor.mjs';
 
 const hashPattern = /^sha256:[a-f0-9]{64}$/;
 
+export async function ociImagePresent(imageDigest, run = runRuntimeDocker) {
+  if (!hashPattern.test(imageDigest)) throw Error('OCI_IMAGE_PRESENCE_INPUT_INVALID');
+  let raw;
+  try { raw = await run(['image', 'inspect', imageDigest, '--format', '{{json .}}'], 5000, 128 * 1024); }
+  catch {
+    // A failed inspect is not evidence of absence (daemon failure/timeout also
+    // fails). Only a successful bounded native image inventory can establish it.
+    try {
+      const output = (await run(['image', 'ls', '--all', '--no-trunc', '--quiet'], 5000, 8 * 1024 * 1024)).toString().trim();
+      const ids = output ? output.split(/\r?\n/) : [];
+      if (!ids.every((id) => hashPattern.test(id))) throw Error();
+      return ids.includes(imageDigest);
+    } catch { throw Error('OCI_IMAGE_PRESENCE_UNCONFIRMED'); }
+  }
+  try { if (JSON.parse(raw).Id !== imageDigest) throw Error(); return true; }
+  catch { throw Error('OCI_IMAGE_PRESENCE_UNCONFIRMED'); }
+}
+
 // Validate expansion/diff IDs, not layer application. Docker alone interprets
 // whiteouts and constructs the final filesystem; no archive is extracted on host.
 export function inspectOciLayerBudget(layers, config) {
@@ -97,7 +115,7 @@ export async function importOciRuntime({ root, sourceTreeDigest, platform }) {
   const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-oci-import-'));
   const snapshot = join(workspace, 'source'), pack = join(workspace, 'pack');
   const runtimeTag = `mcpshield-oci-${randomUUID()}:local`;
-  let success = false, stage = 'SOURCE';
+  let success = false, loadAttempted = false, present = false, stage = 'SOURCE';
   try {
     const sourceSnapshot = await copyFixtureSnapshot(root, snapshot, { profile: OCI_SOURCE_BUDGET_PROFILE });
     if (await artifactDigest(snapshot, { profile: OCI_SOURCE_BUDGET_PROFILE }) !== sourceTreeDigest) throw Error('OCI_SOURCE_DIGEST_MISMATCH');
@@ -114,9 +132,7 @@ export async function importOciRuntime({ root, sourceTreeDigest, platform }) {
     const runtime = checkedOciConfig(inspected.config);
     const expansion = inspectOciLayerBudget(inspected.layers.map((layer) => ({ ...layer, bytes: blobs.get(layer.digest) })), inspected.config);
     stage = 'ENGINE';
-    let present = false;
-    try { present = JSON.parse(await runRuntimeDocker(['image', 'inspect', configDigest, '--format', '{{json .}}'], 5000)).Id === configDigest; }
-    catch { /* image may be absent; native load below must independently succeed */ }
+    present = await ociImagePresent(configDigest);
     if (!present) {
       await mkdir(join(pack, 'blobs', 'sha256'), { recursive: true });
       // Never import candidate-controlled tag annotations or unrelated manifests.
@@ -136,6 +152,7 @@ export async function importOciRuntime({ root, sourceTreeDigest, platform }) {
       const archive = join(workspace, 'image.tar');
       await tar.c({ cwd: pack, file: archive, portable: true }, ['oci-layout', 'index.json', 'manifest.json', 'blobs']);
       stage = 'NATIVE_LOAD';
+      loadAttempted = true;
       await runRuntimeDocker(['image', 'load', '--quiet', '--input', archive], 60_000);
       // Not every Docker engine supports OCI layout archives. Failure never
       // falls back to running a foreign importer or a candidate command on host.
@@ -152,20 +169,20 @@ export async function importOciRuntime({ root, sourceTreeDigest, platform }) {
       platform: inspected.platform, finalImageDigest: configDigest, imageDigestKind: 'DOCKER_IMAGE_CONFIG_ID',
       rootfsDigest: proof.filesystem.digest, entrypoint: proof.entrypoint, ...runtime, toolSurfaceHash: null, policy: OCI_OBSERVATION_POLICY };
     const descriptorDigest = hashOciRuntimeDescriptor(descriptor);
-    // Every job owns a unique reference, including an already-present CID.
-    // Existing tags/CID are unchanged; cleanup removes only this new tag.
+    // Existing images are BORROWED, including dangling images. Removing their
+    // sole temporary tag would delete a CID that this job does not own.
     stage = 'OWNED_REFERENCE';
-    await runRuntimeDocker(['image', 'tag', configDigest, runtimeTag], 5000);
+    if (!present) await runRuntimeDocker(['image', 'tag', configDigest, runtimeTag], 5000);
     success = true;
     return { phase: 'IMPORTED', status: 'INCONCLUSIVE', ready: false, candidateExecutionPerformed: false, issues: [],
-      descriptor, descriptorDigest, expansion, runtimeTag,
+      descriptor, descriptorDigest, expansion, runtimeTag: present ? null : runtimeTag, runtimeOwnership: present ? 'BORROWED' : 'OWNED',
       filesystem: { digest: proof.filesystem.digest, algorithm: proof.filesystem.algorithm, files: proof.filesystem.entries.length, bytes: proof.filesystem.bytes },
-      cleanup: async () => { await runRuntimeDocker(['image', 'rm', runtimeTag], 5000); } };
+      cleanup: async () => { if (!present) await runRuntimeDocker(['image', 'rm', runtimeTag], 5000); } };
   } catch (error) {
     return { phase: 'NOT_RUN', status: 'INCONCLUSIVE', ready: false, candidateExecutionPerformed: false,
       issues: [/^OCI_[A-Z_]+$/.test(error.message) ? error.message : stage === 'NATIVE_LOAD' ? 'OCI_NATIVE_IMPORT_FAILED_OR_UNSUPPORTED' : 'OCI_RUNTIME_IMPORT_FAILED'], diagnostics: { stage } };
   } finally {
-    if (!success) { try { await runRuntimeDocker(['image', 'rm', runtimeTag], 5000); } catch { /* own unique tag, never broad prune or force */ } }
+    if (!success && loadAttempted) { try { await runRuntimeDocker(['image', 'rm', runtimeTag], 5000); } catch { /* own unique tag, never broad prune or force */ } }
     await removeFixtureSnapshot(workspace);
   }
 }

@@ -89,6 +89,6 @@ export async function prepareAndScanOciRuntime({ preparation, ...scan }) {
     analysis: { profile: 'restricted-oci-offline-v1', verdict: 'ABSTAIN', ready: false, checks: {}, issues: imported.issues, phase: imported.phase } };
   try {
     const output = await scanOciRuntime({ ...scan, descriptor: imported.descriptor, expectedDescriptorDigest: imported.descriptorDigest });
-    return { ...output, runtimeTag: imported.runtimeTag, cleanup: imported.cleanup };
+    return { ...output, runtimeTag: imported.runtimeTag, runtimeOwnership: imported.runtimeOwnership, cleanup: imported.cleanup };
   } catch (error) { await imported.cleanup(); throw error; }
 }
