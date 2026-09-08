@@ -22,7 +22,9 @@
   태그를 정리한다. Docker 조회 실패는 이미지 부재로 추정하지 않는다. 독립 OCI 승인 정책·signer와
   정상/악성 전체 Linux 흐름은 아직 진행 중이다. OCI의 balanced/RPC/emergency 호환도 후속 작업이다.
   Main focused OCI 18 통과·Linux 5 skip, 실제 API HTTP를 통과하는 정상/악성 judge 체험 포함
-  release-readiness 5 통과, 타입 검사와 CI YAML parse 성공. 전체 통합 회귀는 실행 중이다.
+  release-readiness 5 통과, 타입 검사와 CI YAML parse 성공. `c198a20` 코드 기준 전체 `npm test`
+  완료 성공: backend 96 통과·6 skip, Security 105 통과·17 skip, Gateway·dashboard와
+  replay/MCP stdio E2E/live smoke 모두 성공. Linux skip은 실제 통과로 집계하지 않는다.
 - [Linux CI 34275352307](https://github.com/sihoon-0077/MCPShield/actions/runs/34275352307),
   `229f147`: 전체 run은 완료 실패. Node 24·PostgreSQL 성공. 실제 Docker→EVM quorum→두 Gateway
   차단이 새 초기 상태에서 **10회 연속 통과**했다(job `102229697837`, 각 회 pass 1/fail 0).
