@@ -94,6 +94,9 @@
   API/RPC 장애는 명시적 주입이며 실제 네트워크 timeout과 구분한다. clean commit CI 재측정 진행 중.
 - `benchmarks/results/mcptox-static-2026-09-09.json`: 고정 upstream 파일 hash 기반 원문 미포함 집계.
   static review recall 25.98%, FPR·agent ASR 미측정. upstream에 명시적 라이선스가 없어 원문을 재배포하지 않는다.
+- `node --import tsx scripts/ops/evaluate-reference-metadata.ts`: 공식 reference 서버의 고정 커밋
+  `d73f99ef...` 3개 TS 파일을 실행 없이 AST로 읽고 이름·설명 literal만 검사했다. 24개 중 review 0개.
+  원문은 저장하지 않는다. 이 표본은 독립 benign label·전체 schema/runtime 평가가 아니므로 FPR=0 또는 안전 인증으로 인용하지 않는다.
 - [CI run 34243713559](https://github.com/sihoon-0077/MCPShield/actions/runs/34243713559),
   커밋 `439fba0`: Node 22·24 test/build, 실제 Docker 보안 4/4,
   collector·Prometheus 규칙 검사, 전체 Compose의 LIVE/EVM·두 Gateway BLOCK,
