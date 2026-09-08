@@ -45,6 +45,12 @@ export async function acquireNpmClosure(options, { download = downloadRegistryUr
     await mkdir(archives);
     const snapshot = await copyFixtureSnapshot(options.root, artifact);
     if (await artifactDigest(artifact) !== options.sourceTreeDigest) throw Error('RUNTIME_SOURCE_DIGEST_MISMATCH');
+    // The original source snapshot is verified before adding the separately
+    // committed resolver-generated lock. Never modify the caller's source tree.
+    if (options.generatedLock !== undefined) {
+      if (!Buffer.isBuffer(options.generatedLock) || sha256(options.generatedLock) !== preflight.descriptor.lockDigest) throw Error('RUNTIME_LOCK_DIGEST_MISMATCH');
+      await writeFile(join(artifact, 'package-lock.json'), options.generatedLock, { flag: 'wx', mode: 0o444 });
+    }
     let lockBytes;
     let lockFile = 'npm-shrinkwrap.json';
     try { lockBytes = await readFile(join(artifact, lockFile)); }

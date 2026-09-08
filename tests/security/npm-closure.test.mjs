@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -78,6 +78,21 @@ test('acquisition total deadline covers stalled downloaders without leaking URL/
   assert.deepEqual(result.issues, ['RUNTIME_ACQUISITION_TIMEOUT']);
   assert.ok(Date.now() - started < 2000);
   assert.equal(result.ready, false);
+}));
+
+test('generated lock is committed separately and injected only into private acquisition input', async () => fixture(async ({ root, options, bytes }) => {
+  const generatedLock = await readFile(join(root, 'package-lock.json'));
+  await unlink(join(root, 'package-lock.json'));
+  const original = await artifactDigest(root);
+  const acquired = await acquireNpmClosure({ ...options, sourceDigest: original, sourceTreeDigest: original, generatedLock }, { download: async () => bytes });
+  try {
+    assert.equal(acquired.acquisitionPerformed, true);
+    assert.equal(acquired.descriptor.lockOrigin, 'RESOLVER_GENERATED');
+    assert.equal(acquired.descriptor.sourceTreeDigest, original);
+    assert.equal((await readFile(join(acquired.inputDir, 'artifact/package-lock.json'))).equals(generatedLock), true);
+    await assert.rejects(() => readFile(join(root, 'package-lock.json')), { code: 'ENOENT' });
+    assert.equal(await artifactDigest(root), original);
+  } finally { await acquired.cleanup?.(); }
 }));
 
 test('closure manifest covers node_modules and rejects tar path/link/permission aliases before image import', async () => {

@@ -150,6 +150,22 @@ test('lock preflight rejects missing locks, identity/range mismatch, weak SRI an
     assert.ok(result.issues.includes('RUNTIME_PLATFORM_REQUIRED'));
     assert.ok(result.issues.includes('RUNTIME_BUILDER_DIGEST_REQUIRED'));
     assert.equal(result.descriptor.lockOrigin, null);
+    const generatedLock = Buffer.from(JSON.stringify(lock(manifest)));
+    const originalTree = await artifactDigest(noLock);
+    const generated = await preflightNpmRuntime({ root: noLock, sourceDigest: digest, sourceTreeDigest: originalTree,
+      platform, builderImageDigest, generatedLock });
+    assert.deepEqual(generated.issues, []);
+    assert.equal(generated.descriptor.lockOrigin, 'RESOLVER_GENERATED');
+    assert.equal(generated.descriptor.sourceTreeDigest, originalTree);
+    assert.equal(await artifactDigest(noLock), originalTree);
+    await assert.rejects(() => readFile(join(noLock, 'package-lock.json')), { code: 'ENOENT' });
+    assert.ok((await inspect({ generatedLock })).issues.includes('RUNTIME_LOCK_ORIGIN_AMBIGUOUS'));
+    for (const dependencies of [{ fixture: 'file:../private' }, { fixture: 'https://example.test/a.tgz' },
+      { fixture: 'git+ssh://example.test/repo' }, { fixture: 'workspace:*' }, { fixture: 'npm:other@1.0.0' }]) {
+      await writeFile(join(noLock, 'package.json'), JSON.stringify({ ...manifest, bin: 'server.js', dependencies }));
+      const rejected = await preflightNpmRuntime({ root: noLock, sourceDigest: digest, sourceTreeDigest: await artifactDigest(noLock), platform, builderImageDigest });
+      assert.ok(rejected.issues.includes('RUNTIME_DEPENDENCY_SPEC_UNSUPPORTED'));
+    }
   } finally { await removeFixtureSnapshot(noLock); }
 }));
 

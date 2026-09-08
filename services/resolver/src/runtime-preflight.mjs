@@ -57,6 +57,15 @@ function dependencyMap(value) {
   return value;
 }
 
+export function validateLocklessPackageDependencies(pkg) {
+  if (!record(pkg)) fail('RUNTIME_PACKAGE_JSON_INVALID');
+  for (const field of dependencyFields) dependencyMap(pkg[field]);
+  if (pkg.workspaces !== undefined || pkg.overrides !== undefined ||
+    [pkg.bundleDependencies, pkg.bundledDependencies].some((value) => value !== undefined && (!Array.isArray(value) || value.length))) {
+    fail('RUNTIME_DEPENDENCY_LAYOUT_UNSUPPORTED');
+  }
+}
+
 function inspectLock(bytes, pkg) {
   if (bytes.length > 1024 * 1024) fail('RUNTIME_LOCK_SIZE_LIMIT');
   let lock;
@@ -102,7 +111,11 @@ function selectBin(pkg, binName) {
   return path;
 }
 
-export async function preflightNpmRuntime({ root, sourceDigest, sourceTreeDigest, binName, platform = null, builderImageDigest = null }) {
+export async function preflightNpmRuntime({ root, sourceDigest, sourceTreeDigest, binName, platform = null, builderImageDigest = null, generatedLock }) {
+  if (generatedLock !== undefined) {
+    if (!Buffer.isBuffer(generatedLock) || generatedLock.length > 1024 * 1024) throw Error('RUNTIME_GENERATED_LOCK_INVALID');
+    generatedLock = Buffer.from(generatedLock);
+  }
   const value = descriptor({ profile: 'npm-closure-v1', sourceDigest, sourceTreeDigest, platform, builderImageDigest });
   hashPreparedRuntimeDescriptor(value);
   const issues = [];
@@ -118,6 +131,8 @@ export async function preflightNpmRuntime({ root, sourceDigest, sourceTreeDigest
     try { pkg = JSON.parse(await readFile(join(snapshot, 'package.json'), 'utf8')); } catch { fail('RUNTIME_PACKAGE_JSON_INVALID'); }
     if (!record(pkg) || typeof pkg.name !== 'string' || !packageName.test(pkg.name) ||
       typeof pkg.version !== 'string' || semver.valid(pkg.version) !== pkg.version) fail('RUNTIME_PACKAGE_IDENTITY_INVALID');
+    // Classify unsupported local/workspace/URL/git/alias layouts before any solver starts.
+    validateLocklessPackageDependencies(pkg);
     try {
       const path = selectBin(pkg, binName);
       let bytes;
@@ -131,6 +146,8 @@ export async function preflightNpmRuntime({ root, sourceDigest, sourceTreeDigest
       try { locks.push({ name, bytes: await readFile(join(snapshot, name)) }); }
       catch (error) { if (error.code !== 'ENOENT') fail('RUNTIME_LOCK_UNREADABLE'); }
     }
+    if (generatedLock !== undefined && locks.length) fail('RUNTIME_LOCK_ORIGIN_AMBIGUOUS');
+    if (generatedLock !== undefined) locks.push({ name: 'package-lock.json', bytes: generatedLock });
     // npm prefers shrinkwrap. Reject different coexisting locks rather than silently commit the ignored one.
     if (locks.length === 2 && !locks[0].bytes.equals(locks[1].bytes)) issues.push('RUNTIME_LOCK_AMBIGUOUS');
     else if (!locks.length) issues.push('RUNTIME_LOCK_REQUIRED');
@@ -138,7 +155,7 @@ export async function preflightNpmRuntime({ root, sourceDigest, sourceTreeDigest
       try {
         checks.lock = inspectLock(locks[0].bytes, pkg);
         value.lockDigest = hash(locks[0].bytes);
-        value.lockOrigin = 'SUPPLIED';
+        value.lockOrigin = generatedLock === undefined ? 'SUPPLIED' : 'RESOLVER_GENERATED';
       } catch (error) { issues.push(error.message); }
     }
   } catch (error) {
