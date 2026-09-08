@@ -16,6 +16,7 @@ import { observePreparedRuntime } from '../../services/scanner/src/prepared-runt
 import { verifyEvidenceBundle } from '../../services/scanner/src/evidence.mjs';
 import { prepareAndScanRuntime, readTrustedPreparedRuntime, assessPreparedPolicy, scanPreparedRuntime } from '../../services/scanner/src/prepared-scan.mjs';
 import { createServer } from 'node:http';
+import { generateNpmLock } from '../../services/resolver/src/generated-lock.mjs';
 
 const exec = promisify(execFile);
 const builderImageDigest = process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE ?? `sha256:${'b'.repeat(64)}`;
@@ -152,6 +153,37 @@ test('actual Linux patched builder installs locked dependencies offline and fina
       result.descriptor.finalImageDigest, ...result.descriptor.argv], { timeout: 10_000, maxBuffer: 64 * 1024 });
     assert.equal(output.stdout.trim(), 'SYNTHETIC_CLOSURE_EXECUTION_OK');
   } finally { await result.cleanup?.(); }
+}));
+
+test('actual Linux isolated native npm generates a missing lock via metadata-only broker then installs offline (synthetic registry)', {
+  skip: process.env.MCPSHIELD_DOCKER_TESTS !== '1' || !process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE,
+  timeout: 300_000,
+}, async () => fixture(async ({ root, options, bytes, integrity }) => {
+  await unlink(join(root, 'package-lock.json'));
+  await writeFile(join(root, '.npm-extension.cjs'), "throw Error('CANDIDATE_EXTENSION_MUST_NOT_RUN');");
+  const pkg = JSON.parse(await readFile(join(root, 'package.json')));
+  pkg.dependencies.fixture = '^1.0.0';
+  await writeFile(join(root, 'package.json'), JSON.stringify(pkg));
+  const original = await artifactDigest(root);
+  const input = { ...options, sourceDigest: original, sourceTreeDigest: original };
+  const generated = await generateNpmLock(input, { metadataFixture: { fixture: { name: 'fixture', 'dist-tags': { latest: '1.0.0' },
+    versions: { '1.0.0': { name: 'fixture', version: '1.0.0', dist: { tarball: 'https://registry.npmjs.org/fixture/-/fixture-1.0.0.tgz', integrity } } } } } });
+  assert.equal(generated.lockGenerated, true, JSON.stringify({ issues: generated.issues, diagnostics: generated.diagnostics }));
+  assert.equal(generated.descriptor.lockOrigin, 'RESOLVER_GENERATED');
+  assert.equal(generated.descriptor.sourceTreeDigest, original);
+  assert.equal(generated.generation.registry.source, 'SYNTHETIC_METADATA_FIXTURE');
+  assert.equal(generated.generation.registry.metadataOnly, true);
+  assert.equal(generated.generation.installedNodeModules, false);
+  assert.deepEqual(generated.generation.candidateFilesMounted, ['package.json']);
+  assert.equal(JSON.parse(generated.generatedLock).packages['node_modules/fixture'].version, '1.0.0');
+  await assert.rejects(() => readFile(join(root, 'package-lock.json')), { code: 'ENOENT' });
+  assert.equal(await artifactDigest(root), original);
+  const prepared = await prepareNpmClosure({ ...input, generatedLock: generated.generatedLock }, { download: async () => bytes });
+  try {
+    assert.equal(prepared.phase, 'CLOSURE_PREPARED', JSON.stringify({ issues: prepared.issues, diagnostics: prepared.diagnostics }));
+    assert.equal(prepared.descriptor.lockOrigin, 'RESOLVER_GENERATED');
+    assert.equal(prepared.descriptor.sourceTreeDigest, original);
+  } finally { await prepared.cleanup?.(); }
 }));
 
 test('actual prepared image MCP discovery paginates, normal tools run and adversarial canary effects bind separate identity', {
