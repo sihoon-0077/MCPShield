@@ -92,6 +92,17 @@ export function safeMatrixFailure(error: any, stage: string) {
     ...(Number.isFinite(error?.actual) ? { actual: error.actual } : {}), ...(Number.isFinite(error?.expected) ? { expected: error.expected } : {}) };
 }
 
+export async function matrixParallel(count: number, concurrency: number, controller: AbortController, run: (index: number) => Promise<void>) {
+  let next = 0, failed = false, firstError: unknown;
+  await Promise.allSettled(Array.from({ length: Math.min(concurrency, count) }, async () => {
+    while (next < count && !failed) {
+      try { controller.signal.throwIfAborted(); await run(next++); }
+      catch (error) { if (!failed) { failed = true; firstError = error; controller.abort(error); } }
+    }
+  }));
+  if (failed) throw firstError;
+}
+
 /** Actual HTTP fault boundary, never a replacement chainDecision or fabricated proof. */
 export async function benchmarkProxy(upstream: string, kind: "API" | "RPC", signal: AbortSignal) {
   const target = new URL(upstream);
@@ -162,10 +173,7 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
   let stage = "SETUP", currentCell: Record<string, any> | undefined, partialCell: (() => Record<string, any>) | undefined;
   let setup: Record<string, any> = { status: "INCOMPLETE", confirmedTransactions: 0, registeredAndVerifiedOnChain: 0, validatorExecution: "EXPLICIT_TEST_ONLY_SIGNING" };
   let result: Record<string, any> | undefined;
-  const parallel = async (count: number, run: (index: number) => Promise<void>) => {
-    let next = 0;
-    await Promise.all(Array.from({ length: Math.min(plan.concurrency, count) }, async () => { while (next < count) { budget(); await run(next++); } }));
-  };
+  const parallel = (count: number, run: (index: number) => Promise<void>) => matrixParallel(count, plan.concurrency, controller, run);
   try {
     await chain.listen(0, "127.0.0.1");
     const rpc = `http://127.0.0.1:${chain.address().port}`;
@@ -348,8 +356,8 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
       limitations: ["Failed partial attempt, not a complete benchmark or production SLO. Partial-cell counts and quantiles did not pass every post-cell invariant.",
         "Completed cell aggregates are also streamed before proceeding. Fatal process termination still requires recovery from captured output."] };
   } finally {
-    clearTimeout(deadline); controller.abort(); reader?.close();
-    const cleanups = [async () => { if (apiProxy) await apiProxy.close(); }, async () => { if (app) await app.close(); else if (store) await store.close(); },
+    clearTimeout(deadline); controller.abort();
+    const cleanups = [async () => { reader?.close(); }, async () => { if (apiProxy) await apiProxy.close(); }, async () => { if (app) await app.close(); else if (store) await store.close(); },
       async () => { if (rpcProxy) await rpcProxy.close(); }, async () => { provider?.destroy(); await chain.close(); }, async () => { await rm(directory, { recursive: true, force: true }); }];
     for (const close of cleanups) try { await close(); } catch (error) {
       // Keep already collected evidence and attempt the remaining exact-resource cleanup.

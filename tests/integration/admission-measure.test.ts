@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createServer } from "node:http";
-import { latencySummary, measureAdmission, measuredDecision, assertFreshRevocation, admissionMatrixPlan, cacheAttemptAt, benchmarkProxy, benchmarkRpcBatch, measureAdmissionMatrix, assertUnavailableAdmission, safeMatrixFailure, matrixProxyFailureCode } from "./admission-measure.js";
+import { latencySummary, measureAdmission, measuredDecision, assertFreshRevocation, admissionMatrixPlan, cacheAttemptAt, benchmarkProxy, benchmarkRpcBatch, measureAdmissionMatrix, assertUnavailableAdmission, safeMatrixFailure, matrixProxyFailureCode, matrixParallel } from "./admission-measure.js";
 import { sourceSnapshot, withSourceProvenance } from "../../scripts/ops/evaluate-admission.js";
 test("load report uses nearest-rank quantiles, all samples, and bounded opt-in inputs", async () => {
   assert.deepEqual(latencySummary([100, 1, 3, 2]), { samples: 4, p50Ms: 2, p95Ms: 100, p99Ms: 100, maxMs: 100 });
@@ -105,6 +105,17 @@ test("an injected setup failure returns partial JSON with source boundaries and 
     assert.equal(result.setup.confirmedTransactions, 0); assert.deepEqual(result.cells, []); assert.equal(closed, true);
     assert.deepEqual(result.provenance.start, result.provenance.end); assert.equal(JSON.stringify(result).includes("secret-injected"), false);
   } finally { Object.defineProperty(ganache, "server", original); }
+});
+
+test("matrix workers stop new work on the first failure and drain siblings before exposing a partial result", async () => {
+  const controller = new AbortController(), first = Error("SYNTHETIC_FIRST_FAILURE"), started: number[] = [], drained: number[] = [];
+  await assert.rejects(matrixParallel(20, 3, controller, async index => {
+    started.push(index);
+    if (index === 0) { await new Promise(resolve => setTimeout(resolve, 5)); throw first; }
+    await new Promise<void>(resolve => controller.signal.addEventListener("abort", () => { setTimeout(resolve, 10); }, { once: true }));
+    drained.push(index); throw Error("SYNTHETIC_SIBLING_ABORT");
+  }), error => error === first);
+  assert.deepEqual(started, [0, 1, 2]); assert.deepEqual(drained.sort(), [1, 2]); assert.equal(controller.signal.aborted, true);
 });
 
 test("native RPC batch matches out-of-order IDs and rejects missing, duplicate or error responses", async () => {
