@@ -21,9 +21,12 @@
   Main OCI portable 10개 통과·Linux 4개 명시 skip, OCI binding 4개 통과,
   prepared/measurement 회귀 11개 통과. 실제 Trivy CLI 검증은 `1f7deb5`의 새 CI 단계로 확인한다.
 - [Linux CI 34270393788](https://github.com/sihoon-0077/MCPShield/actions/runs/34270393788),
-  `105f12f`: Node 24·PostgreSQL 완료 성공, Node 22는 Docker Compose E2E까지 성공하고
-  Grafana/exporter 검증을 진행 중이다. 이 실행에는 위 새 OCI review/binding 코드는 없다.
-  전체 CI·10회 반복·signed-image가 통과했다고 아직 주장하지 않는다.
+  `105f12f`: Node 22·24·PostgreSQL 세 job 완료 성공. 실제 prepared 회귀는
+  검증자 재스캔 4회, 서로 다른 Gateway OS 프로세스 2개, 폐기 이미지 create/start 0건을 확인했다.
+  Docker Compose와 Grafana 익명 접근 거부·dashboard provisioning·실제 exporter→collector→Prometheus
+  지표 수집 및 6개 panel query 검증이 통과했다. 주입한 지표는 명시적 SYNTHETIC_MOCK다.
+  job `102210667857` 로그의 결과를 확인했으며, 이 실행에는 새 OCI review/binding 코드는 없다.
+  후속 10회 반복·signed-image job은 진행 중으로 전체 CI 성공을 아직 주장하지 않는다.
 - `f6bdc69`·`59a7fe1`: 부하 실험의 외부 fallback/telemetry 상속을 차단하고 자원 표본을 기록한다.
   명시적 1만 key 실험은 setup 15분/전체 60분의 watchdog으로 제한한다.
   별도 clean backend `9dccfd0`에서 실제 10,000개 등록·20,000건 PASS 서명·30,004건 transaction
@@ -298,8 +301,9 @@
 
 ## 아직 완료로 표시할 수 없는 영역
 
-1. 최신 전체 변경의 Linux/PostgreSQL 회귀, Grafana·전체 exporter trace 실검증.
-   앞선 npm prepared/독립 validator 및 실제 PostgreSQL 성공과 최신 HEAD 검증을 구분한다.
+1. 최신 전체 변경의 Linux/PostgreSQL 회귀 및 전체 exporter trace 실검증.
+   `105f12f` Grafana/Prometheus 실제 지표 수집·npm prepared/독립 validator·PostgreSQL 성공과
+   이후 HEAD 검증을 구분한다. synthetic metric pipeline은 전체 production trace 검증이 아니다.
 2. OCI 전체 inventory/취약점/AI 검사·독립 서명·Gateway 실행 연결. 100MiB import/외부 관측 성공은
    전체 바이너리 안전성이나 무제한 source semantic coverage 증거가 아니다.
 3. 고위험 receipt UI와 오래된 앵커 reorg 복구, 모든 운영 UI 세부 항목.
