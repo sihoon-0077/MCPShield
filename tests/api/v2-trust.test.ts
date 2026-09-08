@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { Wallet, id, verifyTypedData } from "ethers";
 import { checkedValidatorPayload } from "../../apps/validator/src/v2.js";
 import { defaultPolicy, hash } from "../../apps/api/src/control-plane.js";
@@ -13,13 +14,18 @@ import { createEvidenceBundle } from "../../services/scanner/src/evidence.mjs";
 function example(quarantine = false) {
   const now = Math.floor(Date.now() / 1000), digest = `0x${"a".repeat(64)}`, surface = `0x${"b".repeat(64)}`;
   const exact = exactReleaseIdentity({ toolId: "npm:mail-mcp", artifactDigest: digest, manifestDigest: digest, toolSurfaceHash: surface });
-  const report = { artifactDigest: `sha256:${digest.slice(2)}`, toolSurfaceHash: surface, scanStatus: quarantine ? "FAILED" : "PASSED", scope: "STATIC_AI_SANDBOX",
-    findings: quarantine ? [{ code: "CANARY_EXFILTRATION", stage: "SANDBOX", severity: "CRITICAL", deterministic: true }] : [] };
-  const bundle = createEvidenceBundle({ "report.json": report, "static/findings.json": [], "semantic/model-output.json": { findings: [] },
-    "sandbox/events.json": { mode: "DOCKER", complete: true }, "sandbox/mcp.json": { complete: true } });
+  const report = { schemaVersion: "1.0.0", scanId: randomUUID(), releaseId: "mail-mcp@1.0.0", source: "LIVE", evidenceHash: `0x${"c".repeat(64)}`,
+    artifactDigest: `sha256:${digest.slice(2)}`, toolSurfaceHash: surface, scanStatus: quarantine ? "FAILED" : "PASSED",
+    findings: quarantine ? [{ code: "CANARY_EXFILTRATION", stage: "SANDBOX", severity: "CRITICAL", deterministic: true, message: "Synthetic trust contract", evidence: {} }] : [] };
+  const documents = { "report.json": { ...report, scope: "STATIC_AI_SANDBOX" }, "static/findings.json": [], "static/package-diff.json": { hasBaseline: false }, "semantic/model-output.json": { findings: [] },
+    "sandbox/events.json": { mode: "DOCKER", complete: true }, "sandbox/mcp.json": { complete: true } };
+  const bundle = createEvidenceBundle(documents), independentResult = { ...report, scanId: randomUUID() };
   const policyHash = hash(defaultPolicy), registryAddress = `0x${"1".repeat(40)}`;
   const context = { chainId: 1337, registryAddress, policyHash, now, policy: defaultPolicy, validatorSetVersion: 1, nonce: 0,
     identity: { ...exact, exists: true, artifactDigest: digest, manifestDigest: digest, toolSurfaceDigest: surface }, evidence: { bundle, reportRoot: bundle.manifest.root },
+    // Pure reconstruction test data, not an injected production scanner or evidence of actual Docker execution.
+    independentSourceEvidence: { result: independentResult, bundle: createEvidenceBundle({ ...documents, "report.json": { ...independentResult, scope: "STATIC_AI_SANDBOX" } }),
+      sourceIdentity: { ...exact, artifactDigest: digest, manifestDigest: digest, toolSurfaceHash: surface }, baselineReleaseId: null },
     scan: { status: "COMPLETED", policyHash, releaseId: exact.releaseId, result: { reportRoot: bundle.manifest.root, scanResult: report,
       validFrom: new Date(now * 1000).toISOString(), validUntil: new Date((now + 3600) * 1000).toISOString() } } };
   const common = { releaseId: exact.releaseId, policyHash, validatorSetVersion: 1, nonce: 0, deadline: now + 300 };
@@ -51,6 +57,7 @@ test("validator reconstructs local domain/types and rejects signing-oracle templ
     }
     assert.throws(() => checkedValidatorPayload(template, { ...context, policy: { ...defaultPolicy, validitySeconds: 120 } }, quarantine));
     assert.throws(() => checkedValidatorPayload(template, { ...context, identity: { ...context.identity, exists: false } }, quarantine));
+    assert.throws(() => checkedValidatorPayload(template, { ...context, independentSourceEvidence: undefined }, quarantine));
   }
 });
 

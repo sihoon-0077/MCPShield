@@ -149,10 +149,11 @@ before broadcast and retained for identical rebroadcast after uncertain outcomes
 An expiring SQL lease serializes each relayer's nonce stream. Reorg reconciliation
 rewinds missing receipts and indexer checkpoints, appending orphan notices to history.
 
-`node --import tsx apps/validator/src/v2.ts` demonstrates two distinct signers after
-each independently retrieves and checks the report Merkle root. Supply `CONTROL_API_URL`,
-`CONTROL_API_TOKEN`, `CONTROL_SCAN_ID`, and `VALIDATOR_PRIVATE_KEYS` (JSON array) privately.
-This convenience command is explicitly `SINGLE_INSTITUTION_DEMO`, not independent organizations.
+`node --import tsx apps/validator/src/v2.ts` independently reacquires source and reruns
+the local scanner before signing; checking a supplied Merkle root alone is insufficient.
+Supply `CONTROL_API_URL`, `CONTROL_API_TOKEN`, `CONTROL_SCAN_ID`, and a private
+`VALIDATOR_PRIVATE_KEY` for `SINGLE_VALIDATOR`. The optional multi-key
+`VALIDATOR_PRIVATE_KEYS` JSON array remains `SINGLE_INSTITUTION_DEMO`, not independent organizations.
 
 Validators also require pinned `CONTROL_V2_CHAIN_ID`, `CONTROL_V2_REGISTRY_ADDRESS`,
 `CONTROL_V2_RPC_URLS`, and `CONTROL_VALIDATOR_POLICY_HASH`. They reconstruct the local
@@ -163,6 +164,33 @@ an API-supplied completed flag alone is insufficient. Public HTTP RPC URLs, URL 
 and redirects are rejected. Explicit private hosts may be listed in
 `CONTROL_V2_ALLOW_HTTP_HOSTS`; loopback is already allowed. Admission permits at most
 three configured RPC endpoints within one 1500 ms total budget, then fails closed.
+
+Default-policy `/v1` signing requires `VALIDATOR_SOURCES_PATH`, an operator-local JSON
+file (max 512 KiB, 128 entries). It has exact shape
+`{"schemaVersion":"mcpshield.validator-sources.v1","sources":[{"releaseId":"0x...","sourceType":"local","locator":"/absolute/owned/source"}]}`.
+No API response supplies paths, provider URLs, commands, or keys. Local inputs are
+new bounded snapshots; npm inputs require exact versions, and tarballs use only the
+existing HTTPS npm-registry resolver. Acquired tool/artifact/manifest/surface identity
+must match the actual chain record. Content changes at a previously configured path
+or registry URL are rejected before execution. OCI catalog entries must be digest-pinned
+but cannot sign: current OCI inspection is metadata-only, not a generic runtime test.
+
+If the original report used a baseline, its configured source is also reacquired and
+bound to its on-chain identity and tool; missing baselines or different recomputed
+package diffs stop signing. Each signer runs the existing scanner with Docker, checks
+complete runtime observation and matches the original verdict and deterministic
+violation scopes. Missing Docker/source or inconclusive reruns cannot be bypassed.
+Default policy still allows its labeled local semantic fallback (recorded as
+`LOCAL_STRUCTURED_FALLBACK_V1`); explicit `VALIDATOR_ALLOW_REMOTE_AI`/`VALIDATOR_AI_*`
+settings enable that validator's own provider. This legacy profile does not claim the
+prepared profile's immutable runtime closure, full dependency coverage or generated
+normal/adversarial call coverage. The stricter prepared policy remains separate.
+Digest-only root-link receipts use the same private append log described below.
+
+The public legacy `/api` judge demo is unchanged. Portable EVM/OTLP report-fixture
+tests sign explicitly in test code; there is no production signer bypass option.
+`MCPSHIELD_DOCKER_TESTS=1` enables real source reruns in `source-validator.test.ts`
+and V2 fullcycle; without it those runtime assertions are explicitly skipped.
 
 Remote semantic analysis is disabled unless `CONTROL_ALLOW_REMOTE_AI=true`. For OpenAI,
 set `CONTROL_AI_PROVIDER=openai`, `CONTROL_AI_MODEL`, and server-only `OPENAI_API_KEY`

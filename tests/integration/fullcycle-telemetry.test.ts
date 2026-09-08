@@ -8,6 +8,7 @@ import { test } from "node:test";
 test("actual local EVM fullcycle exports connected scan/validator/chain/indexer/admission OTLP (loopback contract collector)", { timeout: 150000 }, async (t) => {
   // This bounded JSON receiver tests the real HTTP exporter contract. It is not a production OTel Collector,
   // storage/query backend, or proof of real Docker scanning (the existing Linux Docker gate covers that).
+  // Portable report-fixture signing spans are emitted explicitly in test code, not a production signer bypass.
   const deliveries: { path: string; body: any }[] = [];
   let totalBytes = 0, collectorFailure: Error | undefined;
   const server = createServer({ requestTimeout: 5000, headersTimeout: 3000 }, async (request, reply) => {
@@ -45,7 +46,7 @@ test("actual local EVM fullcycle exports connected scan/validator/chain/indexer/
     assert.ok(deliveries.some((item) => item.path === "/v1/metrics"), "shutdown must flush metrics too");
     const spans: any[] = deliveries.filter((item) => item.path === "/v1/traces").flatMap((item) => item.body.resourceSpans.flatMap((resource: any) =>
       resource.scopeSpans.flatMap((scope: any) => scope.spans)));
-    const fanout = spans.find((span) => span.name === "validator.fanout"); assert.ok(fanout, "actual validator fanout was not exported");
+    const fanout = spans.find((span) => span.name === "validator.fanout"); assert.ok(fanout, "fixture signing trace contract was not exported");
     const selected = spans.filter((span) => span.traceId === fanout.traceId), byId = new Map(selected.map((span) => [span.spanId, span]));
     const required = ["scan.accept", "scan.execute", "scan.read", "validator.fanout", "validator.attest", "validator.verify", "validator.sign", "validator.accept", "chain.submit", "indexer.observe", "admission.decision"];
     for (const name of required) assert.ok(selected.some((span) => span.name === name), `missing ${name} under the authoritative scan trace`);
@@ -74,7 +75,7 @@ test("actual local EVM fullcycle exports connected scan/validator/chain/indexer/
     const allowed = new Set(["mcpshield.scan_id", "mcpshield.release_id", "mcpshield.policy_hash_prefix", "mcpshield.artifact_digest_prefix", "mcpshield.stage", "mcpshield.finding_code",
       "mcpshield.verdict", "mcpshield.validator_id", "mcpshield.chain_id", "mcpshield.block_number", "mcpshield.gateway_decision", "mcpshield.source"]);
     for (const span of spans) for (const attribute of span.attributes ?? []) assert.ok(allowed.has(attribute.key), `unapproved exported span attribute ${attribute.key}`);
-    t.diagnostic(JSON.stringify({ mode: "LOCAL_EVM_REPORT_FIXTURE_REAL_OTLP_HTTP", spans: spans.length, connectedScanSpans: selected.length,
+    t.diagnostic(JSON.stringify({ mode: "LOCAL_EVM_REPORT_FIXTURE_REAL_OTLP_HTTP", validatorExecution: "EXPLICIT_TEST_ONLY_SIGNING", spans: spans.length, connectedScanSpans: selected.length,
       traceRequests: deliveries.filter((item) => item.path === "/v1/traces").length, bytes: totalBytes }));
   } finally { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,7 @@ import { indexV2 } from "../../apps/indexer/src/v2-indexer.js";
 import { runValidatorFanout } from "../../apps/validator/src/v2.js";
 import { defaultPolicy, hash, type ControlOptions } from "../../apps/api/src/control-plane.js";
 import { shutdownTelemetry } from "../../packages/telemetry/index.mjs";
+import { withSpan, traceHeaders } from "../../packages/telemetry/index.mjs";
 // @ts-expect-error Shared scanner/Gateway are ESM JavaScript.
 import { createEvidenceBundle } from "../../services/scanner/src/evidence.mjs";
 // @ts-expect-error Shared scanner/Gateway are ESM JavaScript.
@@ -99,9 +100,24 @@ async function fullCycle(realDocker: boolean) {
     let pumping = true;
     const pump = (async () => { while (pumping) { await chain.provider.request({ method: "evm_mine", params: [] }); await runChainActionOnce(store, relayer); await pause(100); } })();
     try {
+      if (realDocker) {
       const fanout = await runValidatorFanout({ apiUrl, token, scanId: safe.scan.scanId, privateKeys: accounts.slice(1, 3).map((account) => account.secretKey),
-        chainId: 1337, registryAddress: deployment.releaseRegistry.address, policyHash: hash(defaultPolicy), rpcUrl: rpc });
+        chainId: 1337, registryAddress: deployment.releaseRegistry.address, policyHash: hash(defaultPolicy), rpcUrl: rpc,
+        legacySources: { schemaVersion: "mcpshield.validator-sources.v1", sources: [{ releaseId: safe.release.releaseId, sourceType: "local",
+          locator: fileURLToPath(new URL("../../demo/fixtures/mail-mcp-1.0.0", import.meta.url)) }] }, verificationReceiptsPath: join(dir, "source-verifications.jsonl") });
       assert.equal(fanout.operations.length, 2); assert.equal(fanout.mode, "SINGLE_INSTITUTION_DEMO");
+      } else {
+        // Explicit test-only signing of report fixtures. Production validators have no bypass for missing Docker/source.
+        const read = await app.inject({ url: `/v1/scans/${safe.scan.scanId}`, headers: auth });
+        await withSpan("validator.fanout", {}, async () => {
+          for (const wallet of validators.slice(0, 2)) await withSpan("validator.attest", {}, async () => {
+            const template = await withSpan("validator.verify", {}, async () => (await app.inject({
+              url: `/v1/scans/${safe.scan.scanId}/attestation?validator=${wallet.address}`, headers: auth })).json());
+            const signature = await withSpan("validator.sign", {}, () => wallet.signTypedData(template.domain, template.types, template.payload));
+            await settle((await post("/v1/validator/attestations", { scanId: safe.scan.scanId, payload: template.payload, signature }, traceHeaders())).action.actionId);
+          });
+        }, { traceparent: read.headers.traceparent as string });
+      }
     } finally { pumping = false; await pump; }
     const gatewayOptions = (release: any, agent: string) => ({ identity: { releaseId: release.legacyReleaseId,
       artifactDigest: release.artifactDigest, toolSurfaceHash: release.toolSurfaceHash }, mode: "live", apiBaseUrl: apiUrl,
@@ -142,9 +158,25 @@ async function fullCycle(realDocker: boolean) {
     assert.equal(tracedAdmission.decision, "ALLOW"); assert.equal(tracedAdmission.traceId, scanTrace);
     const snapshot = await chain.provider.request({ method: "evm_snapshot", params: [] });
     const bad = await prepareRelease("1.0.1");
+    if (realDocker) {
+      let pumping = true;
+      const pump = (async () => { while (pumping) { await chain.provider.request({ method: "evm_mine", params: [] }); await runChainActionOnce(store, relayer); await pause(100); } })();
+      try {
+        const fanout = await runValidatorFanout({ apiUrl, token, scanId: bad.scan.scanId, privateKeys: accounts.slice(1, 3).map((account) => account.secretKey),
+          chainId: 1337, registryAddress: deployment.releaseRegistry.address, policyHash: hash(defaultPolicy), rpcUrl: rpc, quarantineFirst: true,
+          legacySources: { schemaVersion: "mcpshield.validator-sources.v1", sources: [safe, bad].map(({ release }) => ({ releaseId: release.releaseId, sourceType: "local",
+            locator: fileURLToPath(new URL(`../../demo/fixtures/mail-mcp-${release.version}`, import.meta.url)) })) }, verificationReceiptsPath: join(dir, "source-verifications.jsonl") });
+        assert.equal(fanout.operations.length, 3);
+        const receipts = (await readFile(join(dir, "source-verifications.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+        assert.equal(receipts.length, 5); assert.equal(new Set(receipts.map((receipt) => receipt.independentReportRoot)).size, 5);
+        assert.ok(receipts.every((receipt) => receipt.verificationProfile === "SOURCE_DOCKER_V1" && receipt.originalReportRoot !== receipt.independentReportRoot
+          && receipt.semanticExecution === "LOCAL_STRUCTURED_FALLBACK_V1" && receipt.state === "LOCAL_VERIFICATION_ONLY"));
+      } finally { pumping = false; await pump; }
+    } else {
     await vote(bad.scan.scanId, validators[0], true);
     assert.equal((await gateway(bad.release, "Gateway-A")).releaseStatus, "QUARANTINED");
     await vote(bad.scan.scanId, validators[0]); await vote(bad.scan.scanId, validators[1]);
+    }
     const badScanTrace = (await store.scan("test-team", bad.scan.scanId))!.traceId;
     for (const action of await store.query("SELECT trace_parent,submission_trace_parent FROM cp_chain_actions WHERE release_id = ? AND kind IN ('ATTEST','QUARANTINE')", [bad.release.releaseId])) {
       assert.equal(action.trace_parent.split("-")[1], badScanTrace);
@@ -194,6 +226,6 @@ async function fullCycle(realDocker: boolean) {
   }
 }
 test("V2 genuine EVM outbox/quorum/quarantine and two signed Gateway decisions (report fixture)", { timeout: 120000 }, () => fullCycle(false));
-test("V2 real Docker scan to EVM quorum and two-Gateway blocking", { timeout: 180000, skip: process.env.MCPSHIELD_DOCKER_TESTS !== "1" }, () => fullCycle(true));
+test("V2 real Docker scan to EVM quorum and two-Gateway blocking", { timeout: 300000, skip: process.env.MCPSHIELD_DOCKER_TESTS !== "1" }, () => fullCycle(true));
 // The subprocess OTLP contract test must flush the final batch after all real API/EVM work.
 if (process.env.MCPSHIELD_FULLCYCLE_OTLP_TEST === "1") after(() => shutdownTelemetry());

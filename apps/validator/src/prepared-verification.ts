@@ -21,8 +21,8 @@ export function checkedPreparedValidatorAi(ai?: PreparedValidatorAi) {
   if (ai.url) checkedServiceUrl(ai.url);
   return ai;
 }
-function deterministicScopes(result: any) {
-  const scopes = result.findings.filter((finding: any) => finding.deterministic && finding.stage === "SANDBOX" && ["HIGH", "CRITICAL"].includes(finding.severity))
+export function deterministicScopes(result: any, includeStatic = false) {
+  const scopes = result.findings.filter((finding: any) => finding.deterministic && (finding.stage === "SANDBOX" || includeStatic && finding.stage === "STATIC") && ["HIGH", "CRITICAL"].includes(finding.severity))
     .map((finding: any) => ({ code: finding.code, stage: finding.stage, severity: finding.severity, observer: finding.evidence?.observer ?? "FULL_TOOL_SURFACE_COMPARISON" }));
   // Independent plans/canaries can observe the same violation more than once; compare scopes, not incidental counts.
   return [...new Map(scopes.map((scope: any) => [hash(scope), scope])).entries()].sort(([a], [b]) => String(a).localeCompare(String(b))).map(([, scope]) => scope);
