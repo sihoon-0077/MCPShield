@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -34,11 +34,32 @@ export async function withSourceProvenance<T extends object>(run: () => Promise<
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { requests: { type: "string", default: "40" }, concurrency: { type: "string", default: "4" }, identities: { type: "string", default: "4" } } });
+  const { values } = parseArgs({ options: { requests: { type: "string", default: "40" }, concurrency: { type: "string", default: "4" }, identities: { type: "string" },
+    profile: { type: "string", default: "smoke" }, plan: { type: "boolean", default: false }, "matrix-child": { type: "boolean", default: false } } });
+  if (!["smoke", "matrix"].includes(values.profile)) throw Error("Profile must be smoke or matrix");
+  const options = { requests: Number(values.requests), concurrency: Number(values.concurrency), identities: Number(values.identities ?? (values.profile === "matrix" ? 64 : 4)) };
+  if (values.plan) {
+    if (values.profile !== "matrix") throw Error("--plan requires --profile matrix");
+    const { admissionMatrixPlan } = await import("../../tests/integration/admission-measure.js");
+    console.log(JSON.stringify({ status: "PLAN_ONLY_NOT_MEASURED", ...admissionMatrixPlan(options) }, null, 2)); return;
+  }
+  if (values.profile === "matrix" && !values["matrix-child"]) {
+    // A parent-process watchdog also bounds synchronous solc/EVM work that an
+    // event-loop AbortSignal alone cannot interrupt. No grandchild processes.
+    const child = spawn(process.execPath, [...process.execArgv, process.argv[1], ...process.argv.slice(2), "--matrix-child"], { stdio: "inherit", windowsHide: true });
+    let timedOut = false;
+    const deadline = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 180_000);
+    try {
+      const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
+      if (timedOut) throw Error("BENCHMARK_TOTAL_BUDGET_EXCEEDED: child terminated at 180 seconds; no completed measurement");
+      if (code !== 0) throw Error("Benchmark child failed; no completed measurement");
+    } finally { clearTimeout(deadline); }
+    return;
+  }
   const result = await withSourceProvenance(async () => {
     // Snapshot before importing the code that will actually be measured.
-    const { measureAdmission } = await import("../../tests/integration/admission-measure.js");
-    return measureAdmission({ requests: Number(values.requests), concurrency: Number(values.concurrency), identities: Number(values.identities) });
+    const { measureAdmission, measureAdmissionMatrix } = await import("../../tests/integration/admission-measure.js");
+    return values.profile === "matrix" ? measureAdmissionMatrix(options) : measureAdmission(options);
   });
   console.log(JSON.stringify(result, null, 2));
 }
