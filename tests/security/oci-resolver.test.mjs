@@ -30,6 +30,10 @@ test('OCI resolves exact platform, verifies every blob, reports root and never c
     assert.equal(JSON.stringify(image.runtime).includes('synthetic-private-marker'), false);
     await assert.rejects(() => inspectOciImage({ index, readBlob: async () => Buffer.from('tampered') }), /INTEGRITY/);
     await assert.rejects(() => inspectOciImage({ index, readBlob: async ({ digest }) => blobs.get(digest), platform: { os: 'linux', architecture: 'arm64' } }), /platform/);
+    await assert.rejects(() => inspectOciImage({ index: { ...index, manifests: [...index.manifests, ...index.manifests] },
+      readBlob: async ({ digest }) => blobs.get(digest) }), /platform.*ambiguous/);
+    await assert.rejects(() => inspectOciImage({ index, readBlob: async ({ digest }) => blobs.get(digest),
+      platform: { os: 'linux', architecture: 'amd64', variant: 'unselected' } }), /PLATFORM_UNSUPPORTED/);
     await mkdir(join(workspace, 'blobs/sha256'), { recursive: true });
     for (const [digest, bytes] of blobs) await writeFile(join(workspace, 'blobs/sha256', digest.slice(7)), bytes);
     await writeFile(join(workspace, 'oci-layout'), JSON.stringify({ imageLayoutVersion: '1.0.0' }));
@@ -38,6 +42,9 @@ test('OCI resolves exact platform, verifies every blob, reports root and never c
     try {
       assert.equal(resolved.metadata.imageDigest, manifest.digest);
       assert.equal(resolved.metadata.allLayerDigestsVerified, true);
+      assert.equal(resolved.metadata.runtimePreparation.ready, false);
+      assert.equal(resolved.metadata.runtimePreparation.descriptor.sourceDigest, manifest.digest);
+      assert.ok(resolved.metadata.runtimePreparation.issues.includes('RUNTIME_OCI_NON_ROOT_REQUIRED'));
       const scanned = await scanResolvedArtifact({ artifactDir: resolved.artifactDir, logger: () => {} });
       assert.equal(scanned.result.scanStatus, 'INCONCLUSIVE');
       assert.equal(JSON.stringify(scanned.bundle).includes('synthetic-private-marker'), false);
