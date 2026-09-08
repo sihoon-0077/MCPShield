@@ -1,10 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
+import { buildApp } from '../../apps/api/src/app.js';
 // @ts-expect-error Native ESM release gate, import never invokes Docker.
-import { waitForJudgeBackend } from '../../scripts/ops/smoke-release-image.mjs';
+import { waitForJudgeBackend, smokeJudgeExperience } from '../../scripts/ops/smoke-release-image.mjs';
 
 const origin = 'http://127.0.0.1:3000';
+test('release smoke contract exercises the real API and complete synthetic judge session', async () => {
+  const app = await buildApp({ databasePath: ':memory:', judgeDemo: true,
+    adminApiToken: 'synthetic-release-admin-token', scannerApiToken: 'synthetic-release-scanner-token' });
+  try {
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address();
+    assert.ok(address && typeof address !== 'string');
+    const local = `http://127.0.0.1:${address.port}`;
+    // Same path translation as the web proxy, with actual HTTP and API handlers.
+    const proxyFetch = (url: string, init: RequestInit) => fetch(url.replace('/api/judge/', '/api/demo/'), init);
+    await waitForJudgeBackend(local, proxyFetch);
+    assert.deepEqual(await smokeJudgeExperience(local, proxyFetch), {
+      backend: 'PASS', safe: 'ALLOW', malicious: 'BLOCK_BEFORE_SPAWN', source: 'LIVE_DEMO', synthetic: true, ledger: 'LOCAL_DEMO' });
+  } finally { await app.close(); }
+});
 test('independent CI diagnostics never remove upstream success gates from image signing or retention', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/frontend-gateway-devops.yml', import.meta.url), 'utf8');
   const jobs = workflow.split(/^  (?=[a-z-]+:\s*$)/m);
