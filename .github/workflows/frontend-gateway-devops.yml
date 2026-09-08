@@ -43,6 +43,8 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose -f docker-compose.yml -f compose.observability.yml config --quiet
+          node scripts/ops/init-control.mjs
+          docker compose --env-file .env.master.local -f docker-compose.yml -f compose.control.yml config --quiet
       - name: Exercise actual Linux sandbox isolation
         if: matrix.node == 22
         timeout-minutes: 5
@@ -51,6 +53,12 @@ jobs:
         run: |
           docker pull node:22-alpine
           node --test tests/security/docker-sandbox.test.mjs
+      - name: Exercise actual Docker scan through V2 chain and both Gateways
+        if: matrix.node == 22
+        timeout-minutes: 6
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: node --import tsx --test tests/api/v2-fullcycle.test.ts
       - name: Validate actual collector and alert configuration
         if: matrix.node == 22
         run: |

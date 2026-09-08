@@ -13,6 +13,7 @@ COPY packages/contracts-sdk ./packages/contracts-sdk
 COPY packages/protocol ./packages/protocol
 COPY packages/artifact-policy ./packages/artifact-policy
 COPY packages/telemetry ./packages/telemetry
+COPY packages/object-storage ./packages/object-storage
 COPY services/scanner ./services/scanner
 COPY services/resolver ./services/resolver
 COPY services/exfil-sink ./services/exfil-sink
