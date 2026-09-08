@@ -171,21 +171,59 @@ export function sinkFailureCode(stderr, state = {}) {
   return 'UNCLASSIFIED';
 }
 
-async function waitForSink(containerName, timeoutMs = 10_000) {
+const SINK_HEALTH_CHECK = "try{const r=await fetch('http://127.0.0.1:8080/health',{signal:AbortSignal.timeout(1000)});if(r.ok&&(await r.json()).ok===true)process.stdout.write('READY');else process.exitCode=2}catch{process.exitCode=2}";
+
+// A log marker is diagnostic, not readiness. Check the actual trusted HTTP
+// endpoint; slow/failed Docker control commands must not look like app startup.
+// command is injectable for portable contract tests, never a public scan option.
+export async function waitForSink(containerName, timeoutMs = 10_000, command = run) {
+  if (!/^mcpshield-sink-[a-f0-9]{12}$/.test(containerName) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10_000) throw Error('SINK_READINESS_INPUT_INVALID');
+  const started = Date.now();
   const deadline = Date.now() + timeoutMs;
+  const checks = { attempts: 0, commandTimeouts: 0, commandFailures: 0, state: 'UNKNOWN', imageDigest: null,
+    healthExit: null, inspectExit: null, logsExit: null, logReady: false, oomKilled: false, containerExit: null };
+  let stderr = '';
+  const inspect = async (grace = false) => {
+    const result = await invoke(['inspect', '--format', '{"state":{{json .State}},"image":{{json .Image}}}', containerName], 'inspectExit', grace ? 1000 : Math.min(1000, deadline - Date.now()));
+    try {
+      const { state, image } = JSON.parse(result.stdout);
+      checks.state = ['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'].includes(state?.Status) ? state.Status : 'UNKNOWN';
+      checks.imageDigest = /^sha256:[a-f0-9]{64}$/.test(image) ? image : null;
+      checks.oomKilled = state?.OOMKilled === true;
+      checks.containerExit = Number.isSafeInteger(state?.ExitCode) ? state.ExitCode : null;
+    } catch { /* command/result unavailable, never assume a running container */ }
+  };
+  const invoke = async (args, field, budget) => {
+    if (budget < 1) return { code: null, stdout: '', stderr: '', timedOut: false };
+    let result;
+    try { result = await command('docker', args, { timeoutMs: budget }); }
+    catch { result = { code: -1, stdout: '', stderr: '', timedOut: false }; }
+    checks[field] = Number.isSafeInteger(result.code) ? result.code : null;
+    if (result.timedOut) checks.commandTimeouts++;
+    else if (result.code !== 0) checks.commandFailures++;
+    stderr = typeof result.stderr === 'string' ? result.stderr : '';
+    return result;
+  };
   while (Date.now() < deadline) {
-    const logs = await run('docker', ['logs', containerName], { timeoutMs: 1_000 });
-    if (/^READY http:\/\//m.test(logs.stdout)) return;
-    const inspected = await run('docker', ['inspect', '--format', '{{json .State}}', containerName], { timeoutMs: 1_000 });
-    let state;
-    try { state = JSON.parse(inspected.stdout); } catch { state = {}; }
-    if (state.Status === 'exited' || state.Status === 'dead' || state.OOMKilled) {
-      const fingerprint = createHash('sha256').update(logs.stderr).digest('hex').slice(0, 16);
-      throw new Error(`Docker exfil sink exited before readiness (${sinkFailureCode(logs.stderr, state)}; exit=${Number(state.ExitCode) || 0}; logHash=${fingerprint})`);
-    }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    checks.attempts++;
+    const health = await invoke(['exec', containerName, '/usr/local/bin/node', '--input-type=module', '-e', SINK_HEALTH_CHECK],
+      'healthExit', Math.min(3000, deadline - Date.now()));
+    if (!health.timedOut && health.code === 0 && health.stdout === 'READY') return;
+    await inspect();
+    if (['exited', 'dead'].includes(checks.state) || checks.oomKilled) break;
+    const pause = Math.min(100, deadline - Date.now());
+    if (pause > 0) await new Promise((resolveWait) => setTimeout(resolveWait, pause));
   }
-  throw new Error('Docker exfil sink startup timed out');
+  // At most two extra one-second, read-only diagnostic commands after the work
+  // deadline. Raw daemon/container output is never included in the exception.
+  await inspect(true);
+  const logs = await invoke(['logs', '--tail=20', containerName], 'logsExit', 1000);
+  checks.logReady = logs.code === 0 && /^READY http:\/\//m.test(logs.stdout);
+  const code = checks.oomKilled || ['exited', 'dead'].includes(checks.state)
+    ? sinkFailureCode(stderr, { OOMKilled: checks.oomKilled })
+    : checks.commandTimeouts ? 'DOCKER_CONTROL_TIMEOUT' : checks.commandFailures ? 'DOCKER_CONTROL_OR_HEALTH_FAILURE' : 'HEALTH_NOT_READY';
+  const diagnostics = { ...checks, elapsedMs: Date.now() - started, logHash: createHash('sha256').update(stderr).digest('hex').slice(0, 16) };
+  throw Object.assign(new Error(`Docker exfil sink readiness failed (${code}; ${JSON.stringify(diagnostics)})`), { diagnostics });
 }
 
 async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId, egressAllowHosts = ['mail-api.local', 'exfil-sink.local'], mcpProbe = false, probeCalls = [], preparedRuntime }) {
