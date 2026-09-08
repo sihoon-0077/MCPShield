@@ -38,3 +38,20 @@ Compatibility checks cover legacy initialization for 2024-11-05, 2025-03-26, 202
 For staged rollout, `node apps/gateway/src/index.mjs inspect --artifact <directory> --rollout observe|warn|enforce` reports `RECORD_ONLY`, `REVIEW_REQUIRED`, or the enforcement decision without starting any process. `run` and `stdio` always enforce admission; assessment is not a bypass switch or a human-approval implementation. Inspection supports the same `--mode replay --replay <file>` switches for reproducible dry-runs.
 
 Set `MCPSHIELD_TELEMETRY_ENABLED=true`, `OTEL_SERVICE_NAME=mcpshield-gateway`, and the configured OTLP collector URL to export bounded admission spans/counters/latency. W3C trace context propagates to the admission API; no credentials, request arguments, or response bodies are telemetry attributes.
+
+## Private high-risk action receipts
+
+Set `MCPSHIELD_RECEIPT_DB` to a dedicated private SQLite file to record high-risk admission and call decisions before forwarding. Also set `MCPSHIELD_RECEIPT_AGENT_HASH` and `MCPSHIELD_RECEIPT_SCOPE_HASH` to administrator-computed `sha256:` hashes and configure the exact control-plane release ID and policy hash. The scope hash describes the approved authorization scope; raw scope values, tool arguments, credentials and response bodies are never accepted by the logger. Read-only decisions are not written. An enabled logger with invalid configuration or a failed append blocks high-risk execution; disabling the variable restores receipt-free behavior without bypassing normal admission.
+
+Each record includes a random receipt ID, local sequence/time, action class, ALLOW/BLOCK decision, policy/release identity, source (LIVE/REPLAY/MOCK), and previous-receipt hash. SQLite `BEGIN IMMEDIATE` serializes independent Gateway writers, `synchronous=FULL` persists each committed append, and triggers reject UPDATE/DELETE through SQL. Startup verifies the full chain; each append validates its tail; creating a batch verifies the entire chain again. Protect the parent directory and OS user/ACL in deployment; the Gateway does not claim to withstand a compromised local administrator.
+
+```powershell
+# Verify the local log; prints only the final sequence and hash.
+node apps/gateway/src/receipts.mjs --db C:/private/mcpshield/receipts.sqlite
+# Export a private batch with inclusion proofs (1 to 127 consecutive receipts).
+node apps/gateway/src/receipts.mjs --db C:/private/mcpshield/receipts.sqlite --from 1 --to 20
+```
+
+The batch reuses the scanner's domain-separated SHA-256 Merkle implementation: one `batch.json` plus up to 127 receipt leaves. `verifyReceiptBatch(bundle, trustedRoot)` verifies the root and sequence/hash linkage; `verifyEvidenceLeaf` can disclose only one receipt and its proof. Batches are explicitly `LOCAL_UNANCHORED`: exporting one does not submit a blockchain transaction. A chain anchor or independent transparency checkpoint is required to prove resistance to wholesale log replacement or tail truncation. `ledger.verify({expectedCheckpoint:{sequence,receiptHash}})` checks such an externally retained checkpoint; an untrusted local head alone cannot prove history was not replaced. Database backup/restore must include its WAL or use a SQLite-consistent backup, then verify the retained checkpoint before reuse.
+
+Tests exercise 4 independent processes appending 100 total receipts, SQL mutation rejection, corrupted-record detection, checkpoint-based truncation detection, individual inclusion proofs, and Gateway execution hooks with explicitly labeled synthetic REPLAY decisions.

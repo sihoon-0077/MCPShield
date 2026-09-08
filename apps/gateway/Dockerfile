@@ -8,6 +8,7 @@ RUN npm ci --omit=dev --ignore-scripts
 COPY apps/gateway/src ./apps/gateway/src
 COPY packages/artifact-policy ./packages/artifact-policy
 COPY packages/telemetry ./packages/telemetry
+COPY services/scanner/src/evidence.mjs ./services/scanner/src/evidence.mjs
 COPY demo/fixtures/mail-mcp-1.0.1 /fixtures/mail-mcp-1.0.1
 COPY scripts/demo/gateway-probe.mjs ./gateway-probe.mjs
 COPY scripts/demo/replay.json ./replay.json

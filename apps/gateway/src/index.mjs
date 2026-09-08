@@ -135,7 +135,7 @@ function stderrSummary(chunk) {
 async function admittedSnapshot(artifactDir, options) {
   const snapshot = await createArtifactSnapshot(artifactDir);
   try {
-    const decision = await getAdmission({ ...options, identity: snapshot, operationClass: operationClass(snapshot.tools) });
+    const decision = await checkedDecision(snapshot, options, "__admission__", "ADMISSION", operationClass(snapshot.tools));
     log("admission", { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash, decision: decision.decision, status: decision.releaseStatus, source: decision.source, cacheHit: decision.cacheHit, expiresAt: decision.expiresAt });
     if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") throw new AdmissionBlockedError(decision);
     if (snapshot.runtimePolicyIssues.length) throw new Error(`Gateway runtime policy rejected ${snapshot.runtimePolicyIssues[0].path}: ${snapshot.runtimePolicyIssues[0].reason}`);
@@ -161,9 +161,34 @@ function operationClass(tools) {
   return tools.length && tools.every((tool) => tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint === false) ? "READ_PRIVATE" : "WRITE_EXTERNAL";
 }
 
+async function checkedDecision(snapshot, options, toolName, phase, actionClass) {
+  const receiptPath = options.receiptPath ?? process.env.MCPSHIELD_RECEIPT_DB;
+  const record = async (decision) => {
+    if (!receiptPath || ["READ_PUBLIC", "READ_PRIVATE"].includes(actionClass)) return;
+    const { appendConfiguredReceipt } = await import("./receipts.mjs");
+    const result = appendConfiguredReceipt(receiptPath, {
+      agentIdHash: options.receiptAgentHash ?? process.env.MCPSHIELD_RECEIPT_AGENT_HASH,
+      requestedScopeHash: options.receiptScopeHash ?? process.env.MCPSHIELD_RECEIPT_SCOPE_HASH,
+      releaseId: options.controlReleaseId ?? process.env.MCPSHIELD_CONTROL_RELEASE_ID ?? decision.releaseId,
+      policyHash: options.policyHash ?? process.env.MCPSHIELD_POLICY_HASH,
+      toolName, phase, operationClass: actionClass, decision: decision.decision, reasonCode: decision.reasonCode,
+      source: decision.source, traceId: currentTraceId() ?? null,
+    });
+    log("private_receipt_appended", { receiptId: result.receipt.receiptId, receiptHash: result.receiptHash, assurance: "LOCAL_UNANCHORED" });
+  };
+  let decision;
+  try { decision = await getAdmission({ ...options, identity: snapshot, operationClass: actionClass }); }
+  catch (error) {
+    await record({ decision: "BLOCK", reasonCode: "STATUS_UNAVAILABLE", source: String(options.mode ?? process.env.MCPSHIELD_MODE ?? "live").toUpperCase() });
+    throw error;
+  }
+  await record(decision);
+  return decision;
+}
+
 function recheckSession(snapshot, options) {
   return async (message) => {
-    const decision = await getAdmission({ ...options, identity: snapshot, operationClass: operationClass(snapshot.tools.filter((tool) => tool.name === message.params?.name)) });
+    const decision = await checkedDecision(snapshot, options, message.params.name, "CALL", operationClass(snapshot.tools.filter((tool) => tool.name === message.params.name)));
     if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") {
       throw new AdmissionBlockedError(decision);
     }

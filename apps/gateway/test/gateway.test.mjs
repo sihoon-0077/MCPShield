@@ -10,6 +10,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { createArtifactSnapshot, toolSurfaceHash } from "../src/artifact.mjs";
 import { AdmissionBlockedError, createGatewayHttpServer, getAdmission, inspectArtifact, proxyArtifactStdio, runArtifact, runtimeSurfaceGuards } from "../src/index.mjs";
 import { createGatewayClient } from "../../../scripts/demo/mcp-client.mjs";
+import { closeConfiguredReceiptLedgers, openReceiptLedger, verifyReceiptBatch } from "../src/receipts.mjs";
 
 const gateway = fileURLToPath(new URL("../src/index.mjs", import.meta.url));
 const safeFixture = fileURLToPath(new URL("../../../demo/fixtures/mail-mcp-1.0.0", import.meta.url));
@@ -18,10 +19,10 @@ const replayFile = fileURLToPath(new URL("../../../scripts/demo/replay.json", im
 const expectedFile = fileURLToPath(new URL("../../../demo/fixtures/expected-hashes.json", import.meta.url));
 const modern = (message) => ({ ...message, params: { ...message.params, _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "gateway-test", version: "1" }, "io.modelcontextprotocol/clientCapabilities": {} } } });
 const wire = (message) => `${JSON.stringify(Array.isArray(message) ? message.map(modern) : modern(message))}\n`;
-function artifactSource(tools, clientReply = "send({jsonrpc:'2.0',id:q.id,result:{tools}})") {
+function artifactSource(tools, clientReply = "send({jsonrpc:'2.0',id:q.id,result})", pageResult = "{tools}") {
   return `const tools=${JSON.stringify(tools)}; const send=value=>process.stdout.write(JSON.stringify(value)+'\\n');
 function handle(q){if(!Object.hasOwn(q,'id'))return;if(q.method==='initialize'){send({jsonrpc:'2.0',id:q.id,result:{protocolVersion:q.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'test',version:'1'}}});return;}
-if(String(q.id).startsWith('mcpshield.')){send({jsonrpc:'2.0',id:q.id,result:{tools}});return;} ${clientReply};}
+const result=${pageResult};if(String(q.id).startsWith('mcpshield.')){send({jsonrpc:'2.0',id:q.id,result});return;} ${clientReply};}
 let data='';process.stdin.setEncoding('utf8');for await(const chunk of process.stdin){data+=chunk;let i;while((i=data.indexOf('\\n'))!==-1){const line=data.slice(0,i);data=data.slice(i+1);if(line.trim()){const q=JSON.parse(line);for(const item of Array.isArray(q)?q:[q])handle(item);}}}`;
 }
 
@@ -316,6 +317,21 @@ test("runtime tools/list with matching surface is relayed byte-for-byte", async 
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
+test("real stdio child with paginated tools exposes only the client pages after full verification", async () => {
+  const tools = [{ name: "alpha" }, { name: "beta" }];
+  const artifact = await syntheticArtifact({ tools });
+  await writeFile(join(artifact, "index.mjs"), artifactSource(tools, undefined, "q.params?.cursor==='page-2'?{tools:[tools[1]]}:{tools:[tools[0]],nextCursor:'page-2'}"));
+  const replay = await allowedReplay(artifact);
+  try {
+    const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true,
+      input: wire({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + wire({ jsonrpc: "2.0", id: 2, method: "tools/list", params: { cursor: "page-2" } }) });
+    assert.equal(result.code, 0);
+    const messages = result.stdout.trim().split("\n").map(JSON.parse);
+    assert.deepEqual(messages.map(({ id, result }) => ({ id, tools: result.tools })), [{ id: 1, tools: [tools[0]] }, { id: 2, tools: [tools[1]] }]);
+    assert.doesNotMatch(result.stdout, /mcpshield\./);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
 test("runtime tools/list drift is suppressed and terminates the child", async () => {
   const artifact = await syntheticArtifact({ tools: [{ name: "echo", description: "Echo" }], responseTools: [{ name: "steal", description: "Unexpected" }] });
   const replay = await allowedReplay(artifact);
@@ -577,4 +593,31 @@ test("stdio disconnect terminates a child ignoring EOF and stderr never exposes 
     assert.doesNotMatch(result.stderr, /synthetic-secret-must-not-escape/);
     assert.match(result.stderr, /child_stderr_suppressed/);
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("opt-in high-risk receipts capture admission/call decisions without arguments and fail closed on invalid audit configuration", async () => {
+  const tools = [{ name: "write_synthetic", description: "Synthetic action with no external effects" }];
+  const artifact = await syntheticArtifact({ tools });
+  await writeFile(join(artifact, "index.mjs"), artifactSource(tools, "send({jsonrpc:'2.0',id:q.id,result:q.method==='tools/call'?{content:[{type:'text',text:'synthetic success'}]}:{tools}})"));
+  const replay = await allowedReplay(artifact), directory = await mkdtemp(join(tmpdir(), "mcpshield-receipt-integration-"));
+  const receiptPath = join(directory, "receipts.sqlite");
+  const options = { receiptPath, receiptAgentHash: `sha256:${"a".repeat(64)}`, receiptScopeHash: `sha256:${"b".repeat(64)}`, controlReleaseId: `0x${"c".repeat(64)}`, policyHash: `0x${"d".repeat(64)}` };
+  try {
+    const result = await runArtifact({ ...options, artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true, input: wire({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "write_synthetic", arguments: { privateValue: "synthetic-argument-must-not-persist" } } }) });
+    assert.equal(result.code, 0);
+    await assert.rejects(runArtifact({ ...options, artifactDir: maliciousFixture, mode: "replay", replayFile, capture: true }), AdmissionBlockedError);
+    closeConfiguredReceiptLedgers();
+    const ledger = openReceiptLedger(receiptPath);
+    try {
+      assert.equal(ledger.verify().sequence, 3);
+      const { bundle } = ledger.createBatch({ fromSequence: 1, toSequence: 3 });
+      assert.equal(verifyReceiptBatch(bundle, bundle.manifest.root), true);
+      const receipts = Object.entries(bundle.files).filter(([path]) => path.startsWith("receipts/")).map(([, content]) => JSON.parse(content));
+      assert.deepEqual(receipts.map(({ phase, decision, source }) => ({ phase, decision, source })), [
+        { phase: "ADMISSION", decision: "ALLOW", source: "REPLAY" }, { phase: "CALL", decision: "ALLOW", source: "REPLAY" }, { phase: "ADMISSION", decision: "BLOCK", source: "REPLAY" },
+      ]);
+      assert.doesNotMatch(JSON.stringify(bundle), /synthetic-argument-must-not-persist|privateValue|arguments/);
+    } finally { ledger.close(); }
+    await assert.rejects(runArtifact({ ...options, receiptAgentHash: "raw-agent-name-not-a-hash", artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true }), /Invalid private receipt fields/);
+  } finally { closeConfiguredReceiptLedgers(); await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); await rm(directory, { recursive: true, force: true }); }
 });
