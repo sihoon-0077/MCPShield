@@ -1,6 +1,6 @@
 # MCPShield Gateway
 
-The default Gateway accepts an artifact directory, never an API caller-provided release ID, digest, tool hash, executable, or arguments. It copies regular files into a private temporary snapshot, computes the scanner-compatible artifact and tool-surface hashes from those exact bytes, validates the `.mjs` manifest entrypoint, checks admission, and starts only that snapshotted entrypoint with the current Node executable. The separate, operator-local prepared npm profile below uses a committed immutable Docker image instead of this host fixture runner.
+The default Gateway accepts an artifact directory, never an API caller-provided release ID, digest, tool hash, executable, or arguments. It copies regular files into a private temporary snapshot, computes the scanner-compatible artifact and tool-surface hashes from those exact bytes, validates the `.mjs` manifest entrypoint, checks admission, and starts only that snapshotted entrypoint with the current Node executable. The separate, operator-local prepared npm and OCI profiles below use committed immutable Docker images instead of this host fixture runner.
 
 The child receives only a minimal system environment. Pass an MCP-specific variable intentionally by listing its exact name in `MCPSHIELD_CHILD_ENV_ALLOWLIST`; unrelated parent secrets are not inherited. Runtime injection variables such as `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, and `DYLD_*` are always removed. Artifact code is ESM-only: `.js`, CommonJS, dynamic, absolute, package, native, and WebAssembly module loads are rejected. Loader-shaped raw source is rejected fail-closed so regex or template syntax cannot hide a dynamic import. `.mjs` code may use only an allowlist of non-network `node:` built-ins and relative `.mjs` modules captured inside its snapshot. Node's permission model prevents reads outside that snapshot, string code generation is disabled, child output is capped, and runtime network egress is not supported by this MVP.
 
@@ -137,4 +137,25 @@ On denial, malformed protocol, timeout, EOF, signal or Docker/start failure, cle
 ```sh
 MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_RUNTIME_BUILDER_IMAGE=sha256:<verified-local-builder-id> \
   node --test apps/gateway/test/prepared-docker.test.mjs
+```
+
+## Prepared OCI runtime (Linux operator host; development checkpoint)
+
+The same `--prepared-identity` command accepts profile `oci-container-v1` in the same private envelope. It uses the shared OCI binding validator, not the npm validator. The derived artifact is the observed descriptor hash; its manifest hashes exactly `{schemaVersion,profile,sourceReleaseId,sourceArtifactDigest,descriptorDigest,executionPolicyDigest}`. The original source is unchanged, and the exact Control ID still commits four ABI fields. Source/config/platform/rootfs/entrypoint-link chain/argv/environment/raw full tools are bound; extra host paths, flags, image tags, approval booleans or phase fields are rejected.
+
+The seven scanner trust anchors are commitments, **not self-issued approval**. Independent validators must obtain their own approved base/catalogue, Trivy database/tool and observer/sink bytes. The operator pins the exact registered OCI policy hash and signer/domain context. The first Backend policy labels AI evidence `LOCAL_CONTRACT_TEST` inside that policy hash; it does not claim production-provider quality. A valid binding, scan `COMPLETE`, observed descriptor or unsigned display status never authorizes execution.
+
+This checkpoint requires strict mode and fresh verified V2 signatures from the API or separately pinned organization issuer before start and before every call. It rejects OCI balanced mode, direct-RPC-only authorization and break-glass. **Remaining work:** verify OCI compatibility with the existing balanced/read fallback and one-call emergency audit; these are not permanently excluded from the full goal. npm admission/fallback/emergency behavior and the public fixture HTTP service remain unchanged.
+
+Before admission, local inspection checks the exact image config ID and independently exports a never-started image to recompute its bounded canonical filesystem and entrypoint proof. No image is pulled and no candidate is executed during inspection. The shared inspection budget is at most 40 seconds and 512 MiB of layer/export archive evidence; the operator host needs memory for that evidence in addition to container resources. Cleanup failure is a failure, not successful inspection. This is a local Linux host CLI requiring an already-provisioned Docker daemon; the public Railway service is not granted Docker/socket access by this feature.
+
+The OCI execution policy pins exact native argv/working directory, user `1000:1000`, read-only root, network none, dropped capabilities, no-new-privileges, disabled healthcheck, Docker's built-in default seccomp, 256 MiB memory with no additional swap, one CPU, 64 PIDs and 32 MiB noexec/nosuid/nodev `/tmp`. Gateway checks actual daemon/container settings. Only the committed inert image environment is retained, with fixed `HOME=/nonexistent` and `PYTHONDONTWRITEBYTECODE=1`; host credentials, volumes, devices and Docker socket are not forwarded. Actual container creation still precedes a fresh admission check, and the existing exact-owner cleanup handles denial, protocol errors, timeout and EOF.
+
+Native programs do **not** receive Node permission flags. This profile limits packaged data/compute, removes the observer's synthetic network/home, and is not a certification of arbitrary native code, syscalls or filesystem behavior. Tools needing network or synthetic files may fail even after a completed observation. Stop the wrapper/remove the prepared identity to disable it.
+
+`oci-prepared.test.mjs` checks synthetic identity/runtime contracts; it is not Docker or quorum evidence. The optional actual Linux test builds a small native BusyBox shell image solely from the pinned local builder, imports the actual OCI source, observes two-page discovery, then checks native isolation, per-call revocation, unsigned rejection, tampered local filesystem, timeout and CLI EOF. Its admission signer/review anchors are explicitly synthetic; full independent OCI scan/quorum is separate. A skipped test proves nothing about native execution:
+
+```sh
+MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_RUNTIME_BUILDER_IMAGE=sha256:<verified-local-builder-id> \
+  node --test apps/gateway/test/oci-prepared-docker.test.mjs
 ```

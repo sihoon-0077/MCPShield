@@ -6,6 +6,8 @@ import { open } from "node:fs/promises";
 import { promisify } from "node:util";
 import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2-identity.mjs";
 import { validatePreparedReleaseBinding } from "../../../services/scanner/src/prepared-binding.mjs";
+import { validateOciReleaseBinding } from "../../../services/scanner/src/oci-binding.mjs";
+import { inspectOciBinding, ociDockerArgs, validateOciContainer, validateOciEngine, validateOciImage } from "./oci-prepared.mjs";
 import { canonicalJson } from "../../../services/scanner/src/evidence.mjs";
 import { toolSurfaceHash } from "./artifact.mjs";
 
@@ -17,7 +19,8 @@ const dockerJson = (text) => { try { return JSON.parse(text); } catch { fail("PR
 const exact = (value, fields) => value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join() === [...fields].sort().join();
 
 export function validatePreparedIdentity(value) {
-  if (!exact(value, ["schemaVersion", "releaseId", "toolId", "binding", "tools"]) || value.schemaVersion !== "mcpshield.gateway-prepared.v1" || !id.test(value.releaseId) || !id.test(value.toolId) || !validatePreparedReleaseBinding(value.binding)) fail("PREPARED_IDENTITY_INVALID");
+  const validateBinding = value?.binding?.profile === "oci-container-v1" ? validateOciReleaseBinding : validatePreparedReleaseBinding;
+  if (!exact(value, ["schemaVersion", "releaseId", "toolId", "binding", "tools"]) || value.schemaVersion !== "mcpshield.gateway-prepared.v1" || !id.test(value.releaseId) || !id.test(value.toolId) || !validateBinding(value.binding)) fail("PREPARED_IDENTITY_INVALID");
   const { binding, tools } = value;
   if (!Array.isArray(tools) || tools.length > 128 || tools.some(tool => !tool || typeof tool.name !== "string" || !tool.name || tool.name.length > 128 || /[\x00-\x1f\x7f]/.test(tool.name) || !tool.inputSchema || typeof tool.inputSchema !== "object" || Array.isArray(tool.inputSchema)) || new Set(tools.map(tool => tool.name)).size !== tools.length || toolSurfaceHash(tools) !== binding.toolSurfaceHash) fail("PREPARED_TOOL_SURFACE_INVALID");
   if (exactReleaseIdentity({ toolId: value.toolId, ...binding }).releaseId !== value.releaseId) fail("PREPARED_RELEASE_ID_MISMATCH");
@@ -40,6 +43,7 @@ async function readIdentity(filename) {
 }
 
 export function validatePreparedImage(image, binding) {
+  if (binding.profile === "oci-container-v1") return validateOciImage(image, binding);
   if (!sha.test(binding.finalImageDigest) || image?.Id !== binding.finalImageDigest || image.Os !== binding.platform.os || image.Architecture !== binding.platform.architecture || image.Config?.User !== "1000:1000" || Object.keys(image.Config?.Volumes ?? {}).length) fail("PREPARED_IMAGE_IDENTITY_MISMATCH");
   if (!Array.isArray(image.Config.Env) || image.Config.Env.some(entry => typeof entry !== "string" || !entry.includes("=") || /^(?:NODE_OPTIONS|NODE_PATH|LD_[A-Z_]+|DYLD_[A-Z_]+)=.+/i.test(entry))) fail("PREPARED_IMAGE_ENV_UNSAFE");
 }
@@ -49,12 +53,16 @@ export function preparedDockerArgs(identity, owner) {
   const { binding } = identity;
   return ["create", "--pull=never", "--name", `mcpshield-gateway-${owner}`, "--label", `${OWNER_LABEL}=${owner}`,
     "--network=none", "--read-only", "--user=1000:1000", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--no-healthcheck",
-    "--memory=128m", "--memory-swap=128m", "--cpus=0.5", "--pids-limit=64", "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m", "--workdir=/app", "--interactive",
-    "--entrypoint=/usr/local/bin/node", binding.finalImageDigest, ...binding.executionPolicy.gateway.nodeArguments, binding.descriptor.argv[1]];
+    ...(binding.profile === "oci-container-v1" ? ociDockerArgs(binding) : ["--memory=128m", "--memory-swap=128m", "--cpus=0.5", "--pids-limit=64", "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m", "--workdir=/app", "--interactive",
+      "--entrypoint=/usr/local/bin/node", binding.finalImageDigest, ...binding.executionPolicy.gateway.nodeArguments, binding.descriptor.argv[1]])];
 }
 
-function validateContainer(value, identity, owner) {
+function validateContainer(value, identity, owner, image) {
   const h = value?.HostConfig, binding = identity.binding;
+  if (binding.profile === "oci-container-v1") {
+    if (!containerId.test(value?.Id ?? "") || value.Config?.Labels?.[OWNER_LABEL] !== owner || value.Image !== binding.finalImageDigest || value.State?.Running !== false) fail("PREPARED_CONTAINER_POLICY_MISMATCH");
+    return validateOciContainer(value, binding, image);
+  }
   if (!Array.isArray(value?.Args) || !Array.isArray(h?.CapDrop) || !Array.isArray(h.SecurityOpt) || typeof h.Tmpfs?.["/tmp"] !== "string") fail("PREPARED_CONTAINER_POLICY_MISMATCH");
   if (!containerId.test(value?.Id ?? "") || value.Config?.Labels?.[OWNER_LABEL] !== owner || value.Image !== binding.finalImageDigest || value.Config?.User !== "1000:1000" || value.Config.WorkingDir !== "/app" || value.Path !== "/usr/local/bin/node" || canonicalJson(value.Args) !== canonicalJson([...binding.executionPolicy.gateway.nodeArguments, binding.descriptor.argv[1]]) || value.State?.Running !== false ||
     h?.NetworkMode !== "none" || h.ReadonlyRootfs !== true || h.Privileged !== false || h.Memory !== 134_217_728 || h.MemorySwap !== 134_217_728 || h.NanoCpus !== 500_000_000 || h.PidsLimit !== 64 || canonicalJson(h.CapDrop) !== '["ALL"]' || (h.CapAdd?.length ?? 0) !== 0 || !h.SecurityOpt?.some(option => ["no-new-privileges", "no-new-privileges:true"].includes(option)) ||
@@ -67,11 +75,17 @@ async function dockerCommand(args) {
 }
 
 // Dependencies are injected only by trusted unit tests. The CLI/API never accepts command/image/path overrides.
-export async function createPreparedSnapshot(filename, { command = dockerCommand, start = spawn, platform = process.platform } = {}) {
+export async function createPreparedSnapshot(filename, { command = dockerCommand, start = spawn, platform = process.platform, inspectOci, admissionMode = "strict", breakGlass = false } = {}) {
   const value = await readIdentity(filename);
+  const oci = value.binding.profile === "oci-container-v1";
+  if (oci && (admissionMode !== "strict" || breakGlass)) fail("PREPARED_OCI_STRICT_SIGNED_ADMISSION_REQUIRED");
   if (platform !== "linux") fail("PREPARED_LINUX_DOCKER_REQUIRED");
   const image = dockerJson(await command(["image", "inspect", value.binding.finalImageDigest, "--format", "{{json .}}"]));
   validatePreparedImage(image, value.binding);
+  if (oci) {
+    validateOciEngine(dockerJson(await command(["info", "--format", "{{json .SecurityOptions}}"])));
+    await inspectOciBinding(value.binding, inspectOci);
+  }
   const owner = randomUUID(), name = `mcpshield-gateway-${owner}`;
   let creationAttempted = false, started = false, cid, cleaning, creation, cancelled = false;
   const onSignal = () => { cancelled = true; void cleanup().catch(() => { process.stderr.write('{"event":"prepared_cleanup_failed","code":"PREPARED_CONTAINER_CLEANUP_FAILED"}\n'); }); };
@@ -90,7 +104,7 @@ export async function createPreparedSnapshot(filename, { command = dockerCommand
     finally { for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.removeListener(signal, onSignal); }
   })();
   return { releaseId: value.releaseId, artifactDigest: value.binding.artifactDigest, manifestDigest: value.binding.manifestDigest,
-    toolSurfaceHash: value.binding.toolSurfaceHash, tools: value.tools, runtimePolicyIssues: [], prepared: true,
+    toolSurfaceHash: value.binding.toolSurfaceHash, tools: value.tools, runtimePolicyIssues: [], prepared: true, preparedProfile: value.binding.profile,
     cleanup,
     async spawn(beforeStart, beforeExecute) {
       if (started || cleaning) fail("PREPARED_RUNTIME_ALREADY_USED");
@@ -104,7 +118,7 @@ export async function createPreparedSnapshot(filename, { command = dockerCommand
         if (!containerId.test(cid)) fail("PREPARED_CONTAINER_ID_INVALID");
         if (cancelled || cleaning) fail("PREPARED_RUNTIME_CANCELLED");
         const container = dockerJson(await command(["container", "inspect", cid, "--format", "{{json .}}"]));
-        validateContainer(container, value, owner);
+        validateContainer(container, value, owner, image);
         // Creating is not executing: recheck signed admission immediately before the actual start.
         await beforeStart();
         if (cancelled || cleaning) fail("PREPARED_RUNTIME_CANCELLED");
