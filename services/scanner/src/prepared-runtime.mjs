@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hashPreparedRuntimeDescriptor } from '../../resolver/src/runtime-preflight.mjs';
+import { hashPreparedRuntimeDescriptor } from '../../resolver/src/runtime-descriptor.mjs';
+import { preparedExecutionPolicy } from './prepared-binding.mjs';
 import { canonicalJson, createEvidenceBundle } from './evidence.mjs';
 import { toolSurfaceHash } from './scanner.mjs';
 import { runSandbox } from './sandbox.mjs';
@@ -88,10 +89,9 @@ export async function observePreparedRuntime({ descriptor, expectedDescriptorDig
   const steps = {};
   let plan = { scenarios: [] };
   let issue = null;
-  const executionPolicy = { profile: 'prepared-node-observation-v1', nodeArguments: ['--permission', '--allow-fs-read=/app',
-    '--allow-fs-read=/observer', '--allow-fs-read=/home/test', '--require', '/observer/observer-preload.cjs'],
+  const executionPolicy = preparedExecutionPolicy({
     collectorDigest: digest(await readFile(join(HERE, 'mcp-probe.cjs'))), observerDigest: digest(await readFile(join(HERE, 'observer-preload.cjs'))),
-    egressAllowHosts, isolation: 'READ_ONLY_NON_ROOT_DOCKER_INTERNAL_NETWORK', imageDigestKind: 'DOCKER_IMAGE_CONFIG_ID' };
+    egressAllowHosts });
   const run = (probeCalls) => runSandbox({ mode: 'docker', preparedRuntime: runtime, timeoutMs, scanId: randomUUID(), mcpProbe: true, probeCalls, egressAllowHosts });
   try {
     steps.discovery = await run([]);
