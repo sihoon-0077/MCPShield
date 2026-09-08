@@ -89,12 +89,16 @@ export async function importOciRuntime({ root, sourceTreeDigest, platform }) {
       await writeFile(join(pack, 'index.json'), canonicalJson({ schemaVersion: 2, manifests: [{
         mediaType: inspected.manifest.mediaType ?? 'application/vnd.oci.image.manifest.v1+json', digest: manifestDigest, size: manifestBytes.length,
         platform: inspected.platform, annotations: { 'org.opencontainers.image.ref.name': runtimeTag } }] }));
+      // Docker-save metadata for the classic native loader; original verified
+      // config/compressed layers remain unchanged. Docker applies every layer.
+      await writeFile(join(pack, 'manifest.json'), canonicalJson([{ Config: `blobs/sha256/${configDigest.slice(7)}`,
+        RepoTags: [runtimeTag], Layers: inspected.layers.map((layer) => `blobs/sha256/${layer.digest.slice(7)}`) }]));
       for (const [digest, bytes] of [[manifestDigest, manifestBytes], [configDigest, blobs.get(configDigest)],
         ...inspected.layers.map((layer) => [layer.digest, blobs.get(layer.digest)])]) {
         await writeFile(join(pack, 'blobs', 'sha256', digest.slice(7)), bytes);
       }
       const archive = join(workspace, 'image.tar');
-      await tar.c({ cwd: pack, file: archive, portable: true }, ['oci-layout', 'index.json', 'blobs']);
+      await tar.c({ cwd: pack, file: archive, portable: true }, ['oci-layout', 'index.json', 'manifest.json', 'blobs']);
       stage = 'NATIVE_LOAD';
       await runRuntimeDocker(['image', 'load', '--quiet', '--input', archive], 60_000);
       // Not every Docker engine supports OCI layout archives. Failure never
