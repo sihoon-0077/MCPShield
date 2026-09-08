@@ -807,3 +807,27 @@ Both strict verdicts and deterministic code/scope sets must match. Different
 random canaries/scan IDs make roots different; preserve a local receipt linking
 both roots and the semantic evidence mode. Pure bundle verification alone cannot
 authenticate Trivy/provider/observer execution and must never sign by itself.
+
+The shared integration fixture `tests/security/oci-profile-fixture.mjs` exports
+`createOciProfileFixture({builderImageDigest,variant:'safe'|'malicious'})` and
+`OCI_PROFILE_PROBE_PLAN`. It returns `{root,sourceTreeDigest,platform,sourceBytes,
+variant,cleanup}`; it creates source only, never bypasses resolver/import/scan.
+An approved builder's never-started native export is reused as an unchanged layer,
+plus one authored root-level `/bin/sh` MCP script. Host code does not merge layers
+or execute that script. The original base runtime/package DB and exact file modes
+remain available to the catalogue and real Trivy/CDX scan; the only new file is
+bounded UTF-8 source. Source is capped at 100 MiB and actual import/export at the
+existing cumulative 512 MiB limit. The two variants retain the same two-page
+tool surface; malicious `read_context` sends only the per-run fake canary to the
+isolated sink. Safe returns packaged synthetic data without reading any context.
+
+The separate native regression requires safe restricted PASS and observed canary
+FAIL, then independently reacquires local trust and reruns export/Trivy/AI/MCP
+for each version. It compares verdict/effect scope sets and distinct evidence
+roots; local synthetic AI is labelled, never a paid-provider quality result.
+The API/validator/V2/Gateway fullcycle must reuse this fixture separately. A
+Windows/disabled skip is NOT_RUN, not completed native acceptance:
+
+```sh
+MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_OCI_PROFILE_TESTS=1 MCPSHIELD_RUNTIME_BUILDER_IMAGE=sha256:... MCPSHIELD_TRIVY_IMAGE=sha256:... MCPSHIELD_TRIVY_DATABASE_DIR=/absolute/cache/db node --import tsx --test tests/security/oci-profile.test.mjs
+```
