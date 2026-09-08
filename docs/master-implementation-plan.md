@@ -7,7 +7,7 @@
 시작 커밋: `6aa370285154f683989f2bf9b219bd2c052e6cee` (`mcp/main`).
 기존 코드·공개 데모를 보존하고 `master/main`에서 통합한다.
 
-## 최신 통합 체크포인트 (2026-09-09 03:30 KST)
+## 최신 통합 체크포인트 (2026-09-09 KST)
 
 아래 기록이 이전 커밋의 진행 중 표기보다 우선한다. 대화에서 설명한 약 70%는
 가중 요구사항별로 계산한 완료율이 아닌 구현 진척 추정치였다. 이를 검증 완료율이나
@@ -22,11 +22,14 @@
   AI 응답은 명시적 루프백 stub이며 외부 기관 참여나 상용 모델 품질 검증이 아니다.
 - `29071a9`: 준비 작업·원본/파생 release·운영자 구성 다운로드·증거 요약·SSE 재조회 UI 통합.
   통합 후 대시보드 21개 중 1개 테스트가 새 backend 검증 규칙과 불일치해 실패했다.
-  production gate는 유지하고 명시적 synthetic 테스트 계약을 보완 중이다.
+  `821f594`에서 production gate를 유지하고 명시적 synthetic 테스트 계약을 보완했다.
+  5MiB 이상의 실제 암호화 증거를 두 경로에서 요약하고 원문을 노출하지 않는 검사 포함 23개 통과.
 - `d77fbec`: Linux CI에 실제 prepared 전체 회귀를 추가. 기존 공식 MCP client를
   운영 의존성으로 이동했으며 버전 변경이나 새 라이브러리 도입은 없다.
-- 위 코드의 로컬 backend 71개 통과·4개 외부 환경 명시 skip, 전체 타입 검사와
-  Next production build 성공. 전체 npm test는 대시보드 실패로 미통과다.
+- `821f594`의 로컬 전체 `npm test` 성공: backend 71개 통과·4개 외부 환경 명시 skip,
+  Security 78개 통과·Docker 10개 skip, Gateway 67개 통과·Docker 1개 skip, dashboard 23개 통과,
+  replay·MCP E2E·live smoke 모두 성공. 타입 검사와 Next production build도 통과했다.
+  이후 PostgreSQL 수정 `3285714`는 로컬 타입 검사 통과, 실제 DB 회귀는 아래 CI에서 확인한다.
   Windows에서 실제 Docker·PostgreSQL 통과를 주장하지 않는다.
 - 추가 로컬 보안 78개 통과·Docker 10개 skip, Gateway 66개 통과·Docker 1개 skip,
   운영 의존성 audit 0건. `de4fc9f`는 파일 I/O 중 만료 재검사까지 포함해 서명·경합
@@ -39,8 +42,12 @@
 - [Linux CI 34263512267](https://github.com/sihoon-0077/MCPShield/actions/runs/34263512267)
   (`5e8c197`)는 위 대시보드 계약 불일치 및 PostgreSQL 동시 open의 `40P01` 교착상태로 실패했다.
   마이그레이션끼리의 advisory lock은 있었지만 매 open의 트리거 DDL 재실행이 이미 실행 중인
-  업무 transaction과 경합했다. 적용 이력·checksum 및 병렬 실제 PG 회귀를 보완 중이다.
+  업무 transaction과 경합했다. `3285714`에서 적용 이력·checksum 및 병렬 실제 PG 회귀를 보완했다.
   새 builder·prepared Docker 전체 회귀·최신 서명 image 단계는 이 실행에서 도달하지 못했다.
+- `6e0ab7b`를 [Linux CI 34264417839](https://github.com/sihoon-0077/MCPShield/actions/runs/34264417839)로
+  다시 실행 중이다. Node 22/24·실제 PostgreSQL·실제 Docker 및 승인 게이트 후 10회 데모 반복을 요청했다.
+  시작/진행 중 상태는 통과 증거가 아니며 결과 확인 전에는 해당 항목을 완료로 표시하지 않는다.
+  secret scan은 전체 파일을 검사하고 정확한 비밀키 유출 방지 assertion만 non-secret 예외로 추가했다.
 - clean `de4fc9f`의 실제 로컬 EVM·SQLite·HTTP 측정(40회/동시4/identity4):
   hot p95 83.500ms, uniform p95 60.727ms, signed REVOKED 40/40 BLOCK·캐시 재사용0회,
   해당 BLOCK p95 46.899ms, 다음 admission의 차단 확인 49.126ms.
