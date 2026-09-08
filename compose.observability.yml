@@ -1,0 +1,56 @@
+# Explicit opt-in overlay; no telemetry is exported by the default demo stack.
+# docker compose -f docker-compose.yml -f compose.observability.yml up --build --wait
+x-telemetry: &telemetry
+  MCPSHIELD_TELEMETRY_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  MCPSHIELD_OTEL_ALLOW_HTTP: "true"
+
+services:
+  backend:
+    environment:
+      <<: *telemetry
+      OTEL_SERVICE_NAME: mcpshield-api
+  indexer:
+    environment:
+      <<: *telemetry
+      OTEL_SERVICE_NAME: mcpshield-indexer
+  gateway-a:
+    environment:
+      <<: *telemetry
+      OTEL_SERVICE_NAME: mcpshield-gateway-a
+  gateway-b:
+    environment:
+      <<: *telemetry
+      OTEL_SERVICE_NAME: mcpshield-gateway-b
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    volumes:
+      - ./deploy/observability/collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "127.0.0.1:4318:4318"
+    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    command: ["--config.file=/etc/prometheus/prometheus.yaml", "--storage.tsdb.retention.time=7d", "--storage.tsdb.path=/prometheus"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    volumes:
+      - ./deploy/observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./deploy/observability/alerts.yaml:/etc/prometheus/alerts.yaml:ro
+      - metrics-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    restart: unless-stopped
+volumes:
+  metrics-data:

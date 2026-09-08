@@ -1,18 +1,33 @@
-name: Frontend Gateway DevOps
+name: MCPShield Verification
 
 on:
   push:
-    branches: [main, feature/frontend-gateway-devops]
+    branches: [main, mcp/main, master/main, feature/frontend-gateway-devops]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 22
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install monorepo dependencies
@@ -22,18 +37,22 @@ jobs:
       - name: Build backend types and dashboard
         run: npm run build
       - name: Validate compose
+        if: matrix.node == 22
         run: docker compose config --quiet
       - name: Run Docker Compose end-to-end
+        if: matrix.node == 22
         timeout-minutes: 10
         run: |
           docker compose up --build --wait
           node -e "fetch('http://127.0.0.1:3000/api/live').then(r=>r.json()).then(x=>{if(x.source!=='LIVE'||x.ledgerMode!=='EVM'||x.admissions?.length!==2||!x.admissions.every(a=>a.decision==='BLOCK'&&a.source==='LIVE'&&a.spawnAttempted===false))process.exit(1)})"
       - name: Stop Docker Compose
-        if: always()
+        if: always() && matrix.node == 22
         run: docker compose down --volumes --remove-orphans
       - name: Audit production dependencies
+        if: matrix.node == 22
         run: npm audit --omit=dev --audit-level=high
       - name: Scan every tracked file for secrets
+        if: matrix.node == 22
         run: |
           findings="$(git grep -nEIi -f .github/secret-scan-patterns.regex -- . ':!package-lock.json' ':!.github/secret-scan-patterns.regex' ':!.github/secret-scan-allowlist.regex' || true)"
           unexpected="$(printf '%s\n' "$findings" | grep -Evf .github/secret-scan-allowlist.regex || true)"

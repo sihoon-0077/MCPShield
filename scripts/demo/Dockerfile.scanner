@@ -10,4 +10,6 @@ COPY services/scanner ./services/scanner
 COPY services/exfil-sink ./services/exfil-sink
 COPY demo/fixtures ./demo/fixtures
 COPY packages/protocol/schemas ./packages/protocol/schemas
+COPY packages/artifact-policy ./packages/artifact-policy
+COPY packages/telemetry ./packages/telemetry
 USER node

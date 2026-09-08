@@ -12,6 +12,7 @@ COPY database ./database
 COPY packages/contracts-sdk ./packages/contracts-sdk
 COPY packages/protocol ./packages/protocol
 COPY packages/artifact-policy ./packages/artifact-policy
+COPY packages/telemetry ./packages/telemetry
 COPY services/scanner ./services/scanner
 COPY services/exfil-sink ./services/exfil-sink
 COPY demo/fixtures ./demo/fixtures
