@@ -77,7 +77,7 @@ test("OCI independent contract compares exact binding and deterministic scope se
   assert.throws(() => compareOciScans(original, forged, ociPolicy, f.trusted), /DID_NOT_CONFIRM/);
 });
 
-test("OCI async signing guard pins every local authority/domain and requires fresh independent evidence (synthetic only)", async () => {
+test("OCI async signing guard pins every local authority/domain and requires fresh independent evidence (synthetic only)", async t => {
   const f = await syntheticOciFailure(), original = f.sample(), now = Math.floor(Date.now() / 1000), policyHash = hash(ociPolicy), registry = `0x${"a".repeat(40)}`;
   const identity = { ...f.identity, exists: true, artifactDigest: bytes32(f.binding.artifactDigest), manifestDigest: bytes32(f.binding.manifestDigest), toolSurfaceDigest: f.binding.toolSurfaceHash };
   const context = { chainId: 31337, registryAddress: registry, policyHash, policy: ociPolicy, validatorSetVersion: 1, nonce: 0, now, identity,
@@ -102,6 +102,14 @@ test("OCI async signing guard pins every local authority/domain and requires fre
       { types: { Permit: [] } }, { payload: { ...template.payload, nonce: 1 } }, { payload: { ...template.payload, deadline: now - 1 } }]) {
       await assert.rejects(() => checkedValidatorPayload({ ...template, ...patch }, context, quarantine), /BINDING_MISMATCH/);
     }
+    // A production call cannot reuse an old pre-verification clock. The final
+    // boundary is checked again even if the clock advances during reconstruction.
+    let clockReads = 0;
+    const clock = t.mock.method(Date, "now", () => (++clockReads === 1 ? now : now + 700) * 1000);
+    try {
+      await assert.rejects(() => checkedValidatorPayload(template, { ...context, now: undefined }, quarantine), /BINDING_MISMATCH/);
+      assert.ok(clockReads >= 2);
+    } finally { clock.mock.restore(); }
   }
 });
 

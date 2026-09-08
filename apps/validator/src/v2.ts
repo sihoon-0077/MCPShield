@@ -24,7 +24,7 @@ interface ValidatorContext {
   independentSourceEvidence?: { result: any; bundle: any; sourceIdentity: any; baselineReleaseId: string | null };
 }
 export async function checkedValidatorPayload(template: any, context: ValidatorContext, quarantine = false) {
-  const { scan, evidence, identity, policy } = context, now = context.now ?? Math.floor(Date.now() / 1000);
+  const { scan, evidence, identity, policy } = context;
   const domain = attestationV2Domain(context.chainId, context.registryAddress), types = quarantine ? quarantineV2Types : attestationV2Types;
   const fail = () => { throw new Error("VALIDATOR_TEMPLATE_BINDING_MISMATCH"); };
   if (!template?.payload || hash(template.domain) !== hash(domain) || hash(template.types) !== hash(types)
@@ -48,6 +48,9 @@ export async function checkedValidatorPayload(template: any, context: ValidatorC
   const report = JSON.parse(evidence.bundle.files["report.json"]), verdict = policyVerdict(evidence.bundle, scan.result.scanResult, policy, runtimeTrust);
   if (!identity.exists || identity.artifactDigest !== bytes32(report.artifactDigest) || identity.toolSurfaceDigest !== bytes32(report.toolSurfaceHash)
     || exactReleaseIdentity({ toolId: identity.toolId, artifactDigest: identity.artifactDigest, manifestDigest: identity.manifestDigest, toolSurfaceHash: identity.toolSurfaceDigest }).releaseId !== scan.releaseId) fail();
+  // Runtime trust includes asynchronous installed-file reads and evidence can be
+  // large. Never validate expiry against the clock captured before that work.
+  const now = context.now ?? Math.floor(Date.now() / 1000);
   const q = template.payload;
   if (!Number.isSafeInteger(context.nonce) || !Number.isSafeInteger(context.validatorSetVersion) || context.validatorSetVersion < 1
     || !Number.isSafeInteger(q.deadline) || q.deadline < now || q.deadline > now + 3600) fail();
@@ -66,6 +69,8 @@ export async function checkedValidatorPayload(template: any, context: ValidatorC
       reportRoot: evidence.reportRoot, verdict: { PASS: 0, FAIL: 1, ABSTAIN: 2 }[verdict], validFrom, validUntil };
   }
   if (hash(payload) !== hash(q)) fail();
+  const finalNow = context.now ?? Math.floor(Date.now() / 1000);
+  if (q.deadline < finalNow || (quarantine ? (payload as any).expiresAt <= finalNow : (payload as any).validUntil <= finalNow)) fail();
   return { domain, types, payload, verdict };
 }
 
