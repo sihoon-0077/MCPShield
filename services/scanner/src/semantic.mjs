@@ -11,6 +11,7 @@ export const semanticReportSchema = z.object({ riskClaims: z.array(claimSchema).
   needsHumanReview: z.boolean() }).strict();
 const criticSchema = z.object({ assessments: z.array(z.object({ claimIndex: z.number().int().nonnegative(), verdict: z.enum(['SUPPORTED', 'NEEDS_REVIEW', 'UNSUPPORTED']), reason: z.string().min(1).max(1024) }).strict()).max(32) }).strict();
 export const semanticOutputSchema = z.toJSONSchema(semanticReportSchema);
+export const criticOutputSchema = z.toJSONSchema(criticSchema);
 
 export function promptSources(prompt) {
   const candidate = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));

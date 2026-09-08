@@ -81,6 +81,31 @@ all AI findings remain non-deterministic. The legacy `{findings}` response stays
 supported. Providers must implement the no-tools request contract; the scanner
 does not grant them tools or execute their recommendedProbe strings.
 
+The native `openai` provider now speaks the official Responses API directly,
+without another SDK or proxy service. Select a model explicitly; there is no
+silent model choice or remote request until the opt-in is enabled:
+
+```powershell
+$env:MCP_SHIELD_AI_TOKEN='<secret-manager-value>'
+node services/scanner/src/cli.mjs --fixture demo/fixtures/mail-mcp-1.0.0 --detailed true --ai-provider openai --ai-model YOUR_MODEL --allow-remote-ai true --ai-timeout-ms 45000
+```
+
+The default destination is exactly `https://api.openai.com/v1/responses`.
+Non-OpenAI remote URLs cannot receive this provider's token; loopback remains
+available for isolated contract tests. Analyzer and Critic each use strict JSON
+schemas, no tools, stateless requests and `store:false`. Refusals, truncation,
+unexpected tool calls, excess output and full-body deadlines fail explicitly.
+The evidence records actual analyzer/critic completion, configured/returned model,
+prompt hashes, token usage, elapsed time and template version. Failed remote work
+is labeled `LOCAL_FALLBACK`, not a successful model invocation. `store:false`
+is an application-state setting, not a claim of zero provider-side retention.
+All schema/span checks still run locally and AI findings remain non-deterministic.
+
+Contract coverage: `node --test tests/security/ai-provider.test.mjs` uses only a
+local fake API. No production API key or real model quality evaluation is implied.
+Implementation references: [Structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
+and [Responses API](https://developers.openai.com/api/reference/typescript/resources/responses/methods/create).
+
 The controlled sink also implements an authenticated HTTP forward-proxy protocol
 for synthetic `.local`/`.test` targets. Every test has an `egressAllowHosts` list;
 IP literals, unknown hosts, alternate ports, credentials and CONNECT/TLS tunnels

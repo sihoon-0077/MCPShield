@@ -10,7 +10,8 @@ import { importPolicyIssues, runtimeEgressIssues } from '../../../packages/artif
 import { canonicalJson, createEvidenceBundle } from './evidence.mjs';
 import { analyzePackage, metadataSignals } from './analysis.mjs';
 import { currentTraceId, withSpan } from '../../../packages/telemetry/index.mjs';
-import { buildCriticPrompt, claimsToFindings, promptSources, semanticOutputSchema, validateCritic, validateSemanticReport } from './semantic.mjs';
+import { buildCriticPrompt, claimsToFindings, criticOutputSchema, promptSources, semanticOutputSchema, validateCritic, validateSemanticReport } from './semantic.mjs';
+import { requestAiJson } from './ai-transport.mjs';
 
 const TEXT_EXTENSIONS = new Set(['.js', '.cjs', '.mjs', '.ts', '.json', '.py']);
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -156,6 +157,7 @@ export function redactPromptText(content) {
 
 export function redactEvidenceDocument(value, depth = 0, key = '') {
   if (depth > 64) throw new TypeError('evidence nesting exceeds limit');
+  if (['input_tokens', 'output_tokens', 'total_tokens'].includes(key) && Number.isSafeInteger(value) && value >= 0) return value;
   if (/password|passwd|secret|token|api.?key|authorization|credential|private.?key/i.test(key) && !/hash|sha256|digest/i.test(key)) return '[REDACTED]';
   if (typeof value === 'string') return redactPromptText(value);
   if (Array.isArray(value)) return value.map((item) => redactEvidenceDocument(item, depth + 1));
@@ -230,25 +232,6 @@ export function buildAiPrompt({ releaseId, baselineTools, tools, files }) {
   ].join('\n');
 }
 
-async function limitedJson(response, maxBytes = 256 * 1024) {
-  if (!response.body) throw new TypeError('AI API returned an empty body');
-  const reader = response.body.getReader();
-  const chunks = [];
-  let size = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > maxBytes) {
-      await reader.cancel();
-      throw new TypeError('AI API response exceeds 256 KiB');
-    }
-    chunks.push(value);
-  }
-  try { return JSON.parse(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8')); }
-  catch { throw new TypeError('AI API returned invalid JSON'); }
-}
-
 function runtimeFindings(observations, manifest) {
   const findings = [];
   if (observations.some(({ type, target }) => type === 'FS_READ' && target === 'INJECTED_CANARY')) findings.push({
@@ -276,37 +259,30 @@ function runtimeFindings(observations, manifest) {
   return findings;
 }
 
-export async function analyzeSemantics({ url, token, prompt, timeoutMs = 2_000 }) {
-  const endpoint = new URL(url);
-  const loopback = ['127.0.0.1', 'localhost', '::1'].includes(endpoint.hostname);
-  if (!['http:', 'https:'].includes(endpoint.protocol) || (endpoint.protocol !== 'https:' && !loopback)) {
-    throw new TypeError('AI API must use HTTPS or loopback HTTP');
-  }
-  if (endpoint.username || endpoint.password) throw new TypeError('AI API URL must not include credentials');
-  const requestAnalysis = async (analysisPrompt, responseSchema) => {
-    const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-    body: JSON.stringify({ prompt: analysisPrompt, ...(responseSchema ? { responseSchema } : {}), tools: [] }),
-    signal: AbortSignal.timeout(timeoutMs),
-    redirect: 'error',
-    });
-    if (!response.ok) throw new Error(`AI API returned HTTP ${response.status}`);
-    return limitedJson(response);
-  };
-  let payload = await requestAnalysis(prompt, semanticOutputSchema);
+export async function analyzeSemanticsDetailed({ prompt, ...options }) {
+  const analyzer = await requestAiJson({ ...options, prompt, responseSchema: semanticOutputSchema, schemaName: 'mcpshield_semantic' });
+  let payload = analyzer.payload;
+  let report;
+  let critic;
+  let criticMetadata;
+  let criticStatus = 'NOT_REQUIRED';
+  if (options.provider === 'openai' && !Array.isArray(payload?.riskClaims)) throw new TypeError('OpenAI semantic report must contain riskClaims');
   if (payload && Array.isArray(payload.riskClaims)) {
     const sources = promptSources(prompt);
-    const report = validateSemanticReport(payload, sources);
-    let critic;
+    report = validateSemanticReport(payload, sources);
     if (report.riskClaims.length) {
-      try { critic = validateCritic(await requestAnalysis(buildCriticPrompt(report, sources)), report.riskClaims.length); }
-      catch { /* Critic unavailable never converts a semantic warning into permanent approval or revocation. */ }
+      try {
+        const response = await requestAiJson({ ...options, prompt: buildCriticPrompt(report, sources), responseSchema: criticOutputSchema, schemaName: 'mcpshield_critic' });
+        critic = validateCritic(response.payload, report.riskClaims.length);
+        criticMetadata = response.metadata;
+        criticStatus = 'COMPLETED';
+      } catch { criticStatus = 'UNAVAILABLE_REVIEW_REQUIRED'; }
     }
     payload = { findings: claimsToFindings(report, critic) };
   }
   if (!payload || !Array.isArray(payload.findings)) throw new TypeError('AI API response must contain findings');
-  return payload.findings.map((finding) => {
+  if (payload.findings.length > 32) throw new TypeError('AI finding limit exceeded');
+  const findings = payload.findings.map((finding) => {
     assertFinding(finding);
     if (finding.code !== 'SEMANTIC_BEHAVIOR_MISMATCH' || finding.stage !== 'AI' || finding.deterministic !== false) {
       throw new TypeError('AI finding violates semantic analyzer policy');
@@ -319,7 +295,11 @@ export async function analyzeSemantics({ url, token, prompt, timeoutMs = 2_000 }
     assertFinding(sanitized);
     return sanitized;
   });
+  return { findings, report: report ? redactEvidenceDocument(report) : null, critic: critic ? redactEvidenceDocument(critic) : null,
+    execution: { status: 'COMPLETED', templateVersion: 'semantic-v2', analyzer: analyzer.metadata, critic: criticMetadata ?? null, criticStatus } };
 }
+
+export async function analyzeSemantics(options) { return (await analyzeSemanticsDetailed(options)).findings; }
 
 async function scanSnapshotRelease({
   fixtureDir,
@@ -328,6 +308,8 @@ async function scanSnapshotRelease({
   sandboxTimeoutMs = 3_000,
   aiUrl,
   aiToken,
+  aiProvider = 'custom',
+  aiModel,
   aiTimeoutMs = 2_000,
   allowRemoteAi = false,
   source = 'LIVE',
@@ -371,21 +353,26 @@ async function scanSnapshotRelease({
   }
 
   const fallbackInput = { manifest, baselineTools, files };
-  if (aiUrl && !allowRemoteAi) logger({
+  const remoteAiConfigured = Boolean(aiUrl || aiProvider === 'openai');
+  if (remoteAiConfigured && !allowRemoteAi) logger({
     event: 'ai_remote_disabled', releaseId, fallback: 'LOCAL_STRUCTURED_FALLBACK_V1',
   });
-  const aiPromise = aiUrl && allowRemoteAi
-    ? withSpan('ai.semantic', spanAttributes, () => analyzeSemantics({ url: aiUrl, token: aiToken, timeoutMs: aiTimeoutMs, prompt: buildAiPrompt({ releaseId, baselineTools, tools: manifest.tools, files }) }))
+  const fallbackAnalysis = (reason) => ({ findings: analyzeSemanticsFallback(fallbackInput), report: null, critic: null,
+    execution: { status: 'LOCAL_FALLBACK', provider: 'LOCAL_STRUCTURED_FALLBACK_V1', reason, templateVersion: 'semantic-v2' } });
+  const aiPromise = remoteAiConfigured && allowRemoteAi
+    ? withSpan('ai.semantic', spanAttributes, () => analyzeSemanticsDetailed({ url: aiUrl, token: aiToken, provider: aiProvider, model: aiModel, timeoutMs: aiTimeoutMs, prompt: buildAiPrompt({ releaseId, baselineTools, tools: manifest.tools, files }) }))
         .catch((error) => {
-          logger({ event: 'ai_analysis_failed', releaseId, error: error.message, fallback: 'LOCAL_STRUCTURED_FALLBACK_V1' });
-          return analyzeSemanticsFallback(fallbackInput);
+          const reason = /^AI_[A-Z_0-9]+$/.test(error.message) ? error.message : 'AI_RESPONSE_INVALID';
+          logger({ event: 'ai_analysis_failed', releaseId, error: reason, fallback: 'LOCAL_STRUCTURED_FALLBACK_V1' });
+          return fallbackAnalysis(reason);
         })
-    : Promise.resolve(analyzeSemanticsFallback(fallbackInput));
+    : Promise.resolve(fallbackAnalysis(remoteAiConfigured ? 'REMOTE_DISABLED' : 'NOT_CONFIGURED'));
   const sandboxPromise = staticOnly || manifest.surfaceUnknown
     ? Promise.resolve({ mode: 'NOT_EXECUTED', error: 'dynamic analysis not performed', timedOut: false, canaryObserved: false, observations: [] })
     : withSpan('sandbox.execute', spanAttributes, () => runSandbox({ mode: sandbox, fixtureDir: fixtureRoot, entrypoint: manifest.entrypoint, timeoutMs: sandboxTimeoutMs, scanId, egressAllowHosts, mcpProbe, probeCalls }))
     .catch((error) => ({ error: error.message, timedOut: false, canaryObserved: false, mode: sandbox.toUpperCase(), observations: [] }));
-  const [aiFindings, sandboxResult] = await Promise.all([aiPromise, sandboxPromise]);
+  const [aiAnalysis, sandboxResult] = await Promise.all([aiPromise, sandboxPromise]);
+  const aiFindings = aiAnalysis.findings;
   findings.push(...aiFindings);
   const observations = sandboxResult.observations ?? [];
   findings.push(...runtimeFindings(observations, manifest));
@@ -464,7 +451,7 @@ async function scanSnapshotRelease({
     'static/sbom.cdx.json': analysis.sbom,
     'static/findings.json': findings.filter(({ stage }) => stage === 'STATIC'),
     'semantic/model-input.redacted.json': { prompt: buildAiPrompt({ releaseId, baselineTools, tools: manifest.tools, files }), templateVersion: 'semantic-v2' },
-    'semantic/model-output.json': { findings: aiFindings, provider: aiUrl && allowRemoteAi ? 'CONFIGURED_WITH_FALLBACK' : 'LOCAL_STRUCTURED_FALLBACK_V1' },
+    'semantic/model-output.json': aiAnalysis,
     'semantic/evidence-spans.json': analysis.metadataSignals,
     'sandbox/scenarios.json': analysis.scenarios,
     'sandbox/events.json': { scanId: result.scanId, mode: sandboxResult.mode, complete: !sandboxIncomplete, observations: sanitizeUntrustedEvidence(observations), egressEvents: sandboxResult.egressEvents ?? [] },
