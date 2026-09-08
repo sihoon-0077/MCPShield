@@ -46,15 +46,23 @@
   새 builder·prepared Docker 전체 회귀·최신 서명 image 단계는 이 실행에서 도달하지 못했다.
 - `6e0ab7b`를 [Linux CI 34264417839](https://github.com/sihoon-0077/MCPShield/actions/runs/34264417839)로
   다시 실행 중이다. Node 22/24·실제 PostgreSQL·실제 Docker 및 승인 게이트 후 10회 데모 반복을 요청했다.
-  시작/진행 중 상태는 통과 증거가 아니며 결과 확인 전에는 해당 항목을 완료로 표시하지 않는다.
+  PostgreSQL job `102190519546`는 성공: 동시 open, 업무 테이블 락 중 재연결,
+  checksum 변조 거부, 준비 작업의 quota/원자성, 별도 DB backup/restore를 실제 검증했다.
+  나머지 시작/진행 중 상태는 통과 증거가 아니며 결과 확인 전에는 완료로 표시하지 않는다.
   secret scan은 전체 파일을 검사하고 정확한 비밀키 유출 방지 assertion만 non-secret 예외로 추가했다.
+- `8189363`: 기본 `/v1` 정책도 운영자 로컬 원본 catalog에서 새로 취득해 체인의 전체 identity와
+  대조하고 독립 Docker 재스캔 후에만 서명하도록 연결했다. 원본·baseline·Docker가 없으면 서명하지 않는다.
+  기존 공개 `/api` 데모 및 prepared 엄격 정책은 유지했다. 로컬 서명/원본 계약 9개 통과·Docker 1개 skip.
+  이 변경은 위 `6e0ab7b` 실행에 포함되지 않으며 후속 Linux source-validator/fullcycle 검증이 필요하다.
+  portable OTLP 회귀의 서명 span은 이제 명시적 TEST_ONLY_SIGNING이며 실제 production 독립 검증자
+  실행을 증명하지 않는다. 실제 Docker 회귀는 production 서명 경로와 별도 root 연결 기록을 검사한다.
 - clean `de4fc9f`의 실제 로컬 EVM·SQLite·HTTP 측정(40회/동시4/identity4):
   hot p95 83.500ms, uniform p95 60.727ms, signed REVOKED 40/40 BLOCK·캐시 재사용0회,
   해당 BLOCK p95 46.899ms, 다음 admission의 차단 확인 49.126ms.
   시작/종료 source hash는 `0585e0af2b31e72e6daee7f645f2c83a8432d346dff1e26e01094ac97cb3cc1f`로 동일하다.
   작은 Windows/Ganache 실험이며 운영 SLO·1만 key·실제 네트워크 장애 측정이 아니다.
 
-명시적으로 남은 구현은 범용 OCI 실행/관측, legacy 정책의 검증자 독립 재실행,
+명시적으로 남은 구현/검증은 범용 OCI 실행/관측, legacy 독립 재실행의 실제 Linux 검증,
 조직 indexer·직접 RPC fallback 및 서명된 break-glass 감사, 문서의 전체 부하·평가 행렬이다.
 실제 AI·Base Sepolia·비공개 S3/KMS·독립 기관·운영 Linux 호스트와 최신 전체 버전 공개 배포는
 설정 및 실측이 필요한 별도 미완료 항목이다. 기존 Railway 공개 데모는 보존했다.

@@ -106,7 +106,7 @@ jobs:
         timeout-minutes: 6
         env:
           MCPSHIELD_DOCKER_TESTS: "1"
-        run: node --import tsx --test tests/api/v2-fullcycle.test.ts
+        run: node --import tsx --test tests/api/source-validator.test.ts tests/api/v2-fullcycle.test.ts
       - name: Validate actual collector and alert configuration
         if: matrix.node == 22
         run: |
