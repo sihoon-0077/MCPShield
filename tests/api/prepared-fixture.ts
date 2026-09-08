@@ -43,7 +43,7 @@ export async function syntheticPreparedFixture() {
     const trusted = { ...anchors, finalImageDigest: descriptor.finalImageDigest, platform: descriptor.platform, closureDigest: closure.digest,
       entrypointDigest: descriptor.entrypoint.digest, sourceDescriptorDigest: hashPreparedRuntimeDescriptor({ ...descriptor, stage: "PREFLIGHT", finalImageDigest: null, toolSurfaceHash: null }) };
     const reviewed = inspectPreparedSources(closure), semantic = await reviewPreparedSemantics({ files: reviewed.files, tools, releaseId: "prepared-test@1.0.0",
-      ai: { allowRemoteAi: true, provider: "custom", url: `http://127.0.0.1:${(server.address() as any).port}`, timeoutMs: 1000 } });
+      ai: { allowRemoteAi: true, provider: "custom", disclosurePolicy: "LOCAL_CONTRACT_TEST", url: `http://127.0.0.1:${(server.address() as any).port}`, timeoutMs: 1000 } });
     const step = { protocolComplete: true, timedOut: false, exitCode: 0, failureCode: null, pages: 1, permissionProfile: "NODE_PERMISSION_READ_ONLY_V1",
       runtimeIdentity: { imageDigest: descriptor.finalImageDigest, platform: descriptor.platform, argv: descriptor.argv }, toolSurfaceHash: binding.toolSurfaceHash,
       egressEvents: [], canaryExfiltration: false, callResults: [{ name: "list_messages", isError: false, contentHash: "b".repeat(64) }] };

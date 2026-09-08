@@ -348,6 +348,15 @@ and its own `VALIDATOR_PREPARED_BUILDER_DIGEST`, `VALIDATOR_PREPARED_ARCHITECTUR
 `VALIDATOR_ALLOW_REMOTE_AI=true`, and `VALIDATOR_AI_PROVIDER` configuration. Set
 `VALIDATOR_AI_URL` for a custom provider or `VALIDATOR_AI_MODEL` and
 `VALIDATOR_AI_TOKEN` for OpenAI; these are local operator settings, never API input.
+Whole-source prepared review is **not** authorized by these provider settings.
+The current full-source contract test requires the explicit operator setting
+`MCPSHIELD_AI_DISCLOSURE_POLICY=LOCAL_CONTRACT_TEST` in each worker/validator,
+`provider=custom`, and an exact numeric loopback URL (`127.0.0.1` or `[::1]`).
+The equivalent trusted programmatic fields are `scannerOptions.aiDisclosurePolicy`
+and validator `preparedAi.disclosurePolicy`. Neither flag is accepted from an API
+caller, inferred from a URL, or enabled by default. Evidence labels this
+`PROVIDER_QUALITY_NOT_MEASURED`; remote whole-source disclosure remains forbidden
+and cannot produce approval. A privacy-scoped real-provider review is separate work.
 The signer independently exports the image closure and reruns the scanner with its
 own fresh synthetic probes, analyzer and critic before signing the original root.
 Verdict and deterministic violation scopes must agree. The API proposes templates

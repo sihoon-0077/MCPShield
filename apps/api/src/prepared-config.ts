@@ -34,5 +34,15 @@ export async function inspectPreparedRuntime(binding: any, config: PreparedConfi
 }
 export function preparedAi(options: ControlOptions) {
   const ai = options.scannerOptions;
-  return ai?.allowRemoteAi ? { allowRemoteAi: true, provider: ai.aiProvider, model: ai.aiModel, url: ai.aiUrl, token: ai.aiToken, timeoutMs: ai.aiTimeoutMs } : { allowRemoteAi: false };
+  return ai?.allowRemoteAi ? { allowRemoteAi: true, provider: ai.aiProvider, model: ai.aiModel, url: ai.aiUrl, token: ai.aiToken, timeoutMs: ai.aiTimeoutMs,
+    disclosurePolicy: checkedAiDisclosurePolicy(ai.aiDisclosurePolicy, ai.aiProvider, ai.aiUrl) } : { allowRemoteAi: false };
+}
+export function checkedAiDisclosurePolicy(value: unknown, provider: unknown, endpoint: unknown): "LOCAL_CONTRACT_TEST" | undefined {
+  if (value === undefined) return undefined; // Never infer test authorization from allowRemoteAi or a loopback address.
+  if (value !== "LOCAL_CONTRACT_TEST") throw new Error("AI_DISCLOSURE_POLICY_INVALID");
+  let url;
+  try { url = new URL(typeof endpoint === "string" ? endpoint : ""); } catch { throw new Error("AI_DISCLOSURE_LOCAL_CONTRACT_REQUIRED"); }
+  if (provider !== "custom" || !["127.0.0.1", "[::1]"].includes(url.hostname) || !["http:", "https:"].includes(url.protocol)
+    || url.username || url.password || url.hash) throw new Error("AI_DISCLOSURE_LOCAL_CONTRACT_REQUIRED");
+  return value;
 }

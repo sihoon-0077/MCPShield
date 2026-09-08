@@ -94,7 +94,7 @@ export async function independentlyScanSource(original: any, policy: any, identi
     }
     const scanned = await scanResolvedArtifact({ artifactDir: resolved.artifactDir, baselineDir: baselineResolved?.artifactDir, sandbox: "docker", sandboxTimeoutMs: 15000,
       allowRemoteAi: Boolean(localAi), aiProvider: localAi?.provider, aiModel: localAi?.model, aiUrl: localAi?.url, aiToken: localAi?.token,
-      aiTimeoutMs: localAi?.timeoutMs ?? 45000, logger: () => {} });
+      aiTimeoutMs: localAi?.timeoutMs ?? 45000, aiDisclosurePolicy: localAi?.disclosurePolicy, logger: () => {} });
     const independent = { result: scanned.result, bundle: scanned.bundle, sourceIdentity, baselineReleaseId: baseline?.releaseId ?? null };
     return { independent, comparison: compareSourceScans(original, independent, policy, identity, releaseId, baseline?.releaseId ?? null) };
   } finally { await baselineResolved?.cleanup?.(); await resolved?.cleanup?.(); }

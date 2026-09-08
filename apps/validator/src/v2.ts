@@ -164,7 +164,8 @@ async function main() {
     preparedRuntime: process.env.VALIDATOR_PREPARED_BUILDER_DIGEST ? checkedPreparedConfig({ builderImageDigest: process.env.VALIDATOR_PREPARED_BUILDER_DIGEST,
       platform: { os: "linux", architecture: process.env.VALIDATOR_PREPARED_ARCHITECTURE as "amd64" | "arm64" } }) : undefined,
     preparedAi: process.env.VALIDATOR_ALLOW_REMOTE_AI === "true" ? { allowRemoteAi: true, provider: process.env.VALIDATOR_AI_PROVIDER as "custom" | "openai",
-      model: process.env.VALIDATOR_AI_MODEL, url: process.env.VALIDATOR_AI_URL, token: process.env.VALIDATOR_AI_TOKEN, timeoutMs: Number(process.env.VALIDATOR_AI_TIMEOUT_MS ?? 45000) } : undefined,
+      model: process.env.VALIDATOR_AI_MODEL, url: process.env.VALIDATOR_AI_URL, token: process.env.VALIDATOR_AI_TOKEN, timeoutMs: Number(process.env.VALIDATOR_AI_TIMEOUT_MS ?? 45000),
+      disclosurePolicy: process.env.MCPSHIELD_AI_DISCLOSURE_POLICY as "LOCAL_CONTRACT_TEST" | undefined } : undefined,
     legacySources: process.env.VALIDATOR_SOURCES_PATH ? await loadValidatorSources(process.env.VALIDATOR_SOURCES_PATH) : undefined,
     verificationReceiptsPath: process.env.VALIDATOR_VERIFICATION_RECEIPTS_PATH })));
 }

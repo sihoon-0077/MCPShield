@@ -9,11 +9,15 @@ import { preparedPolicy } from "../../apps/api/src/control-policy.js";
 import { hash } from "../../apps/api/src/control-plane.js";
 import { attestationV2Domain, attestationV2Types, bytes32 } from "../../packages/contracts-sdk/src/v2.js";
 import { syntheticPreparedFixture } from "./prepared-fixture.js";
+import { controlConfig } from "../../apps/api/src/control-config.js";
+import { preparedAi } from "../../apps/api/src/prepared-config.js";
 // @ts-expect-error Shared ESM evidence helper.
 import { createEvidenceBundle } from "../../services/scanner/src/evidence.mjs";
 
 test("prepared signing requires independent evidence, not API PASS or a supplied runtime boolean (synthetic contract)", async () => {
   const f = await syntheticPreparedFixture(), independent = f.independent(), now = Math.floor(Date.now() / 1000);
+  assert.equal(f.documents["semantic/reviews.json"].disclosure.policy, "LOCAL_CONTRACT_TEST");
+  for (const role of ["analyzer", "critic"]) assert.equal(f.documents["semantic/reviews.json"].reviews[0][role].execution.disclosure.providerQuality, "PROVIDER_QUALITY_NOT_MEASURED");
   const policyHash = hash(preparedPolicy), registry = `0x${"a".repeat(40)}`;
   const scan = { scanId: f.result.scanId, releaseId: f.identity.releaseId, policyHash, status: "COMPLETED", result: { scanResult: f.result,
     reportRoot: f.bundle.manifest.root, validFrom: new Date(now * 1000).toISOString(), validUntil: new Date((now + 600) * 1000).toISOString() } };
@@ -34,6 +38,21 @@ test("prepared signing requires independent evidence, not API PASS or a supplied
   assert.throws(() => comparePreparedScans({ ...f, bundle: createEvidenceBundle(documents) }, independent, preparedPolicy, f.trusted), /DID_NOT_CONFIRM/);
   const different = structuredClone(independent.result); different.scanStatus = "FAILED";
   assert.throws(() => comparePreparedScans(f, { ...independent, result: different }, preparedPolicy, f.trusted), /DID_NOT_CONFIRM/);
+});
+
+test("operator AI test disclosure is explicit, strictly numeric-loopback and preserved by API and validator configuration", () => {
+  const env = { CONTROL_PLANE_ENABLED: "true", CONTROL_PLANE_CREDENTIALS: JSON.stringify([{ token: "synthetic-reader-token", tenantId: "synthetic", role: "reader" }]),
+    CONTROL_EVIDENCE_KEY: "1".repeat(64), CONTROL_ALLOW_REMOTE_AI: "true", CONTROL_AI_PROVIDER: "custom", CONTROL_AI_URL: "http://127.0.0.1:9000" };
+  assert.equal(preparedAi(controlConfig(env)!).disclosurePolicy, undefined);
+  const configured = controlConfig({ ...env, MCPSHIELD_AI_DISCLOSURE_POLICY: "LOCAL_CONTRACT_TEST" })!;
+  const ai = preparedAi(configured);
+  assert.equal(ai.disclosurePolicy, "LOCAL_CONTRACT_TEST");
+  assert.equal(checkedPreparedValidatorAi(ai as any).disclosurePolicy, "LOCAL_CONTRACT_TEST");
+  for (const overrides of [{ MCPSHIELD_AI_DISCLOSURE_POLICY: "ALLOW_ALL" }, { CONTROL_AI_URL: "https://provider.example/model" },
+    { CONTROL_AI_URL: "http://localhost:9000" }, { CONTROL_AI_URL: "http://user:password@127.0.0.1" }, { CONTROL_AI_PROVIDER: "openai" }])
+    assert.throws(() => controlConfig({ ...env, MCPSHIELD_AI_DISCLOSURE_POLICY: "LOCAL_CONTRACT_TEST", ...overrides }), /DISCLOSURE/);
+  for (const overrides of [{ disclosurePolicy: "ALLOW_ALL" }, { url: "https://provider.example/model" }, { url: "http://localhost:9000" }])
+    assert.throws(() => checkedPreparedValidatorAi({ ...ai, ...overrides } as any), /DISCLOSURE/);
 });
 test("local verification receipts contain only commitments; missing explicit AI or actual image cannot sign", async () => {
   const f = await syntheticPreparedFixture(), comparison = comparePreparedScans(f, f.independent(), preparedPolicy, f.trusted);

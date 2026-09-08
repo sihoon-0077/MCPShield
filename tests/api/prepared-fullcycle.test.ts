@@ -143,7 +143,7 @@ test("prepared source → actual Docker/AI-stub scans → independent validators
     const config = { builderImageDigest: process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE!, platform: { os: "linux" as const, architecture: "amd64" as const } };
     const options: ControlOptions = { store, credentials: [{ tenantId, token, role: "admin" }], artifactPath: join(dir, "artifacts"), evidencePath: join(dir, "evidence"),
       evidenceKey: "9".repeat(64), signingKey: keys.privateKey.export({ format: "pem", type: "pkcs8" }).toString(), signingKeyId: "prepared-integration",
-      preparedRuntime: config, scannerOptions: { sandbox: "docker", allowRemoteAi: true, aiProvider: "custom", aiUrl, aiTimeoutMs: 5000 },
+      preparedRuntime: config, scannerOptions: { sandbox: "docker", allowRemoteAi: true, aiProvider: "custom", aiDisclosurePolicy: "LOCAL_CONTRACT_TEST", aiUrl, aiTimeoutMs: 5000 },
       v2Relayer: relayer, chainDecision: v2ChainReader({ rpcUrls: [rpc], registryContract: deployment.releaseRegistry.address, chainId: 1337, confirmations: 1 }),
       // Track only our actual images for cleanup. No scanner/proof/PASS test double is injected.
       prepareRuntime: async (input) => { const output = await prepareAndScanRuntime(input); if (output.cleanup) cleanups.push(output.cleanup); return output; } };
@@ -207,6 +207,7 @@ test("prepared source → actual Docker/AI-stub scans → independent validators
               CONTROL_V2_CHAIN_ID: "1337", CONTROL_V2_REGISTRY_ADDRESS: deployment.releaseRegistry.address, CONTROL_VALIDATOR_POLICY_HASH: policyHash,
               VALIDATOR_PREPARED_BUILDER_DIGEST: config.builderImageDigest, VALIDATOR_PREPARED_ARCHITECTURE: "amd64",
               VALIDATOR_ALLOW_REMOTE_AI: "true", VALIDATOR_AI_PROVIDER: "custom", VALIDATOR_AI_URL: aiUrl, VALIDATOR_AI_TIMEOUT_MS: "5000",
+              MCPSHIELD_AI_DISCLOSURE_POLICY: "LOCAL_CONTRACT_TEST",
               VALIDATOR_VERIFICATION_RECEIPTS_PATH: join(dir, "local-verifications.jsonl") } });
           assert.ok(!stdout.includes(secretKey) && !stderr.includes(secretKey) && !stdout.includes(token) && !stderr.includes(token));
           const outcome = JSON.parse(stdout.trim().split("\n").at(-1)!);

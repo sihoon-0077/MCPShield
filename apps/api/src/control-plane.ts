@@ -32,7 +32,7 @@ export interface ControlOptions {
   prepareRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
   scanPreparedRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
   inspectPreparedRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
-  scannerOptions?: { sandbox?: "docker"; allowRemoteAi: boolean; aiProvider?: "custom" | "openai"; aiModel?: string; aiUrl?: string; aiToken?: string; aiTimeoutMs?: number };
+  scannerOptions?: { sandbox?: "docker"; allowRemoteAi: boolean; aiProvider?: "custom" | "openai"; aiModel?: string; aiUrl?: string; aiToken?: string; aiTimeoutMs?: number; aiDisclosurePolicy?: "LOCAL_CONTRACT_TEST" };
 }
 export const canonical = (value: any): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
   : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);

@@ -4,7 +4,7 @@ import { v2ChainReader } from "./registry-v2-client.js";
 import { V2Relayer } from "./chain-outbox.js";
 import { createS3EvidenceStore } from "../../../packages/object-storage/index.mjs";
 import { ReceiptRelayer } from "./receipt-relayer.js";
-import { checkedPreparedConfig } from "./prepared-config.js";
+import { checkedPreparedConfig, checkedAiDisclosurePolicy } from "./prepared-config.js";
 
 export function controlConfig(env = process.env): ControlOptions | undefined {
   if (env.CONTROL_PLANE_ENABLED !== "true") return undefined;
@@ -22,6 +22,7 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
   const aiProvider = env.CONTROL_AI_PROVIDER ?? "custom", aiTimeoutMs = Number(env.CONTROL_AI_TIMEOUT_MS ?? 45000);
   if (!["custom", "openai"].includes(aiProvider) || !Number.isSafeInteger(aiTimeoutMs) || aiTimeoutMs < 100 || aiTimeoutMs > 120000) throw new Error("INVALID_CONTROL_AI_CONFIG");
   const aiToken = env.CONTROL_AI_TOKEN ?? (aiProvider === "openai" ? env.OPENAI_API_KEY : undefined);
+  const aiDisclosurePolicy = checkedAiDisclosurePolicy(env.MCPSHIELD_AI_DISCLOSURE_POLICY, aiProvider, env.CONTROL_AI_URL);
   if (allowRemoteAi && aiProvider === "openai" && (!aiToken || !env.CONTROL_AI_MODEL)) throw new Error("CONTROL_OPENAI_KEY_AND_MODEL_REQUIRED");
   if (allowRemoteAi && aiProvider === "custom" && !env.CONTROL_AI_URL) throw new Error("CONTROL_AI_URL_REQUIRED");
   if (allowRemoteAi && env.CONTROL_AI_URL) {
@@ -40,7 +41,7 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
       kmsKeyId: env.CONTROL_S3_KMS_KEY_ID, allowLoopbackHttp: env.CONTROL_S3_ALLOW_LOOPBACK_HTTP === "true" }) : undefined,
     signingKey: env.CONTROL_SIGNING_KEY?.replace(/\\n/g, "\n"), signingKeyId: env.CONTROL_SIGNING_KEY_ID,
     scannerOptions: { sandbox: env.CONTROL_SANDBOX_MODE === "docker" ? "docker" : undefined, allowRemoteAi,
-      ...(allowRemoteAi ? { aiProvider: aiProvider as "custom" | "openai", aiModel: env.CONTROL_AI_MODEL, aiUrl: env.CONTROL_AI_URL, aiToken, aiTimeoutMs } : {}) },
+      ...(allowRemoteAi ? { aiProvider: aiProvider as "custom" | "openai", aiModel: env.CONTROL_AI_MODEL, aiUrl: env.CONTROL_AI_URL, aiToken, aiTimeoutMs, aiDisclosurePolicy } : {}) },
     chainDecision: env.CONTROL_V2_RPC_URLS ? v2ChainReader({ rpcUrls: env.CONTROL_V2_RPC_URLS.split(","),
       registryContract: env.CONTROL_V2_REGISTRY_ADDRESS ?? "", chainId: Number(env.CONTROL_V2_CHAIN_ID),
       confirmations: Number(env.CONTROL_V2_CONFIRMATIONS ?? "2") }) : undefined,

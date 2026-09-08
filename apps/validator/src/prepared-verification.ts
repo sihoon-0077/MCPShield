@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { hash } from "../../api/src/control-plane.js";
 import { policyVerdict, preparedPolicy } from "../../api/src/control-policy.js";
 import { checkedPreparedEvidence } from "../../api/src/prepared-evidence.js";
-import { inspectPreparedRuntime, type PreparedConfig } from "../../api/src/prepared-config.js";
+import { checkedAiDisclosurePolicy, inspectPreparedRuntime, type PreparedConfig } from "../../api/src/prepared-config.js";
 import { checkedServiceUrl } from "../../../packages/contracts-sdk/src/transport.js";
 // @ts-expect-error Shared ESM evidence bundle helper.
 import { createEvidenceBundle } from "../../../services/scanner/src/evidence.mjs";
@@ -12,13 +12,14 @@ import { createEvidenceBundle } from "../../../services/scanner/src/evidence.mjs
 import { scanPreparedRuntime } from "../../../services/scanner/src/prepared-scan.mjs";
 
 export interface PreparedValidatorAi {
-  allowRemoteAi: true; provider: "custom" | "openai"; model?: string; url?: string; token?: string; timeoutMs?: number;
+  allowRemoteAi: true; provider: "custom" | "openai"; model?: string; url?: string; token?: string; timeoutMs?: number; disclosurePolicy?: "LOCAL_CONTRACT_TEST";
 }
 export function checkedPreparedValidatorAi(ai?: PreparedValidatorAi) {
-  if (!ai || ai.allowRemoteAi !== true || Object.keys(ai).some((key) => !["allowRemoteAi", "provider", "model", "url", "token", "timeoutMs"].includes(key))
+  if (!ai || ai.allowRemoteAi !== true || Object.keys(ai).some((key) => !["allowRemoteAi", "provider", "model", "url", "token", "timeoutMs", "disclosurePolicy"].includes(key))
     || !["custom", "openai"].includes(ai.provider) || ai.provider === "openai" && (!ai.model || !ai.token)
     || ai.provider === "custom" && !ai.url || ai.timeoutMs !== undefined && (!Number.isSafeInteger(ai.timeoutMs) || ai.timeoutMs < 100 || ai.timeoutMs > 120000)) throw new Error("PREPARED_VALIDATOR_EXPLICIT_AI_REQUIRED");
   if (ai.url) checkedServiceUrl(ai.url);
+  checkedAiDisclosurePolicy(ai.disclosurePolicy, ai.provider, ai.url);
   return ai;
 }
 export function deterministicScopes(result: any, includeStatic = false) {
