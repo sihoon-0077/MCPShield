@@ -4,7 +4,7 @@ import { validatePreparedReleaseBinding } from './prepared-binding.mjs';
 import { hashPreparedRuntimeDescriptor } from '../../resolver/src/runtime-descriptor.mjs';
 import { closureManifest } from '../../resolver/src/closure-files.mjs';
 import { toolSurfaceHash } from './tool-surface.mjs';
-import { inspectPreparedSources, preparedSemanticPrompt } from './prepared-review.mjs';
+import { inspectPreparedSources, preparedSemanticPrompt, LOCAL_CONTRACT_DISCLOSURE } from './prepared-review.mjs';
 import { citationCatalogue, promptSources, validateSemanticReport } from './semantic.mjs';
 import { assertScanResult } from './schema.mjs';
 import { redactEvidenceDocument, redactPromptText } from './redaction.mjs';
@@ -92,6 +92,7 @@ export function assessPreparedPolicy(bundle, result, binding, trusted) {
       packages.every(({ path, digest }) => sbom.components.some((component) => component.properties?.some((p) => p.name === 'mcpshield:installed-path' && p.value === path) &&
         component.properties?.some((p) => p.name === 'mcpshield:package-json-digest' && p.value === digest)));
     const semantic = read('semantic/reviews.json');
+    if (!equal(semantic.disclosure, LOCAL_CONTRACT_DISCLOSURE)) return abstain('PREPARED_SEMANTIC_DISCLOSURE_INVALID');
     const coverage = new Map();
     let analyzerComplete = true, criticComplete = true, clean = true;
     if (!Array.isArray(semantic.reviews) || !semantic.reviews.length || semantic.reviews.length !== semantic.expectedBatches ||
@@ -107,7 +108,8 @@ export function assessPreparedPolicy(bundle, result, binding, trusted) {
         const item = review[role];
         if (!item) { if (role === 'analyzer') analyzerComplete = false; else criticComplete = false; continue; }
         const prompt = preparedSemanticPrompt(review.input, role);
-        if (item.execution.promptHash !== sha(prompt) || item.execution.tools !== 'NONE' || item.execution.schemaName !== `mcpshield_prepared_${role}`) return abstain('PREPARED_SEMANTIC_PROVENANCE_MISMATCH');
+        if (item.execution.promptHash !== sha(prompt) || item.execution.tools !== 'NONE' || item.execution.schemaName !== `mcpshield_prepared_${role}` ||
+          item.execution.provider !== 'custom' || !equal(item.execution.disclosure, LOCAL_CONTRACT_DISCLOSURE)) return abstain('PREPARED_SEMANTIC_PROVENANCE_MISMATCH');
         const parsed = validateSemanticReport(item.report, promptSources(prompt), citationCatalogue(review.input));
         if (parsed.needsHumanReview || parsed.riskClaims.length || Object.values(parsed.semanticDiff).some(Boolean)) clean = false;
       }

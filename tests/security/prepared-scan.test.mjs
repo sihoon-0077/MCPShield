@@ -23,7 +23,7 @@ async function provider(run) {
     response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(clean));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  try { await run({ requests, ai: { allowRemoteAi: true, provider: 'custom', url: `http://127.0.0.1:${server.address().port}`, timeoutMs: 1000 } }); }
+  try { await run({ requests, ai: { allowRemoteAi: true, provider: 'custom', disclosurePolicy: 'LOCAL_CONTRACT_TEST', url: `http://127.0.0.1:${server.address().port}`, timeoutMs: 1000 } }); }
   finally { await new Promise((resolve) => server.close(resolve)); }
 }
 
@@ -48,6 +48,8 @@ test('full installed source review includes dependency bytes, independent blind 
   assert.equal(semantic.complete, true);
   assert.equal(semantic.independentCriticComplete, true);
   assert.equal(semantic.noUnresolvedRisk, true);
+  assert.equal(semantic.disclosure.policy, 'LOCAL_CONTRACT_TEST');
+  assert.equal(semantic.disclosure.providerQuality, 'PROVIDER_QUALITY_NOT_MEASURED');
   assert.equal(requests.length, 2);
   assert.match(requests[1].prompt, /independent adversarial reviewer/);
   assert.match(requests[0].prompt, /node_modules\/fixture\/index.js/);
@@ -95,6 +97,8 @@ test('independent prepared policy rejects forged source/raw hashes, omitted crit
   const assessed = assessPreparedPolicy(createEvidenceBundle(docs), result, binding, trusted);
   assert.equal(assessed.verdict, 'PASS', JSON.stringify(assessed));
   for (const mutate of [(d) => d['runtime/tools.json'][0].description = 'new raw surface',
+    (d) => delete d['semantic/reviews.json'].disclosure,
+    (d) => delete d['semantic/reviews.json'].reviews[0].critic.execution.disclosure,
     (d) => delete d['semantic/reviews.json'].reviews[0].critic,
     (d) => d['static/closure-source.json'].files.find(({ path }) => path === 'server.js').base64 = Buffer.from('forged benign bytes').toString('base64'),
     (d) => d['semantic/reviews.json'].reviews[0].input.excerpts[0].content = 'forged benign text',
@@ -107,4 +111,22 @@ test('independent prepared policy rejects forged source/raw hashes, omitted crit
     assert.equal(assessPreparedPolicy(createEvidenceBundle(docs), result, binding, { ...trusted, [field]: null }).verdict, 'ABSTAIN', field);
   }
   assert.equal(assessPreparedPolicy(createEvidenceBundle(docs), result, binding).verdict, 'ABSTAIN');
+}));
+
+test('full-source privacy fence rejects external analyzer or critic before either request, and requires explicit local contract declaration', async () => provider(async ({ requests, ai }) => {
+  for (const profile of ['restricted-node-docker-v1', 'restricted-oci-offline-v1']) {
+    for (const config of [{ ...ai, disclosurePolicy: undefined }, { ...ai, url: 'https://example.invalid/model' },
+      { ...ai, provider: 'openai' }, { ...ai, url: 'http://localhost:12345' },
+      { ...ai, critic: { url: 'https://example.invalid/critic' } },
+      { ...ai, critic: { disclosurePolicy: undefined } }, { ...ai, critic: { provider: 'openai' } }]) {
+      const result = await reviewPreparedSemantics({ files: [{ path: 'synthetic.js', content: 'NOT_FOR_EXTERNAL_DISCLOSURE' }],
+        tools, releaseId: 'synthetic@1.0.0', profile, ai: config });
+      assert.equal(result.complete, false);
+      assert.equal(result.noUnresolvedRisk, false);
+      assert.equal(result.disclosure.policy, 'FULL_SOURCE_REMOTE_FORBIDDEN');
+      assert.ok(result.issues.some((issue) => issue.endsWith('_FULL_SOURCE_DISCLOSURE_FORBIDDEN')));
+      assert.deepEqual(result.reviews, []);
+    }
+  }
+  assert.equal(requests.length, 0, 'A denied critic must also prevent the analyzer from receiving source.');
 }));

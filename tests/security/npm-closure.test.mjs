@@ -273,7 +273,7 @@ test('actual Linux prepared full scan and independent image export validate PASS
   try {
     output = await prepareAndScanRuntime({ preparation: { ...options, sourceDigest: source, sourceTreeDigest: source },
       sourceReleaseId: `0x${'a'.repeat(64)}`, releaseId: 'closure-fixture@1.0.0', probePlan,
-      ai: { allowRemoteAi: true, provider: 'custom', url: `http://127.0.0.1:${provider.address().port}`, timeoutMs: 1000 } },
+      ai: { allowRemoteAi: true, provider: 'custom', disclosurePolicy: 'LOCAL_CONTRACT_TEST', url: `http://127.0.0.1:${provider.address().port}`, timeoutMs: 1000 } },
     { download: async () => bytes });
     assert.equal(output.result?.scanStatus, 'PASSED', JSON.stringify(output.analysis));
     assert.equal(output.analysis.verdict, 'PASS', JSON.stringify(output.analysis));
