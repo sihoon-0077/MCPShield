@@ -127,7 +127,12 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
   // CLI parent additionally kills its child at 180s, including synchronous compiler stalls.
   const deadline = setTimeout(() => controller.abort(new Error("BENCHMARK_TOTAL_BUDGET_EXCEEDED")), plan.totalBudgetMs - 5000);
   const budget = (setup = false) => { controller.signal.throwIfAborted(); assert.ok(!setup || performance.now() - began < plan.setupBudgetMs, "BENCHMARK_SETUP_BUDGET_EXCEEDED"); };
-  const progress = (phase: string, completed: number, total: number) => process.stderr.write(`${JSON.stringify({ benchmarkProgress: phase, completed, total, elapsedMs: Math.round(performance.now() - began) })}\n`);
+  const resourceSamples: { benchmarkProgress: string; completed: number; total: number; elapsedMs: number; rssBytes: number; heapUsedBytes: number; cpuUserMicros: number; cpuSystemMicros: number }[] = [];
+  const progress = (phase: string, completed: number, total: number) => {
+    const memory = process.memoryUsage(), cpu = process.cpuUsage();
+    const sample = { benchmarkProgress: phase, completed, total, elapsedMs: Math.round(performance.now() - began), rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, cpuUserMicros: cpu.user, cpuSystemMicros: cpu.system };
+    resourceSamples.push(sample); process.stderr.write(`${JSON.stringify(sample)}\n`);
+  };
   const chain: any = ganache.server({ logging: { quiet: true }, wallet: { deterministic: true, totalAccounts: 4 }, miner: { blockTime: 1 } });
   const directory = await mkdtemp(join(tmpdir(), "mcpshield-admission-matrix-"));
   let provider: JsonRpcProvider | undefined, app: Awaited<ReturnType<typeof buildApp>> | undefined, store: ControlStore | undefined;
@@ -151,6 +156,7 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
     const published = await (await policy.publish(policyHash, policyHash)).wait(); assert.equal(published.status, 1);
     gas.publishPolicy = [Number(published.gasUsed)];
     const deploymentMs = performance.now() - deploymentStart;
+    progress("DEPLOYMENT_CONFIRMED", 4, 4);
     const now = Number((await provider.getBlock("latest"))!.timestamp);
     let nonce = await provider.getTransactionCount(owner.address, "pending");
     const validatorNonces = await Promise.all(validators.slice(0, 2).map(async validator => Number(await registry.nonces(validator.address))));
@@ -203,7 +209,9 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
     app = await buildApp({ adminApiToken: randomUUID(), scannerApiToken: randomUUID(), controlPlane: { store, credentials: [{ token, tenantId: "benchmark", role: "reader" }],
       artifactPath: directory, evidencePath: directory, evidenceKey: "a".repeat(64), signingKey: key.privateKey.export({ format: "pem", type: "pkcs8" }).toString(), signingKeyId: "benchmark-matrix", chainDecision: reader } });
     await app.listen({ host: "127.0.0.1", port: 0 });
-    const base = { timeoutMs: 5000, admissionMode: "balanced", cacheFile: null, publicKey: key.publicKey.export({ format: "pem", type: "spki" }).toString(), keyId: "benchmark-matrix",
+    // Measure only this local API/native-cache tier; never inherit an operator's
+    // organization-indexer or direct-RPC fallback URLs from the shell environment.
+    const base = { timeoutMs: 5000, admissionMode: "balanced", cacheFile: null, indexer: null, rpc: null, publicKey: key.publicKey.export({ format: "pem", type: "spki" }).toString(), keyId: "benchmark-matrix",
       policyHash, chainId: 1337, registryContract: deployment.releaseRegistry.address, validatorSetVersion: 1, tenantId: "benchmark", apiToken: token, operationClass: "READ_PRIVATE" };
     for (const distribution of ["HOT", "UNIFORM_CYCLIC"] as const) for (const targetCacheAttemptRate of plan.targetCacheAttemptRates) for (const rpcCondition of plan.rpcConditions) {
       budget();
@@ -277,12 +285,13 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
       progress("CELLS_COMPLETED", cells.length, plan.cells);
     }
     return { status: "MEASURED", profile: plan.fullMatrix ? "10000_KEY_OPT_IN_MATRIX" : "64_KEY_BOUNDED_PILOT", measuredAt: started, inputs: plan,
-      environment: { chain: "LOCAL_GANACHE_EVM", blockTimeSeconds: 1, setupMining: "NATIVE_MANUAL_BATCH_THEN_PERIODIC", database: "SQLITE_WAL", http: "LOOPBACK_ACTUAL_HTTP_PROXIES", node: process.version, platform: process.platform, logicalProcessors: availableParallelism() },
+      environment: { hostClass: "SHARED_DEVELOPMENT_HOST", chain: "LOCAL_GANACHE_EVM", blockTimeSeconds: 1, setupMining: "NATIVE_MANUAL_BATCH_THEN_PERIODIC", database: "SQLITE_WAL", http: "LOOPBACK_ACTUAL_HTTP_PROXIES", node: process.version, platform: process.platform, logicalProcessors: availableParallelism() },
       setup: { elapsedMs: Math.round(setupMs), deploymentMs: Math.round(deploymentMs), registrationsAndVotesMs: Math.round(registrationMs), confirmedTransactions: 4 + receiptHashes.length,
         receiptDigest: hash(receiptHashes), registeredAndVerifiedOnChain: releases.length, validatorExecution: "EXPLICIT_TEST_ONLY_SIGNING", wallClockUnmodified: true, attestationLifetimeSeconds: 86400 },
-      totalElapsedMs: Math.round(performance.now() - began), warmupElapsedMs: cells.reduce((sum, cell) => sum + cell.warmup.elapsedMs, 0), cells,
+      totalElapsedMs: Math.round(performance.now() - began), warmupElapsedMs: cells.reduce((sum, cell) => sum + cell.warmup.elapsedMs, 0), cells, resourceSamples,
       gas: Object.fromEntries(Object.entries(gas).map(([kind, values]) => [kind, { samples: values.length, min: Math.min(...values), max: Math.max(...values), mean: Math.round(values.reduce((a, b) => a + b, 0) / values.length) }])),
       limitations: ["Synthetic report roots are signed only by benchmark code; this does not run or bypass the production independent scanner/validator.",
+        "Organization-indexer/direct-RPC fallback tiers are explicitly disabled; this experiment measures the local signed API and its native cache only.",
         "Gateway is network-first: targetCacheAttemptRate requests a real API HTTP 503, not a target or measured cache-hit percentage. All hits still pay one HTTP roundtrip.",
         "Native memory cache capacity 1024 and 30-second ALLOW TTL are unchanged; expiry, invalidation and eviction can lower observed hits. Empty-cache outcomes do not distinguish eviction from never-warmed keys.",
         "Each cell starts at a new real loopback URL and warms at most 1024 entries using normal RPC; warming time and traffic are disclosed, not included in request latency.",
@@ -290,6 +299,7 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
         "RPC delay is an added 50ms per real HTTP request; HTTP 503 is immediate failure, not a TCP timeout or public-network outage.",
         "FRESH_VIEW_UNAVAILABLE_UNSIGNED records the actual unsigned STATUS_UNAVAILABLE response without injected RPC faults; the API does not expose whether canonical-head movement, RPC budget, or another fresh-reader rejection caused it. It is not relabeled as an injected outage.",
         "Warmup unavailability is counted without retrying until success; no clock freeze, cache TTL change, or forced hit rate is used.",
+        "Shared development host, not an isolated idle lab; other local work may contend for CPU/memory. Resource samples are observations, not continuous peak-memory measurements.",
         "Local closed-loop samples are not production capacity or a production p99 SLO. Only the explicit full profile visits 10,000 keys; existing smoke separately measures fresh revocation."] };
   } finally {
     clearTimeout(deadline); controller.abort(); reader?.close();
@@ -354,7 +364,7 @@ export async function measureAdmission({ requests = 40, concurrency = 4, identit
       chainDecision: async (release, policyDocument) => { if (rpcFault) throw Error("INJECTED_RPC_OUTAGE"); return reader!(release, policyDocument); },
     } });
     await app.listen({ host: "127.0.0.1", port: 0 });
-    const base = { apiBaseUrl: `http://127.0.0.1:${(app.server.address() as any).port}`, timeoutMs: 5000, fetchImpl: fetch, admissionMode: "strict", cacheFile: null,
+    const base = { apiBaseUrl: `http://127.0.0.1:${(app.server.address() as any).port}`, timeoutMs: 5000, fetchImpl: fetch, admissionMode: "strict", cacheFile: null, indexer: null, rpc: null,
       publicKey: key.publicKey.export({ type: "spki", format: "pem" }).toString(), keyId: "benchmark", policyHash, chainId: 1337,
       registryContract: deployment.releaseRegistry.address, validatorSetVersion: 1, tenantId: "benchmark", apiToken: token, operationClass: "READ_PRIVATE" };
     const phases: Array<ReturnType<typeof latencySummary> & { name: string; elapsedMs: number; throughputQps: number; allowed: number; blocked: number; failClosedErrors: number; deniedTotal: number; failureCodes: Partial<Record<ExpectedFailure, number>>; cacheHits: number }> = [];
