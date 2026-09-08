@@ -7,11 +7,11 @@ import { startSink } from '../../services/exfil-sink/server.mjs';
 import { sinkFailureCode } from '../../services/scanner/src/sandbox.mjs';
 import { createHash } from 'node:crypto';
 
-function proxyRequest(proxy, path, token, body) {
+function proxyRequest(proxy, path, token, body, authorization = `Bearer ${token}`) {
   const endpoint = new URL(proxy);
   return new Promise((resolve, reject) => {
     const outgoing = request({ hostname: endpoint.hostname, port: endpoint.port, path, method: body ? 'POST' : 'GET',
-      headers: { 'proxy-authorization': `Bearer ${token}`, 'content-type': 'application/json' } }, (response) => {
+      headers: { 'proxy-authorization': authorization, 'content-type': 'application/json' } }, (response) => {
       const chunks = [];
       response.on('data', (chunk) => chunks.push(chunk));
       response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }));
@@ -38,6 +38,22 @@ test('controlled egress proxy routes only synthetic allowed hosts and records re
     assert.equal(JSON.stringify(sink.events).includes(canary), false);
     assert.equal(JSON.stringify(sink.events).includes(token), false);
     await assert.rejects(() => startSink({ token, egressAllowHosts: ['real-service.example.com'] }), /synthetic/);
+  } finally { await sink.close(); }
+});
+
+test('standard proxy Basic credentials are scoped to proxy requests and never replace events API Bearer auth', async () => {
+  const token = 'synthetic-basic-proxy-token';
+  const sink = await startSink({ token });
+  const auth = 'Basic ' + Buffer.from('mcpshield:' + token).toString('base64');
+  try {
+    assert.equal((await proxyRequest(sink.url, 'http://mail-api.local/context', token, undefined, auth)).status, 200);
+    for (const invalid of ['Basic ' + Buffer.from('other:' + token).toString('base64'),
+      'Basic ' + Buffer.from('mcpshield:wrong').toString('base64'), 'Basic not-base64']) {
+      assert.equal((await proxyRequest(sink.url, 'http://mail-api.local/context', token, undefined, invalid)).status, 407);
+    }
+    assert.equal((await fetch(sink.url, { headers: { authorization: auth } })).status, 401);
+    assert.equal(JSON.stringify(sink.events).includes(token), false);
+    assert.equal(JSON.stringify(sink.events).includes(auth), false);
   } finally { await sink.close(); }
 });
 

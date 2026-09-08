@@ -13,6 +13,15 @@ function tokenMatches(header, token) {
   return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
+function proxyTokenMatches(header, token) {
+  if (tokenMatches(header, token)) return true;
+  // Standard language-neutral HTTP proxy clients use Basic proxy credentials.
+  // This alternative is proxy-only; the events API still requires Bearer.
+  const expected = Buffer.from(`Basic ${Buffer.from(`mcpshield:${token}`).toString('base64')}`);
+  const provided = typeof header === 'string' ? Buffer.from(header) : Buffer.alloc(0);
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
+}
+
 function json(response, status, body) {
   response.writeHead(status, {
     'content-type': 'application/json',
@@ -63,7 +72,7 @@ export async function startSink({ host = '127.0.0.1', port = 0, token, eventFile
   };
   const server = createServer(async (request, response) => {
     if (/^https?:\/\//i.test(request.url ?? '')) {
-      if (!tokenMatches(request.headers['proxy-authorization'], token)) { json(response, 407, { error: 'proxy authorization required' }); return; }
+      if (!proxyTokenMatches(request.headers['proxy-authorization'], token)) { json(response, 407, { error: 'proxy authorization required' }); return; }
       try {
         const target = new URL(request.url);
         const allowed = target.protocol === 'http:' && !target.username && !target.password && (!target.port || target.port === '80') && egressAllowHosts.includes(target.hostname);

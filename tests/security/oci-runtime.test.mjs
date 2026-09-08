@@ -1,0 +1,151 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
+import * as tar from 'tar';
+import { checkedOciConfig, hashOciRuntimeDescriptor, inspectOciFilesystem, resolveOciEntrypoint,
+  ociHash, OCI_OBSERVATION_POLICY } from '../../services/resolver/src/oci-runtime-descriptor.mjs';
+import { inspectOciLayerBudget, importOciRuntime, inspectImportedOciRuntime } from '../../services/resolver/src/oci-runtime.mjs';
+import { collectOciMcp, observeOciRuntime } from '../../services/scanner/src/oci-observer.mjs';
+import { runRuntimeDocker } from '../../services/resolver/src/npm-closure.mjs';
+import { removeFixtureSnapshot } from '../../services/scanner/src/snapshot.mjs';
+import { artifactDigest } from '../../services/scanner/src/scanner.mjs';
+import { verifyEvidenceBundle } from '../../services/scanner/src/evidence.mjs';
+
+const platform = { os: 'linux', architecture: 'amd64' };
+function archive(entries, mtime = 1) {
+  const chunks = [];
+  for (const entry of entries) {
+    const bytes = entry.bytes ?? Buffer.alloc(0);
+    const header = new tar.Header({ path: entry.path, type: entry.type ?? 'File', mode: entry.mode ?? 0o555,
+      uid: 0, gid: 0, size: bytes.length, mtime: new Date(mtime * 1000), ...(entry.linkpath ? { linkpath: entry.linkpath } : {}) });
+    header.encode(); chunks.push(header.block, bytes, Buffer.alloc((512 - bytes.length % 512) % 512));
+  }
+  return Buffer.concat([...chunks, Buffer.alloc(1024)]);
+}
+const basicEntries = [{ path: 'bin', type: 'Directory' }, { path: 'bin/runner', bytes: Buffer.from('opaque synthetic binary, never execute') },
+  { path: 'bin/sh', type: 'SymbolicLink', linkpath: 'runner' }];
+const runtime = { argv: ['/bin/sh', '/server.sh'], workingDirectory: '/', environmentDigest: ociHash('[]') };
+function descriptor() {
+  const filesystem = inspectOciFilesystem(archive(basicEntries)), digest = ociHash('config');
+  return { schemaVersion: 'mcpshield.oci-runtime.v1', profile: 'oci-container-v1', stage: 'IMPORTED',
+    sourceTreeDigest: ociHash('source'), sourceIndexDigest: ociHash('index'), manifestDigest: ociHash('manifest'), configDigest: digest,
+    platform, finalImageDigest: digest, imageDigestKind: 'DOCKER_IMAGE_CONFIG_ID', rootfsDigest: filesystem.digest,
+    entrypoint: resolveOciEntrypoint(filesystem, '/bin/sh'), ...runtime, toolSurfaceHash: null, policy: OCI_OBSERVATION_POLICY };
+}
+
+test('OCI runtime descriptor is a separate non-approval identity with canonical final filesystem and link-chain binding', () => {
+  const first = inspectOciFilesystem(archive(basicEntries));
+  assert.equal(first.digest, inspectOciFilesystem(archive([...basicEntries].reverse(), 123)).digest);
+  assert.notEqual(first.digest, inspectOciFilesystem(archive(basicEntries.map((entry) => entry.path === 'bin/runner' ? { ...entry, bytes: Buffer.from('different') } : entry))).digest);
+  assert.equal(resolveOciEntrypoint(first, '/bin/sh').resolvedPath, '/bin/runner');
+  const original = descriptor(), hash = hashOciRuntimeDescriptor(original);
+  for (const field of ['sourceTreeDigest', 'sourceIndexDigest', 'manifestDigest', 'rootfsDigest', 'environmentDigest']) {
+    assert.notEqual(hashOciRuntimeDescriptor({ ...original, [field]: ociHash('changed') }), hash);
+  }
+  for (const change of [{ stage: 'READY' }, { toolSurfaceHash: '0x' + '1'.repeat(64) }, { profile: 'npm-closure-v1' },
+    { policy: { ...original.policy, binarySemantic: 'REVIEWED' } }, { finalImageDigest: ociHash('other') }, { unknown: true }]) {
+    assert.throws(() => hashOciRuntimeDescriptor({ ...original, ...change }), /OCI_/);
+  }
+  assert.throws(() => resolveOciEntrypoint(inspectOciFilesystem(archive([
+    { path: 'a', type: 'SymbolicLink', linkpath: 'b' }, { path: 'b', type: 'SymbolicLink', linkpath: 'a' }])), '/a'), /LINK_CYCLE/);
+  assert.throws(() => inspectOciFilesystem(archive([{ path: '../outside' }])), /ENTRY_INVALID/);
+  assert.throws(() => inspectOciFilesystem(archive([...basicEntries, basicEntries[1]])), /ENTRY_INVALID/);
+});
+
+test('OCI image config rejects dynamic environment, inferred PATH entrypoints and mutable volumes before any execution', async () => {
+  assert.deepEqual(checkedOciConfig({ config: { Entrypoint: ['/bin/sh'], Cmd: ['/server.sh'], Env: ['PATH=/bin', 'LANG=C.UTF-8'] } }).argv, runtime.argv);
+  for (const Env of [['LD_PRELOAD=/app/foreign.so'], ['NODE_OPTIONS=--require=/app/foreign'], ['PYTHONPATH=/app'], ['PATH=.:/bin'],
+    ['HOME=/private'], ['DEMO_TOKEN=not-public'], ['LANG=C', 'LANG=UTF-8']]) {
+    assert.throws(() => checkedOciConfig({ config: { Cmd: ['/bin/sh'], Env } }), /ENVIRONMENT/);
+  }
+  assert.throws(() => checkedOciConfig({ config: { Cmd: ['python', 'server.py'] } }), /ABSOLUTE_ENTRYPOINT/);
+  assert.throws(() => checkedOciConfig({ config: { Cmd: ['/bin/sh'], Volumes: { '/app': {} } } }), /MUTABLE/);
+  await assert.rejects(() => collectOciMcp({ container: 'arbitrary-candidate-command', timeoutMs: 1000 }), /CONTAINER_INVALID/);
+});
+
+test('OCI layers verify native diff IDs and decompression bounds without applying whiteouts or extracting files', () => {
+  const layer = archive([...basicEntries, { path: '.wh.removed', bytes: Buffer.alloc(0), mode: 0 }]);
+  const config = { rootfs: { type: 'layers', diff_ids: [ociHash(layer)] } };
+  assert.equal(inspectOciLayerBudget([{ bytes: gzipSync(layer), mediaType: 'application/vnd.oci.image.layer.v1.tar+gzip' }], config).appliedBy, 'NATIVE_DOCKER_ONLY');
+  assert.throws(() => inspectOciLayerBudget([{ bytes: gzipSync(layer), mediaType: 'application/vnd.oci.image.layer.v1.tar+gzip' }],
+    { rootfs: { type: 'layers', diff_ids: [ociHash('wrong')] } }), /DIFF_ID/);
+  assert.throws(() => inspectOciLayerBudget([{ bytes: layer, mediaType: 'foreign-compression' }], config), /MEDIA_UNSUPPORTED/);
+});
+
+async function copiedFile(container, path) {
+  const files = [];
+  const listing = tar.t({ strict: true, sync: true, onReadEntry(entry) {
+    assert.equal(entry.type, 'File'); const chunks = [];
+    entry.on('data', (bytes) => chunks.push(bytes)); entry.on('end', () => files.push(Buffer.concat(chunks)));
+  } });
+  listing.end(await runRuntimeDocker(['cp', '-L', container + ':' + path, '-'], 5000, 4 * 1024 * 1024));
+  assert.equal(files.length, 1); return files[0];
+}
+
+test('actual Linux native OCI import and external MCP collector run a non-Node shell image with pagination and canary effects', {
+  skip: process.env.MCPSHIELD_DOCKER_TESTS !== '1' || !process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE, timeout: 180_000,
+}, async () => {
+  const builder = process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE;
+  const sourceContainer = 'mcpshield-oci-fixture-source-' + randomUUID();
+  const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-oci-runtime-test-'));
+  let imported;
+  try {
+    // Read the existing approved CI builder's native BusyBox/musl bytes through
+    // an unstarted container. Never import or run these binaries on the host.
+    await runRuntimeDocker(['create', '--pull=never', '--name', sourceContainer, '--entrypoint=/bin/false', builder], 5000);
+    const busybox = await copiedFile(sourceContainer, '/bin/busybox');
+    const loader = await copiedFile(sourceContainer, '/lib/ld-musl-x86_64.so.1');
+    const script = Buffer.from((await readFile('demo/fixtures/oci-stdio/server.sh', 'utf8')).replaceAll('\r\n', '\n'));
+    const layer = archive([{ path: 'bin', type: 'Directory' }, { path: 'lib', type: 'Directory' },
+      { path: 'bin/busybox', bytes: busybox }, { path: 'bin/sh', type: 'SymbolicLink', linkpath: 'busybox' },
+      { path: 'lib/ld-musl-x86_64.so.1', bytes: loader },
+      { path: 'lib/libc.musl-x86_64.so.1', type: 'SymbolicLink', linkpath: 'ld-musl-x86_64.so.1' },
+      { path: 'server.sh', bytes: script }]);
+    const layerBytes = gzipSync(layer), configBytes = Buffer.from(JSON.stringify({ architecture: 'amd64', os: 'linux',
+      config: { Entrypoint: ['/bin/sh'], Cmd: ['/server.sh'], WorkingDir: '/', Env: ['PATH=/bin'], User: '1000:1000' },
+      rootfs: { type: 'layers', diff_ids: [ociHash(layer)] }, history: [{ created_by: 'AUTHORED_SYNTHETIC_OCI_FIXTURE' }] }));
+    const config = { mediaType: 'application/vnd.oci.image.config.v1+json', digest: ociHash(configBytes), size: configBytes.length };
+    const layerDescriptor = { mediaType: 'application/vnd.oci.image.layer.v1.tar+gzip', digest: ociHash(layerBytes), size: layerBytes.length };
+    const manifestBytes = Buffer.from(JSON.stringify({ schemaVersion: 2, mediaType: 'application/vnd.oci.image.manifest.v1+json', config, layers: [layerDescriptor] }));
+    const oci = join(workspace, 'oci'); await mkdir(join(oci, 'blobs/sha256'), { recursive: true });
+    for (const bytes of [configBytes, layerBytes, manifestBytes]) await writeFile(join(oci, 'blobs/sha256', ociHash(bytes).slice(7)), bytes);
+    await writeFile(join(oci, 'oci-layout'), '{"imageLayoutVersion":"1.0.0"}');
+    await writeFile(join(oci, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{
+      mediaType: 'application/vnd.oci.image.manifest.v1+json', digest: ociHash(manifestBytes), size: manifestBytes.length, platform,
+      annotations: { 'org.opencontainers.image.ref.name': 'MUST_NOT_IMPORT_THIS_TAG' } }] }));
+    const original = await artifactDigest(workspace);
+    imported = await importOciRuntime({ root: workspace, sourceTreeDigest: original, platform });
+    assert.deepEqual(imported.issues, [], JSON.stringify({ issues: imported.issues, diagnostics: imported.diagnostics }));
+    assert.equal(imported.phase, 'IMPORTED'); assert.equal(imported.ready, false);
+    assert.equal(imported.descriptor.finalImageDigest, config.digest);
+    assert.equal(imported.descriptor.entrypoint.resolvedPath, '/bin/busybox');
+    const proof = await inspectImportedOciRuntime({ descriptor: imported.descriptor, expectedDescriptorDigest: imported.descriptorDigest });
+    assert.equal(proof.candidateExecutionPerformed, false);
+    const observed = await observeOciRuntime({ descriptor: imported.descriptor, expectedDescriptorDigest: imported.descriptorDigest, sinkImageDigest: builder,
+      probePlan: { scenarios: [
+        { scenarioId: 'normal', kind: 'NORMAL', goal: 'Read synthetic message', toolName: 'echo_safe', argumentsJson: '{}' },
+        { scenarioId: 'boundary', kind: 'ADVERSARIAL', goal: 'Observe synthetic boundary', toolName: 'leak_canary', argumentsJson: '{}' },
+      ] } });
+    assert.deepEqual(observed.report.issues, [], JSON.stringify({ issues: observed.report.issues, checks: observed.report.checks, steps: observed.report.steps }));
+    assert.equal(observed.report.observationStatus, 'COMPLETED_LIMITED_OCI_PROFILE');
+    assert.equal(observed.report.status, 'FAILED');
+    assert.equal(observed.report.steps.discovery.mcp.pages, 2);
+    assert.equal(observed.report.checks.normalToolCallsSucceeded, true);
+    assert.equal(observed.report.checks.adversarialToolCallsSucceeded, true);
+    assert.ok(observed.report.findings.some((finding) => finding.code === 'CANARY_EXFILTRATION'));
+    assert.equal(observed.report.approvalVerdict, 'ABSTAIN');
+    assert.equal(observed.report.binarySemantic, 'NOT_REVIEWED');
+    assert.equal(observed.report.filesystemObservation, 'NOT_OBSERVED');
+    assert.equal(observed.report.ready, false);
+    assert.equal(verifyEvidenceBundle(observed.bundle, observed.bundle.manifest.root), true);
+    assert.equal(await artifactDigest(workspace), original);
+  } finally {
+    await imported?.cleanup?.();
+    await runRuntimeDocker(['rm', '-f', sourceContainer], 5000).catch(() => {});
+    await removeFixtureSnapshot(workspace);
+  }
+});
