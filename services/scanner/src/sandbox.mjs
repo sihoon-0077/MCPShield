@@ -1,5 +1,5 @@
-import { randomBytes, createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { randomBytes, randomUUID, createHash } from 'node:crypto';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,22 @@ const SINK_DIR = resolve(HERE, '../../exfil-sink');
 const OBSERVER_PATH = resolve(HERE, 'observer-preload.cjs');
 const OBSERVER_DIR = dirname(OBSERVER_PATH);
 const OBSERVATION_PREFIX = 'MCPSHIELD_OBSERVATION ';
+
+export async function createCanaries(root, scanId = randomUUID()) {
+  if (!/^[A-Za-z0-9-]{1,64}$/.test(scanId)) throw new TypeError('invalid canary scanId');
+  const profiles = { ENV_SECRET: '.env', SSH_PRIVATE_KEY: '.ssh/id_demo', AWS_SESSION_TOKEN: '.aws/credentials',
+    GCP_SERVICE_ACCOUNT: '.config/gcloud/demo.json', BROWSER_COOKIE: '.browser/cookies.demo', WALLET_SEED_DUMMY: '.wallet/invalid-seed.demo',
+    CUSTOMER_RECORD: 'customers.demo.csv', SOURCE_CODE_MARKER: 'source.demo.txt' };
+  const canaries = [];
+  for (const [type, path] of Object.entries(profiles)) {
+    const target = join(root, path);
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    const content = `CANARY::${scanId}::${type}::${randomBytes(16).toString('hex')}`;
+    await writeFile(target, content, { mode: 0o400 });
+    canaries.push({ type, path, hash: createHash('sha256').update(content).digest('hex') });
+  }
+  return canaries;
+}
 
 function observationsFrom(stderr) {
   const observations = [];
@@ -78,12 +94,12 @@ function run(command, args, { cwd, env, timeoutMs = 5_000 } = {}) {
   });
 }
 
-function fixtureCommand(fixtureDir, entrypoint, exfilUrl, canaryPath, token) {
+function fixtureCommand(fixtureDir, entrypoint, exfilUrl, canaryPath, token, fakeHome) {
   if (!process.allowedNodeEnvironmentFlags.has('--permission')) throw new Error('Node permission model is required');
   return {
     command: process.execPath,
     args: ['--permission', `--allow-fs-read=${fixtureDir}`, `--allow-fs-read=${OBSERVER_PATH}`,
-      `--allow-fs-read=${canaryPath}`, '--require', OBSERVER_PATH, resolve(fixtureDir, entrypoint)],
+      `--allow-fs-read=${fakeHome}`, '--require', OBSERVER_PATH, resolve(fixtureDir, entrypoint)],
     cwd: fixtureDir,
     env: {
       PATH: process.env.PATH,
@@ -92,26 +108,30 @@ function fixtureCommand(fixtureDir, entrypoint, exfilUrl, canaryPath, token) {
       MCP_EXFIL_URL: exfilUrl,
       MCP_CANARY_PATH: canaryPath,
       MCP_SINK_TOKEN: token,
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      MCP_CANARY_ROOT: fakeHome,
     },
   };
 }
 
-async function runLocal({ fixtureDir, entrypoint, timeoutMs }) {
+async function runLocal({ fixtureDir, entrypoint, timeoutMs, scanId }) {
   const tempDir = await mkdtemp(join(tmpdir(), 'mcpshield-'));
-  const canaryPath = join(tempDir, 'canary.txt');
+  const fakeHome = join(tempDir, 'home');
+  const canaries = await createCanaries(fakeHome, scanId);
+  const canaryPath = join(fakeHome, '.env');
   const token = randomBytes(24).toString('hex');
-  const canaryHash = createHash('sha256').update(DEMO_CANARY).digest('hex');
-  await writeFile(canaryPath, DEMO_CANARY, { encoding: 'utf8', mode: 0o400 });
+  const canaryHash = canaries[0].hash;
   const sink = await startSink({ token });
   try {
-    const spec = fixtureCommand(fixtureDir, entrypoint, sink.url, canaryPath, token);
+    const spec = fixtureCommand(fixtureDir, entrypoint, sink.url, canaryPath, token, fakeHome);
     const processResult = await run(spec.command, spec.args, { ...spec, timeoutMs });
     return {
       mode: 'LOCAL_PROCESS',
       timedOut: processResult.timedOut,
       exitCode: processResult.code,
       error: processResult.code === 0 || processResult.timedOut ? null : 'fixture exited unsuccessfully',
-      canaryObserved: sink.events.some((event) => event.canaryHash === canaryHash),
+      canaryObserved: sink.events.some((event) => canaries.some(({ hash }) => hash === event.canaryHash)),
       canaryHash,
       observations: observationsFrom(processResult.stderr),
     };
@@ -147,18 +167,18 @@ async function waitForSink(containerName, timeoutMs = 5_000) {
   throw new Error('Docker exfil sink startup timed out');
 }
 
-async function runDocker({ fixtureDir, entrypoint, timeoutMs }) {
+async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId }) {
   if (!await dockerAvailable()) throw new Error('Docker sandbox requested but Docker is unavailable');
   const suffix = randomBytes(6).toString('hex');
   const networkName = `mcpshield-${suffix}`;
   const sinkName = `mcpshield-sink-${suffix}`;
   const fixtureName = `mcpshield-fixture-${suffix}`;
   const tempDir = await mkdtemp(join(tmpdir(), 'mcpshield-docker-'));
-  const canaryPath = join(tempDir, 'canary.txt');
+  const fakeHome = join(tempDir, 'home');
+  const canaries = await createCanaries(fakeHome, scanId);
   const eventsPath = join(tempDir, 'events.jsonl');
   const token = randomBytes(24).toString('hex');
-  const canaryHash = createHash('sha256').update(DEMO_CANARY).digest('hex');
-  await writeFile(canaryPath, DEMO_CANARY, { encoding: 'utf8', mode: 0o400 });
+  const canaryHash = canaries[0].hash;
   try {
     const network = await run('docker', ['network', 'create', '--internal', networkName], { timeoutMs: 10_000 });
     if (network.code !== 0) throw new Error('failed to create isolated Docker network');
@@ -173,10 +193,10 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs }) {
     await waitForSink(sinkName);
     const fixture = await run('docker', [
       'run', '--name', fixtureName, '--network', networkName, '--read-only', '--cap-drop', 'ALL',
-      '--security-opt', 'no-new-privileges', '--memory', '128m', '--cpus', '0.5', '--pids-limit', '64',
-      '-v', `${resolve(fixtureDir)}:/fixture:ro`, '-v', `${canaryPath}:/run/secrets/mcpshield_canary:ro`,
+      '--security-opt', 'no-new-privileges', '--memory', '128m', '--cpus', '0.5', '--pids-limit', '64', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
+      '-v', `${resolve(fixtureDir)}:/fixture:ro`, '-v', `${fakeHome}:/home/test:ro`,
       '-v', `${OBSERVER_DIR}:/observer:ro`,
-      '-e', 'MCP_EXFIL_URL=http://exfil-sink:8080/events', '-e', 'MCP_CANARY_PATH=/run/secrets/mcpshield_canary',
+      '-e', 'MCP_EXFIL_URL=http://exfil-sink:8080/events', '-e', 'MCP_CANARY_PATH=/home/test/.env', '-e', 'HOME=/home/test', '-e', 'MCP_CANARY_ROOT=/home/test',
       '-e', `MCP_SINK_TOKEN=${token}`, 'node:22-alpine', 'node', '--require', '/observer/observer-preload.cjs', `/fixture/${entrypoint}`,
     ], { timeoutMs });
     let events = '';
@@ -187,7 +207,7 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs }) {
       exitCode: fixture.code,
       error: fixture.code === 0 || fixture.timedOut ? null : 'fixture exited unsuccessfully',
       canaryObserved: events.split(/\r?\n/).filter(Boolean).some((line) => {
-        try { return JSON.parse(line).canaryHash === canaryHash; } catch { return false; }
+        try { return canaries.some(({ hash }) => JSON.parse(line).canaryHash === hash); } catch { return false; }
       }),
       canaryHash,
       observations: observationsFrom(fixture.stderr),

@@ -79,6 +79,7 @@ async function copyFileStable(source, target, state) {
   try {
     const during = await handle.stat();
     if (!during.isFile() || !sameIdentity(before, during)) throw new Error('fixture changed while snapshot was created');
+    if (state.bytes + during.size > SNAPSHOT_LIMITS.bytes) throw new Error(`fixture exceeds ${SNAPSHOT_LIMITS.bytes} bytes`);
     const content = await handle.readFile();
     const afterHandle = await handle.stat();
     const afterPath = await lstat(source, { bigint: false });
