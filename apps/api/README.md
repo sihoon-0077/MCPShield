@@ -410,3 +410,9 @@ the exact CID, the next native inspection fails closed and requires operator act
 Database lease atomicity cannot keep an externally owned Docker image alive.
 All raw metadata stays tenant-encrypted; public job/scan/release summaries retain
 `LOCAL_CONTRACT_TEST` and `PROVIDER_QUALITY_NOT_MEASURED`, not native proof contents.
+Cleanup failures produce `preparation.cleanup.attention` with a fixed code, and a
+private `runtimeCleanup` record containing only the exact owned UUID tag for operator
+recovery. This does not revoke a completed release. There is no automatic orphan GC:
+operators must first check committed ownership, especially for
+`COMMIT_OWNERSHIP_RECHECK_REQUIRED`. If the database is unavailable, a fixed stderr
+event reports that the recovery record could not be saved; raw Docker errors are omitted.
