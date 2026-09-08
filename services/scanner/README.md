@@ -62,9 +62,37 @@ exfiltration and timeout cleanup. Do not describe skipped checks as passed.
 Optional OpenTelemetry spans correlate static/AI/sandbox/evidence stages with
 the worker traceparent; source content is excluded from span attributes.
 
-Current limits: no OCI image ingestion yet; SBOM is declared/lockfile based,
-not a vulnerability database; probes are bounded deterministic templates, not
-a measured LLM agent ASR benchmark. Metadata corpus is 16 synthetic author-labeled
+OCI sources accept `{type:'oci',locator:'ghcr.io/owner/image:tag'}` (also public
+`registry-1.docker.io`) and `{type:'oci-layout',path}`. The resolver pins the
+selected Linux/amd64 manifest digest, validates config/platform and every layer
+digest/size, and reports entrypoint, command, user, environment *names* and ports.
+It never applies layers or executes the image. OCI metadata uses an explicit
+`0.0.0` legacy snapshot alias; actual identity is `metadata.imageDigest` and
+`immutableReference`. OCI surface remains unknown and scan INCONCLUSIVE. Downloads
+remain capped at 16 MiB and redirects/foreign layers are refused; larger images
+and registries requiring redirected blob URLs fail explicitly. Anonymous registry
+tokens never enter the result. Local image-layout tests verify this path offline.
+
+Structured remote AI can return `{riskClaims,semanticDiff,needsHumanReview}` using
+the supplied `responseSchema`. Confidence, categories and source-span offsets/hash
+are validated against exactly the redacted prompt. A separate critic request
+checks every claim. Missing/invalid critic produces review-required warnings;
+all AI findings remain non-deterministic. The legacy `{findings}` response stays
+supported. Providers must implement the no-tools request contract; the scanner
+does not grant them tools or execute their recommendedProbe strings.
+
+The controlled sink also implements an authenticated HTTP forward-proxy protocol
+for synthetic `.local`/`.test` targets. Every test has an `egressAllowHosts` list;
+IP literals, unknown hosts, alternate ports, credentials and CONNECT/TLS tunnels
+are refused. Allowed endpoints return synthetic data locally and never forward
+to the internet. Body/header canary matches and denied destinations become
+redacted sandbox evidence. On Linux both containers use the non-root host UID/GID
+that owns the read-only mounts; a root host runner is rejected. This preserves
+mount privacy without DAC capabilities or world-readable canary files.
+
+Current limits: SBOM is declared/lockfile based, not a vulnerability database;
+probes are bounded deterministic templates, not a measured LLM agent ASR
+benchmark. Metadata corpus is 16 synthetic author-labeled
 cases and intentionally reports the implicit-scope false negative. Real agent
 providers, independently labeled external datasets and kernel-level syscall
 coverage remain separate validation work. Disable the additions by continuing

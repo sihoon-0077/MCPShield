@@ -71,6 +71,8 @@ export async function extractNpmArchive(bytes, outputDir, integrity) {
     expanded = bytes[0] === 0x1f && bytes[1] === 0x8b ? gunzipSync(bytes, { maxOutputLength: RESOLVER_LIMITS.expandedBytes }) : bytes;
   } catch { throw new Error('ARTIFACT_ARCHIVE_BOMB_OR_INVALID_GZIP'); }
   if (expanded.length > RESOLVER_LIMITS.expandedBytes || expanded.length / Math.max(1, bytes.length) > RESOLVER_LIMITS.ratio) throw new Error('ARTIFACT_ARCHIVE_BOMB');
+  // Do not let tar auto-detect another compression format after our bounded gzip step.
+  if (expanded.length < 1024 || expanded.length % 512 !== 0 || !new tar.Header(expanded).cksumValid) throw new Error('ARTIFACT_INVALID_TAR');
   const seen = new Set();
   let files = 0;
   let contentBytes = 0;
@@ -102,6 +104,10 @@ export async function resolveArtifact(input) {
   const source = input.source ?? (input.sourceType === 'local' ? { type: 'local', path: input.locator }
     : input.sourceType === 'npm' ? { type: 'npm', spec: input.locator }
       : { type: input.sourceType, url: input.locator, integrity: input.integrity });
+  if (source?.type === 'oci' || source?.type === 'oci-layout') {
+    const { resolveOciArtifact } = await import('./oci.mjs');
+    return resolveOciArtifact({ ...source, locator: source.locator ?? source.url ?? input.locator });
+  }
   if (!source || !['local', 'npm', 'tarball'].includes(source.type)) throw new TypeError('unsupported artifact source');
   const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-resolver-'));
   const artifactDir = join(workspace, 'artifact');

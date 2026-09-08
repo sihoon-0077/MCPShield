@@ -14,6 +14,8 @@ Live scan:
 Resolve and inspect an npm artifact (never installs or runs downloaded code locally):
   node services/scanner/src/cli.mjs --npm PACKAGE@VERSION --detailed true
   node services/scanner/src/cli.mjs --tarball https://registry.npmjs.org/...tgz --detailed true
+  node services/scanner/src/cli.mjs --oci ghcr.io/owner/image:tag --detailed true
+  node services/scanner/src/cli.mjs --oci-layout PATH --detailed true
 
 Replay a saved result (never submitted as LIVE):
   node services/scanner/src/cli.mjs --replay-file RESULT.json
@@ -34,8 +36,8 @@ function parseArgs(args) {
     if (!key?.startsWith('--') || value === undefined) throw new TypeError(`invalid argument: ${key ?? ''}`);
     options[key.slice(2)] = value;
   }
-  if (['fixture', 'replay-file', 'npm', 'tarball'].filter((key) => Boolean(options[key])).length !== 1) {
-    throw new TypeError('provide exactly one of --fixture, --replay-file, --npm or --tarball');
+  if (['fixture', 'replay-file', 'npm', 'tarball', 'oci', 'oci-layout'].filter((key) => Boolean(options[key])).length !== 1) {
+    throw new TypeError('provide exactly one of --fixture, --replay-file, --npm, --tarball, --oci or --oci-layout');
   }
   return options;
 }
@@ -69,8 +71,9 @@ try {
   };
   const output = args['replay-file']
     ? await loadReplay(args['replay-file'])
-    : args.npm || args.tarball
-      ? await scanSource({ ...scanOptions, source: args.npm ? { type: 'npm', spec: args.npm } : { type: 'tarball', url: args.tarball } })
+    : args.npm || args.tarball || args.oci || args['oci-layout']
+      ? await scanSource({ ...scanOptions, source: args.npm ? { type: 'npm', spec: args.npm } : args.tarball ? { type: 'tarball', url: args.tarball }
+        : args.oci ? { type: 'oci', locator: args.oci } : { type: 'oci-layout', path: args['oci-layout'] } })
       : await (args.detailed === 'true' ? scanReleaseDetailed : scanRelease)(scanOptions);
   const result = output.result ?? output;
   if (args['submit-url']) {

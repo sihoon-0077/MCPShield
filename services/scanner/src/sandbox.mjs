@@ -115,14 +115,14 @@ function fixtureCommand(fixtureDir, entrypoint, exfilUrl, canaryPath, token, fak
   };
 }
 
-async function runLocal({ fixtureDir, entrypoint, timeoutMs, scanId }) {
+async function runLocal({ fixtureDir, entrypoint, timeoutMs, scanId, egressAllowHosts }) {
   const tempDir = await mkdtemp(join(tmpdir(), 'mcpshield-'));
   const fakeHome = join(tempDir, 'home');
   const canaries = await createCanaries(fakeHome, scanId);
   const canaryPath = join(fakeHome, '.env');
   const token = randomBytes(24).toString('hex');
   const canaryHash = canaries[0].hash;
-  const sink = await startSink({ token });
+  const sink = await startSink({ token, egressAllowHosts });
   try {
     const spec = fixtureCommand(fixtureDir, entrypoint, sink.url, canaryPath, token, fakeHome);
     const processResult = await run(spec.command, spec.args, { ...spec, timeoutMs });
@@ -134,6 +134,7 @@ async function runLocal({ fixtureDir, entrypoint, timeoutMs, scanId }) {
       canaryObserved: sink.events.some((event) => canaries.some(({ hash }) => hash === event.canaryHash)),
       canaryHash,
       observations: observationsFrom(processResult.stderr),
+      egressEvents: sink.events.filter((event) => event.type),
     };
   } finally {
     await sink.close();
@@ -167,7 +168,7 @@ async function waitForSink(containerName, timeoutMs = 5_000) {
   throw new Error('Docker exfil sink startup timed out');
 }
 
-async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId }) {
+async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId, egressAllowHosts = ['mail-api.local', 'exfil-sink.local'] }) {
   if (!await dockerAvailable()) throw new Error('Docker sandbox requested but Docker is unavailable');
   const uid = process.getuid?.() ?? 1000;
   const gid = process.getgid?.() ?? 1000;
@@ -192,6 +193,7 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId }) {
       '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '64',
       '-v', `${SINK_DIR}:/app:ro`, '-v', `${tempDir}:/events`,
       '-e', 'HOST=0.0.0.0', '-e', 'PORT=8080', '-e', `SINK_TOKEN=${token}`, '-e', 'EVENT_FILE=/events/events.jsonl',
+      '-e', `EGRESS_ALLOW_HOSTS=${egressAllowHosts.join(',')}`,
       'node:22-alpine', 'node', '/app/server.mjs',
     ], { timeoutMs: 60_000 });
     if (sink.code !== 0) throw new Error('failed to start Docker exfil sink');
@@ -207,16 +209,16 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId }) {
     ], { timeoutMs });
     let events = '';
     try { events = await readFile(eventsPath, 'utf8'); } catch { /* no exfil event */ }
+    const parsedEvents = events.split(/\r?\n/).filter(Boolean).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
     return {
       mode: 'DOCKER',
       timedOut: fixture.timedOut,
       exitCode: fixture.code,
       error: fixture.code === 0 || fixture.timedOut ? null : `fixture exited unsuccessfully (${fixture.stderr.match(/\b(?:EACCES|EPERM|EROFS|ENOENT|ERR_MODULE_NOT_FOUND|ERR_ASSERTION|ERR_ACCESS_DENIED)\b/)?.[0] ?? 'UNCLASSIFIED'})`,
-      canaryObserved: events.split(/\r?\n/).filter(Boolean).some((line) => {
-        try { return canaries.some(({ hash }) => JSON.parse(line).canaryHash === hash); } catch { return false; }
-      }),
+      canaryObserved: parsedEvents.some((event) => canaries.some(({ hash }) => event.canaryHash === hash)),
       canaryHash,
       observations: observationsFrom(fixture.stderr),
+      egressEvents: parsedEvents.filter((event) => event.type),
     };
   } finally {
     await dockerCleanup([fixtureName, sinkName], networkName);
@@ -225,6 +227,7 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId }) {
 }
 
 export async function runSandbox(options) {
+  if (options.egressAllowHosts && (!Array.isArray(options.egressAllowHosts) || options.egressAllowHosts.length > 32 || options.egressAllowHosts.some((name) => !/^[a-z0-9][a-z0-9.-]*\.(?:local|test)$/.test(name)))) throw new TypeError('proxy allowlist only accepts synthetic hosts');
   if (options.mode === 'local') return runLocal(options);
   if (options.mode === 'docker') return runDocker(options);
   throw new TypeError(`unknown sandbox mode: ${options.mode}`);
