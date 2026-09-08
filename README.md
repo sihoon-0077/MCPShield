@@ -1,5 +1,17 @@
 # MCPShield
 
+## Master 구현 브랜치
+
+`master/main`은 원본 해커톤 데모를 보존하면서 전체 마스터 문서의 요구사항을 확장하는 작업 브랜치입니다.
+**아직 전체 구현·운영 검증 완료 상태는 아닙니다.** 아래 공개 URL에는 이 브랜치의 최신 코드가 자동 배포되지 않습니다.
+
+- 현재 기능과 미검증 경계: [요구사항 추적표](docs/master-implementation-plan.md)
+- 비공개 운영 콘솔·worker·PostgreSQL·검증자 구성: [운영 가이드](docs/operations-runbook.md)
+- 실제 Linux Docker·PostgreSQL·서명 이미지의 확인된 기준: [CI 34250549056 / 5cabc48](https://github.com/sihoon-0077/MCPShield/actions/runs/34250549056)
+
+새 기능은 tenant 권한·암호화 증거·내구성 queue/outbox·V2 정책·서명된 admission·고위험 action receipt를 포함합니다.
+준비된 npm 실행 이미지와 전체 검증 흐름의 연결은 진행 중이며, 실제 외부 AI·테스트넷·독립 검증기관 검증은 별도입니다.
+
 ## Judge Lab
 
 Public demo: `https://mcpshield-judge-lab-production.up.railway.app/try`
@@ -82,7 +94,7 @@ npm.cmd run stack:down
 - `VERIFIED`이 아니거나 두 해시 중 하나라도 다르거나 상태 조회가 실패하면 Gateway는 fail closed 합니다.
 - raw evidence와 비밀은 체인에 기록하지 않고 evidence hash와 상태만 기록합니다.
 
-## 검증된 결과
+## 원본 데모의 검증 기록
 
 2026-09-04 로컬 통합 실행 기준:
 
@@ -96,9 +108,9 @@ npm.cmd run stack:down
 
 ## 운영 전 제한
 
-- Docker sandbox는 Docker가 있는 Linux 호스트에서 추가 검증해야 합니다. 로컬 preload observer는 커널 수준 격리 장치가 아닙니다.
+- Docker 격리는 위에 명시한 Linux CI 커밋에서 실제 검증했습니다. 이후 새 코드는 별도 재검증해야 하며, 로컬 preload observer는 커널 수준 격리 장치가 아닙니다.
 - Base Sepolia 주소와 explorer 링크는 배포 키·RPC를 제공한 뒤 생성해야 합니다.
-- SQLite는 데모 런타임입니다. PostgreSQL migration은 제공하지만 production adapter는 범위 밖입니다.
+- SQLite 데모와 PostgreSQL control-plane adapter·migration·별도 DB 복원 테스트를 제공합니다. 실제 운영 DB의 백업·부하·가용성은 운영 환경에서 검증해야 합니다.
 - 본 프로토타입은 local stdio MCP를 우선 지원하며 모든 remote MCP를 완전 증명하지 않습니다.
 
 자세한 내용: [구현 매트릭스](docs/implementation-matrix.md) · [아키텍처](docs/architecture.md) · [인터페이스 계약](docs/interface-contract.md) · [데모 시나리오](docs/demo-scenario.md) · [통합 체크리스트](docs/integration-checklist.md) · [보안 정책](SECURITY.md)

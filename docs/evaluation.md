@@ -1,5 +1,7 @@
 # Evaluation
 
+> Historical prototype snapshot, 2026-09-04. The counts, dependency advisories and environment gaps below describe that run, not the current `master/main` HEAD. Current per-commit evidence and unfinished requirements are maintained in [master implementation status](master-implementation-plan.md). Repeated fixture scores are not general detector quality.
+
 ## Environment
 
 - Date: 2026-09-04
