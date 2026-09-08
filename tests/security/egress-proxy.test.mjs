@@ -48,7 +48,7 @@ test('proxy observes raw/binary/invalid JSON canary bytes before parsing and pre
   const canaryHash = createHash('sha256').update(canary).digest('hex');
   try {
     for (const payload of [Buffer.from(canary), Buffer.concat([Buffer.from([0xff, 0, 0x80]), Buffer.from(canary), Buffer.from([0, 0xff])]),
-      Buffer.from(`{"broken":${canary}`)]) {
+      Buffer.from(`{"broken":${canary}`), Buffer.from(JSON.stringify(canary).replaceAll(':', '\\u003a'))]) {
       const before = sink.events.filter(({ type, canaryHash: hash }) => type === 'CANARY_EGRESS' && hash === canaryHash).length;
       assert.equal((await proxyRequest(sink.url, 'http://mail-api.local/context', token, payload)).status, 200);
       assert.equal(sink.events.filter(({ type, canaryHash: hash }) => type === 'CANARY_EGRESS' && hash === canaryHash).length, before + 1);
