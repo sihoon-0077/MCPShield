@@ -10,6 +10,7 @@ import { checkedTrivyDatabaseMetadata, readTrivyDatabaseIdentity, assessTrivyDoc
 import { reviewOciImage } from '../../services/scanner/src/oci-review.mjs';
 import { inspectOciFilesystem, ociHash } from '../../services/resolver/src/oci-runtime-descriptor.mjs';
 import { removeFixtureSnapshot } from '../../services/scanner/src/snapshot.mjs';
+import { cleanupOciTrivyContainers } from '../../services/scanner/src/oci-trivy.mjs';
 
 const platform = { os: 'linux', architecture: 'amd64' }, imageDigest = ociHash('authored test image');
 function archive(entries) {
@@ -161,6 +162,19 @@ test('native Trivy contract diagnostics expose shapes/counts/numeric versions bu
     { bomFormat: sentinel, specVersion: sentinel, components: sentinel }, imageDigest);
   assert.equal(JSON.stringify(diagnostic).includes(sentinel), false);
   assert.equal(diagnostic.sbomComponentsShape, 'OTHER');
+});
+
+test('Trivy cleanup validates all exact owned targets and reports failed removal without hiding failures or printing daemon text', async () => {
+  const first = 'mcpshield-trivy-11111111-1111-4111-8111-111111111111', second = 'mcpshield-trivy-22222222-2222-4222-8222-222222222222';
+  const calls = [], run = async (args, timeout) => { calls.push({ args, timeout }); if (args.at(-1) === first) throw Error('PRIVATE_DAEMON_SOURCE_TEXT'); };
+  for (const invalid of [[first, 'unowned'], [first, first], [first + '/other'], 'mcpshield-trivy']) {
+    await assert.rejects(() => cleanupOciTrivyContainers(invalid, run), /CLEANUP_TARGET_INVALID/);
+  }
+  assert.equal(calls.length, 0);
+  const result = await cleanupOciTrivyContainers([first, second], run);
+  assert.deepEqual(result, { attempted: 2, failed: 1 });
+  assert.deepEqual(calls, [first, second].map((name) => ({ args: ['rm', '-f', '-v', name], timeout: 5000 })));
+  assert.equal(JSON.stringify(result).includes('PRIVATE_DAEMON_SOURCE_TEXT'), false);
 });
 
 test('actual Linux approved image catalogue, offline Trivy vulnerability scan and native CycloneDX conversion', {
