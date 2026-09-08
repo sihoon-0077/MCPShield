@@ -26,7 +26,7 @@ produce explicit issue codes. This is syntax/preflight validation only:
 `archiveIntegrityVerified: false` and `graphVerifiedByNpm: false` remain false.
 No tarball checksum or installed dependency closure is claimed from lock text.
 
-The additive `mcpshield.prepared-runtime.v1` descriptor commits to source digest,
+The additive npm `mcpshield.prepared-runtime.v1` descriptor commits to source digest,
 source tree digest, lock digest/origin, builder image digest, target platform,
 final image digest, discovered tool surface hash, entrypoint bytes, exact argv
 and isolation policy. Unknown values remain null. OCI lock origin is explicitly
@@ -238,7 +238,9 @@ HOME and credential environment variables do not enter this profile.
 The separate `mcpshield.oci-runtime.v1` / `oci-container-v1` descriptor commits to
 the original tree/index/manifest/config digests, final Docker config ID, platform,
 canonical rootfs, requested/resolved executable and link-chain digests, argv,
-working directory, original whitelisted environment digest and fixed synthetic
+working directory, original whitelisted environment digest, the fixed
+`oci-100m-512m-v1` budget profile, actual `sourceBytes` / `layerArchiveBytes` /
+`exportArchiveBytes`, and fixed synthetic
 execution policy. `IMPORTED` has a null MCP surface; `OBSERVED` has the actual
 full surface hash. Neither stage means READY or grants a signed release.
 The existing npm descriptor, original fixture identities and npm PASS policy
@@ -279,11 +281,41 @@ MCPSHIELD_DOCKER_TESTS=1 node --import tsx --test tests/security/oci-runtime.tes
 
 Required setting: `MCPSHIELD_RUNTIME_BUILDER_IMAGE` is the operator-approved
 Linux amd64 builder config ID. No actual Docker result is claimed when unset.
-This checkpoint retains the original 16 MiB artifact snapshot boundary and caps
-cumulative decompressed layer archives/export tar at 160 MiB, final data at
-128 MiB and final entries at 20,000. **Still required for the full master**:
-additive 100 MiB OCI source identity/budget profile, 512 MiB cumulative expansion
-and export / 50,000 file limits, filesystem and SBOM/binary review, independent
-OCI signing policy, and Gateway integration. These omissions are not npm-policy
+OCI acquisition/import now uses a fixed named source profile with **100 MiB**
+actual source bytes and **50,000 entries** (including directories). JSON
+index/config documents are capped at 1 MiB. Original npm/fixture calls retain
+the default 16 MiB profile and exact existing sorted-path/content hash encoding.
+Snapshot copying and hashing use a fixed 64 KiB working buffer, enforce actual
+read counts, and compare before/during/after file identity/size/timestamps.
+Untrusted source bytes are not executed by the copy/hash code.
+
+The sum of all actually decompressed layer archives **plus** native export tar
+is capped at **512 MiB**, not 512 MiB for each stage. Native zlib's maximum
+output length and Docker stdout's running byte bound stop excess output; tar
+entry declarations and cumulative entry counts are additional checks, not the
+only byte bound. The descriptor binds the actual counts. Canonical rootfs
+content is the identity authority; export tar length is budget evidence. This
+profile additionally fails closed if repeated exports on the same daemon have
+a different byte length, even if canonical content matches. The Linux acceptance
+checks repeated exports; daemon variants with different padding/headers require
+explicit compatibility review rather than silently relaxing the profile.
+
+The normal Linux OCI test uses >16 MiB of seeded native SHAKE-generated inert
+padding in the actual image layer. A separate opt-in acceptance imports an exact
+100 MiB original source (>99 MiB is the actually imported uncompressed layer,
+with a small source record filling tar alignment overhead), then performs the
+same two-page MCP/normal/canary observation. It also checks repeated final-image
+exports. This is synthetic size/isolation evidence, not binary semantic approval.
+
+```sh
+MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_OCI_100M_TESTS=1 node --import tsx --test tests/security/oci-runtime.test.mjs tests/security/oci-budget.test.mjs
+```
+
+The same opt-in runs a real 513 MiB gzip expansion rejection using a small
+stream-generated compressed fixture; no 513 MiB raw fixture file is written.
+Without those settings, actual image/large-memory tests remain SKIP/NOT_RUN,
+not passed measurements. **Still required for the full master**: filesystem and
+SBOM/binary review, independent OCI signing policy, and Gateway integration.
+These omissions are not npm-policy
 PASS substitutions. Relevant native contracts: [Docker load](https://docs.docker.com/reference/cli/docker/image/load/)
 and [OCI image configuration](https://specs.opencontainers.org/image-spec/config/).

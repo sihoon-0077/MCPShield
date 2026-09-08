@@ -3,6 +3,13 @@ import { chmod, lstat, mkdir, open, readdir, realpath, rm } from 'node:fs/promis
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 export const SNAPSHOT_LIMITS = Object.freeze({ files: 1_024, bytes: 16 * 1024 * 1024 });
+export const OCI_SOURCE_BUDGET_PROFILE = 'oci-100m-512m-v1';
+const OCI_SOURCE_LIMITS = Object.freeze({ files: 50_000, bytes: 100 * 1024 * 1024 });
+export function snapshotLimits(profile = 'fixture-v1') {
+  if (profile === 'fixture-v1') return SNAPSHOT_LIMITS;
+  if (profile === OCI_SOURCE_BUDGET_PROFILE) return OCI_SOURCE_LIMITS;
+  throw Error('ARTIFACT_BUDGET_PROFILE_UNSUPPORTED');
+}
 
 async function makeWritable(root) {
   let stat;
@@ -66,7 +73,7 @@ async function copyFileStable(source, target, state) {
   if (before.isSymbolicLink()) throw new Error(`fixture symlinks are not allowed: ${relative(state.sourceRoot, source)}`);
   if (!before.isFile()) throw new Error(`unsupported fixture entry: ${relative(state.sourceRoot, source)}`);
   state.files += 1;
-  if (state.files > SNAPSHOT_LIMITS.files) throw new Error(`fixture exceeds ${SNAPSHOT_LIMITS.files} files`);
+  if (state.files > state.limits.files) throw new Error(`fixture exceeds ${state.limits.files} files`);
 
   const noFollow = constants.O_NOFOLLOW ?? 0;
   let handle;
@@ -79,24 +86,34 @@ async function copyFileStable(source, target, state) {
   try {
     const during = await handle.stat();
     if (!during.isFile() || !sameIdentity(before, during)) throw new Error('fixture changed while snapshot was created');
-    if (state.bytes + during.size > SNAPSHOT_LIMITS.bytes) throw new Error(`fixture exceeds ${SNAPSHOT_LIMITS.bytes} bytes`);
-    const content = await handle.readFile();
+    if (state.bytes + during.size > state.limits.bytes) throw new Error(`fixture exceeds ${state.limits.bytes} bytes`);
+    // Read and copy with a fixed working buffer; a growing candidate cannot
+    // turn readFile's allocation into an unbounded memory read.
+    const output = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o400);
+    let copied = 0;
+    try {
+      const buffer = Buffer.alloc(64 * 1024);
+      while (true) {
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        if (!bytesRead) break;
+        copied += bytesRead; state.bytes += bytesRead;
+        if (state.bytes > state.limits.bytes || copied > during.size) throw Error('fixture changed or exceeded its byte budget');
+        await output.writeFile(buffer.subarray(0, bytesRead));
+      }
+    } finally { await output.close(); }
     const afterHandle = await handle.stat();
     const afterPath = await lstat(source, { bigint: false });
-    if (afterPath.isSymbolicLink() || !stillSameFile(before, afterHandle, afterPath)) {
+    if (copied !== during.size || afterPath.isSymbolicLink() || !stillSameFile(before, afterHandle, afterPath)) {
       throw new Error('fixture changed while snapshot was created');
     }
     state.entries.set(entryKey(state.sourceRoot, source, 'F'), metadata(afterPath));
-    state.bytes += content.byteLength;
-    if (state.bytes > SNAPSHOT_LIMITS.bytes) throw new Error(`fixture exceeds ${SNAPSHOT_LIMITS.bytes} bytes`);
-    const output = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o400);
-    try { await output.writeFile(content); } finally { await output.close(); }
   } finally {
     await handle.close();
   }
 }
 
 async function copyDirectoryStable(source, target, state) {
+  if (++state.directoryCount + state.files > state.limits.files) throw Error('fixture exceeds its entry budget');
   const before = await lstat(source, { bigint: false });
   if (before.isSymbolicLink()) throw new Error(`fixture symlinks are not allowed: ${relative(state.sourceRoot, source)}`);
   if (!before.isDirectory()) throw new Error(`unsupported fixture entry: ${relative(state.sourceRoot, source)}`);
@@ -105,6 +122,7 @@ async function copyDirectoryStable(source, target, state) {
   entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
   for (const entry of entries) {
     if (entry.name === 'node_modules' || entry.name === '.git') continue;
+    if (state.directoryCount + state.files >= state.limits.files) throw Error('fixture exceeds its entry budget');
     const sourcePath = resolve(source, entry.name);
     const targetPath = resolve(target, entry.name);
     assertWithin(state.sourceRoot, sourcePath);
@@ -144,14 +162,14 @@ async function verifySourceTree(source, state, seen = new Set()) {
   }
 }
 
-export async function copyFixtureSnapshot(sourceDir, snapshotDir) {
+export async function copyFixtureSnapshot(sourceDir, snapshotDir, { profile = 'fixture-v1' } = {}) {
   const sourceRoot = resolve(sourceDir);
   const snapshotRoot = resolve(snapshotDir);
   const rootStat = await lstat(sourceRoot, { bigint: false });
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new TypeError('fixture root must be a real directory');
   const canonicalRoot = await realpath(sourceRoot);
   if (resolve(canonicalRoot) !== sourceRoot) throw new TypeError('fixture root symlinks or aliases are not allowed');
-  const state = { sourceRoot, snapshotRoot, files: 0, bytes: 0, entries: new Map() };
+  const state = { sourceRoot, snapshotRoot, files: 0, directoryCount: -1, bytes: 0, entries: new Map(), limits: snapshotLimits(profile) };
   try {
     await copyDirectoryStable(sourceRoot, snapshotRoot, state);
     await verifySourceTree(sourceRoot, state);
