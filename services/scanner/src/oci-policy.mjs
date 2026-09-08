@@ -44,7 +44,8 @@ export function assessOciPolicy(bundle, result, binding, trusted) {
   const abstain = (code) => outcome('ABSTAIN', [code]);
   try {
     assertScanResult(result);
-    if (!verifyEvidenceBundle(bundle, bundle.manifest.root) || !validateOciReleaseBinding(binding)) return abstain('OCI_EVIDENCE_OR_BINDING_INVALID');
+    if (!verifyEvidenceBundle(bundle, bundle.manifest.root) || !validateOciReleaseBinding(binding) ||
+      binding.executionPolicy.profile !== 'restricted-oci-offline-v1') return abstain('OCI_EVIDENCE_OR_BINDING_INVALID');
     if (!trusted || !same(trusted.anchors, binding.executionPolicy.trust) || trusted.descriptorDigest !== binding.descriptorDigest ||
       trusted.finalImageDigest !== binding.finalImageDigest || trusted.rootfsDigest !== binding.descriptor.rootfsDigest ||
       !same(trusted.platform, binding.platform) || trusted.observationPolicy.collectorDigest !== trusted.anchors.observerDigest ||

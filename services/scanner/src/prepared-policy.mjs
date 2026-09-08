@@ -22,7 +22,8 @@ export function assessPreparedPolicy(bundle, result, binding, trusted) {
   const abstain = (code) => ({ profile: 'restricted-node-docker-v1', verdict: 'ABSTAIN', checks, issues: [code] });
   try {
     assertScanResult(result);
-    if (!verifyEvidenceBundle(bundle, bundle.manifest.root) || !validatePreparedReleaseBinding(binding)) return abstain('PREPARED_EVIDENCE_OR_BINDING_INVALID');
+    if (!verifyEvidenceBundle(bundle, bundle.manifest.root) || !validatePreparedReleaseBinding(binding) ||
+      binding.executionPolicy.profile !== 'prepared-node-observation-v1') return abstain('PREPARED_EVIDENCE_OR_BINDING_INVALID');
     if (!trusted || trusted.builderImageDigest !== binding.descriptor.builderImageDigest ||
       trusted.collectorDigest !== binding.executionPolicy.collectorDigest || trusted.observerDigest !== binding.executionPolicy.observerDigest ||
       trusted.finalImageDigest !== binding.finalImageDigest || !equal(trusted.platform, binding.platform) ||

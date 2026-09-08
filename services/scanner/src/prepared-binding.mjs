@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { canonicalJson } from './evidence.mjs';
 import { hashPreparedRuntimeDescriptor } from '../../resolver/src/runtime-descriptor.mjs';
+import { SCOPED_NODE_PROFILE, scopedReviewPolicy, validateScopedReviewPolicy } from './scoped-policy.mjs';
 
 const hash = (value) => `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
 const sha = /^sha256:[a-f0-9]{64}$/;
@@ -24,9 +25,18 @@ export function preparedExecutionPolicy(input) {
 
 export function validatePreparedExecutionPolicy(value) {
   try {
+    if (value?.profile === SCOPED_NODE_PROFILE) return canonicalJson(value) === canonicalJson(
+      scopedPreparedExecutionPolicy({ collectorDigest: value.collectorDigest, observerDigest: value.observerDigest,
+        egressAllowHosts: value.egressAllowHosts }, value.semantic));
     return canonicalJson(value) === canonicalJson(preparedExecutionPolicy({ collectorDigest: value.collectorDigest,
       observerDigest: value.observerDigest, egressAllowHosts: value.egressAllowHosts }));
   } catch { return false; }
+}
+
+export function scopedPreparedExecutionPolicy(observation, semantic) {
+  if (!validateScopedReviewPolicy(semantic)) throw Error('PREPARED_SCOPED_POLICY_INVALID');
+  return { ...preparedExecutionPolicy(observation), profile: SCOPED_NODE_PROFILE,
+    semantic: scopedReviewPolicy(semantic.evidenceMode) };
 }
 
 // Commitment only: creating/verifying this object grants neither a PASS nor admission.

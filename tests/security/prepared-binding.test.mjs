@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
 import { createPreparedReleaseBinding, validatePreparedReleaseBinding, preparedExecutionPolicy,
-  validatePreparedExecutionPolicy } from '../../services/scanner/src/prepared-binding.mjs';
+  validatePreparedExecutionPolicy, scopedPreparedExecutionPolicy } from '../../services/scanner/src/prepared-binding.mjs';
+import { scopedReviewPolicy } from '../../services/scanner/src/scoped-policy.mjs';
 import { canonicalJson } from '../../services/scanner/src/evidence.mjs';
 import { hashPreparedRuntimeDescriptor } from '../../services/resolver/src/runtime-descriptor.mjs';
 
@@ -19,6 +20,10 @@ test('prepared binding commits exactly six manifest fields and detects every exe
   const binding = createPreparedReleaseBinding({ sourceReleaseId: `0x${'c'.repeat(64)}`, descriptor, executionPolicy });
   assert.equal(validatePreparedReleaseBinding(binding), true);
   assert.equal(binding.artifactDigest, hashPreparedRuntimeDescriptor(descriptor));
+  const v2 = createPreparedReleaseBinding({ sourceReleaseId: binding.sourceReleaseId, descriptor,
+    executionPolicy: scopedPreparedExecutionPolicy({ collectorDigest: sha, observerDigest: sha, egressAllowHosts: ['mail-api.local'] }, scopedReviewPolicy('PROVIDER_EXECUTION')) });
+  assert.equal(validatePreparedReleaseBinding(v2), true);
+  assert.equal(v2.artifactDigest, binding.artifactDigest); assert.notEqual(v2.manifestDigest, binding.manifestDigest);
   const { schemaVersion, profile, sourceReleaseId, sourceArtifactDigest, descriptorDigest, executionPolicyDigest } = binding;
   assert.equal(binding.manifestDigest, `sha256:${createHash('sha256').update(canonicalJson({ schemaVersion, profile,
     sourceReleaseId, sourceArtifactDigest, descriptorDigest, executionPolicyDigest })).digest('hex')}`);
