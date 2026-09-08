@@ -97,7 +97,7 @@ export async function importOciRuntime({ root, sourceTreeDigest, platform }) {
   const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-oci-import-'));
   const snapshot = join(workspace, 'source'), pack = join(workspace, 'pack');
   const runtimeTag = `mcpshield-oci-${randomUUID()}:local`;
-  let ownsImage = false, success = false, stage = 'SOURCE';
+  let success = false, stage = 'SOURCE';
   try {
     const sourceSnapshot = await copyFixtureSnapshot(root, snapshot, { profile: OCI_SOURCE_BUDGET_PROFILE });
     if (await artifactDigest(snapshot, { profile: OCI_SOURCE_BUDGET_PROFILE }) !== sourceTreeDigest) throw Error('OCI_SOURCE_DIGEST_MISMATCH');
@@ -139,8 +139,6 @@ export async function importOciRuntime({ root, sourceTreeDigest, platform }) {
       await runRuntimeDocker(['image', 'load', '--quiet', '--input', archive], 60_000);
       // Not every Docker engine supports OCI layout archives. Failure never
       // falls back to running a foreign importer or a candidate command on host.
-      await runRuntimeDocker(['image', 'tag', configDigest, runtimeTag], 5000);
-      ownsImage = true;
     }
     stage = 'FINAL_FILESYSTEM';
     const proof = await inspectImage(configDigest, inspected.platform, undefined, expansion.expandedArchiveBytes);
@@ -154,11 +152,15 @@ export async function importOciRuntime({ root, sourceTreeDigest, platform }) {
       platform: inspected.platform, finalImageDigest: configDigest, imageDigestKind: 'DOCKER_IMAGE_CONFIG_ID',
       rootfsDigest: proof.filesystem.digest, entrypoint: proof.entrypoint, ...runtime, toolSurfaceHash: null, policy: OCI_OBSERVATION_POLICY };
     const descriptorDigest = hashOciRuntimeDescriptor(descriptor);
+    // Every job owns a unique reference, including an already-present CID.
+    // Existing tags/CID are unchanged; cleanup removes only this new tag.
+    stage = 'OWNED_REFERENCE';
+    await runRuntimeDocker(['image', 'tag', configDigest, runtimeTag], 5000);
     success = true;
     return { phase: 'IMPORTED', status: 'INCONCLUSIVE', ready: false, candidateExecutionPerformed: false, issues: [],
-      descriptor, descriptorDigest, expansion, runtimeTag: ownsImage ? runtimeTag : null,
+      descriptor, descriptorDigest, expansion, runtimeTag,
       filesystem: { digest: proof.filesystem.digest, algorithm: proof.filesystem.algorithm, files: proof.filesystem.entries.length, bytes: proof.filesystem.bytes },
-      cleanup: async () => { if (ownsImage) await runRuntimeDocker(['image', 'rm', runtimeTag], 5000); } };
+      cleanup: async () => { await runRuntimeDocker(['image', 'rm', runtimeTag], 5000); } };
   } catch (error) {
     return { phase: 'NOT_RUN', status: 'INCONCLUSIVE', ready: false, candidateExecutionPerformed: false,
       issues: [/^OCI_[A-Z_]+$/.test(error.message) ? error.message : stage === 'NATIVE_LOAD' ? 'OCI_NATIVE_IMPORT_FAILED_OR_UNSUPPORTED' : 'OCI_RUNTIME_IMPORT_FAILED'], diagnostics: { stage } };

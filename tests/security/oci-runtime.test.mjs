@@ -158,6 +158,17 @@ async function actualOciScenario({ sourceTargetBytes = null, fullScan = false } 
     assert.ok(imported.descriptor.layerArchiveBytes + imported.descriptor.exportArchiveBytes <= 512 * 1024 * 1024);
     assert.equal(imported.descriptor.finalImageDigest, config.digest);
     assert.equal(imported.descriptor.entrypoint.resolvedPath, '/bin/busybox');
+    if (!sourceTargetBytes) {
+      const secondOwner = await importOciRuntime({ root: workspace, sourceTreeDigest: original, platform });
+      try {
+        assert.equal(secondOwner.phase, 'IMPORTED', JSON.stringify({ issues: secondOwner.issues, diagnostics: secondOwner.diagnostics }));
+        assert.equal(secondOwner.descriptor.finalImageDigest, imported.descriptor.finalImageDigest);
+        assert.match(secondOwner.runtimeTag, /^mcpshield-oci-[a-f0-9-]{36}:local$/);
+        assert.notEqual(secondOwner.runtimeTag, imported.runtimeTag);
+      } finally { await secondOwner.cleanup?.(); }
+      const retained = JSON.parse(await runRuntimeDocker(['image', 'inspect', imported.runtimeTag, '--format', '{{json .}}'], 5000));
+      assert.equal(retained.Id, imported.descriptor.finalImageDigest, 'second owner cleanup must retain the first own reference');
+    }
     for (let repeat = 0; repeat < 2; repeat++) {
       const proof = await inspectImportedOciRuntime({ descriptor: imported.descriptor, expectedDescriptorDigest: imported.descriptorDigest });
       assert.equal(proof.candidateExecutionPerformed, false);
