@@ -363,3 +363,96 @@ safe-fixture blocking false-positive rate is 0%.
   per-run random bearer token and stores only canary hashes.
 - No real personal data, production MCP package, external attack server, or
   committed secret is used.
+
+## Prepared Node images: actual MCP observation (checkpoint 1C)
+
+`observePreparedRuntime()` in `src/prepared-runtime.mjs` accepts the separately
+prepared descriptor and its expected hash, never an arbitrary host entrypoint or
+mutable image tag. It verifies the exact image config ID/platform before starting
+an isolated Docker process. The original fixture/artifact identity is unchanged.
+
+The existing read-only collector obtains every tools/list page (bounded to 32
+pages/128 tools). A validated plan must contain NORMAL and ADVERSARIAL calls; the
+two groups run in fresh containers with independent synthetic canaries. Every
+run must discover the same complete tool surface. An explicitly opted-in AI
+provider can generate the same bounded plan instead of a manual plan. Missing,
+unsafe or incomplete plans are not silently replaced by successful measurements.
+
+The result has separate machine-readable `discoveryComplete`,
+`normalProbeComplete`, `adversarialProbeComplete`, `normalToolCallsSucceeded`,
+`adversarialToolCallsSucceeded` and `toolSurfaceStable` checks. A tool error can
+complete a protocol exchange without successfully completing a task. Canary
+effects and proxy-denied egress use the independent sink; candidate-supplied
+Node hook messages alone do not produce deterministic revocation findings.
+Only response hashes are retained, never raw tool-call output or Docker stderr.
+
+The descriptor with the actually observed tool hash gets a separate
+`observedDescriptorDigest`. `preparationDescriptorDigest` and the original
+`sourceArtifactDigest` remain available for provenance. The evidence bundle
+commits to the redacted report/tools plus the exact collector/observer hashes,
+Node arguments, synthetic egress policy and final image ID. Redacted descriptor
+bytes are explicitly named `.redacted.json`; their hash is not represented as
+the hash of the original private descriptor.
+
+The Node permission model adds read-only `/app`, `/observer` and `/home/test`
+access without granting child/worker/addon/WASI permissions. **Docker is the
+isolation boundary, not Node permissions.** The
+[official Node 22 permission documentation](https://github.com/nodejs/node/blob/v22.22.2/doc/api/permissions.md)
+explicitly disclaims protection against malicious code. Node hooks remain
+best-effort, so `fullBehaviorCoverage` and `approvalReady` remain false. Successful
+protocol/probe execution yields `COMPLETED_LIMITED_NODE_PROFILE`, not READY or
+scan PASS; deterministic adverse effects yield FAILED, otherwise INCONCLUSIVE.
+
+Run portable contract checks with:
+
+```powershell
+node --import tsx --test tests/security/prepared-observation.test.mjs
+```
+
+The actual prepared-image regression is also in
+`tests/security/npm-closure.test.mjs` and requires the approved patched builder
+and Linux Docker configuration documented in `services/resolver/README.md`.
+It prepares a real dependency closure, discovers two actual MCP pages, executes a
+normal tool, observes a dummy-canary effect, checks permission restrictions and
+verifies the evidence root. A skipped test is not an actual Linux result.
+
+### Required next integration: existing registry/validator/Gateway path
+
+This checkpoint is not a second standalone product. The next Main-reviewed
+adapter must register and scan the prepared runtime as a **separate profile**:
+
+| Existing V2 field | Prepared profile value |
+|---|---|
+| `toolId` | Existing canonical source tool ID; never rewrite the original release |
+| `artifactDigest` | Observed prepared descriptor SHA-256, converted to bytes32 by existing SDK |
+| `manifestDigest` | Canonical versioned prepared manifest binding profile, source release, descriptor and execution-policy digest |
+| `toolSurfaceDigest` | Raw, complete, observed MCP surface hash (before redaction) |
+| `policyHash` | Explicit prepared-profile policy, not the unchanged legacy v1 policy |
+| `reportRoot` | Evidence root from that exact profile/descriptor scan |
+
+`exactReleaseIdentity()` already derives a new release ID from these commitments;
+no Solidity field reinterpretation is needed beyond the explicitly versioned
+off-chain artifact profile. Source release records remain untouched. An
+operator-only preparation job should freeze the observed descriptor before
+registration, while keeping build/image configuration under worker policy rather
+than accepting arbitrary images or host paths from API clients.
+
+The control worker must dispatch by profile, verify descriptor/surface identity
+and evidence again, and run the prepared-profile static/AI/observation policy
+before requesting validator approval. It must not send this partial report
+through the legacy `policyVerdict` PASS branch. The current fail-closed legacy
+policy and public demo remain unchanged.
+
+Gateway must hash/verify the private descriptor, obtain existing signed admission
+for its descriptor identity **before** Docker spawn, use the identical pinned
+image/argv and policy, and verify actual tools/list before exposing metadata or
+forwarding calls. Revocation must also kill/remove the named Docker container,
+not merely the Docker CLI process. Existing signed receipts, policy/domain
+binding and per-call admission checks should be reused.
+
+Current image IDs are local Docker config IDs, not registry manifest digests.
+Cross-host Gateway deployment additionally needs a verified immutable image
+distribution binding (manifest/layers/config), never an implicit tag pull.
+Generic OCI execution still requires a language-neutral collector and a stronger
+observation strategy; this Node-only checkpoint does not implement it. Lockless
+npm resolution also remains a separate required isolated solver/broker stage.
