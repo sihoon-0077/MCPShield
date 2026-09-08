@@ -8,9 +8,17 @@ import { buildApp } from "../../apps/api/src/app.js";
 import { ControlStore } from "../../apps/api/src/control-store.js";
 import { canonical, defaultPolicy, hash, loadEvidence, saveEvidence, type ControlOptions } from "../../apps/api/src/control-plane.js";
 import { runControlWorkerOnce } from "../../apps/api/src/control-worker.js";
+import { controlConfig } from "../../apps/api/src/control-config.js";
+import { policyVerdict } from "../../apps/api/src/control-policy.js";
 import { exactReleaseIdentity } from "../../packages/contracts-sdk/src/v2.js";
+// @ts-expect-error Shared scanner is ESM JavaScript.
+import { createEvidenceBundle } from "../../services/scanner/src/evidence.mjs";
 
-const digest = `sha256:${"a".repeat(64)}`, surface = `0x${"b".repeat(64)}`, root = `0x${"c".repeat(64)}`;
+const digest = `sha256:${"a".repeat(64)}`, surface = `0x${"b".repeat(64)}`;
+const mockResult = { artifactDigest: digest, toolSurfaceHash: surface, scanStatus: "PASSED", findings: [] };
+const mockBundle = createEvidenceBundle({ "report.json": { ...mockResult, scope: "STATIC_AI_SANDBOX" }, "sandbox/events.json": { mode: "DOCKER", complete: true },
+  "static/findings.json": [], "semantic/model-output.json": { findings: [] }, "sandbox/mcp.json": { complete: true } });
+const root = mockBundle.manifest.root;
 const release = { ...exactReleaseIdentity({ toolId: "npm:mail-mcp", artifactDigest: digest, manifestDigest: digest, toolSurfaceHash: surface }),
   artifactDigest: digest, manifestDigest: digest, toolSurfaceHash: surface, artifactDir: "unused", legacyReleaseId: "mail-mcp@1.0.0", status: "UNVERIFIED" };
 const tenant = "test-tenant", token = "test-control-admin-token-0000001";
@@ -27,7 +35,7 @@ async function setup() {
   signingKey: keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(), signingKeyId: "test-key",
   chainDecision: async () => ({ status: "VERIFIED", source: "EVM", policyHash: hash(defaultPolicy), validUntil: new Date(Date.now() + 60000).toISOString(),
     validatorSetVersion: 1, chainId: 31337, registryContract: `0x${"1".repeat(40)}`, observedBlock: 100, blockHash: root }),
-  scanArtifact: async () => ({ result: { artifactDigest: digest, toolSurfaceHash: surface, scanStatus: "PASSED" }, bundle: { manifest: { root }, documents: { "report.json": "synthetic" } } }),
+  scanArtifact: async () => ({ result: mockResult, bundle: mockBundle }),
   verifyEvidence: (bundle, expectedRoot) => bundle.manifest.root === expectedRoot,
   };
   const app = await buildApp({ adminApiToken: "legacy-admin-token", scannerApiToken: "legacy-scanner-token", controlPlane: options });
@@ -84,7 +92,50 @@ test("durable queue claims fence workers and retryable failures reach DLQ", asyn
     assert.equal(failed?.attempts, 3);
     assert.equal(await f.store.retry(tenant, scan.scanId), true);
     assert.equal((await f.store.scan(tenant, scan.scanId))?.status, "QUEUED");
+    const events = await f.store.events(tenant, scan.releaseId);
+    assert.ok(events.some((event) => event.eventName === "scan.state.changed" && event.payload.status === "DEAD_LETTER"));
   } finally { await f.close(); }
+});
+
+test("policy guards stage coverage and idempotent retry survives an exhausted quota", async () => {
+  const f = await setup();
+  try {
+    const invalid = await f.app.inject({ method: "POST", url: "/v1/policies", headers: auth, payload: { alias: "unsafe", document: { ...defaultPolicy, requiredTiers: ["static"] } } });
+    assert.equal(invalid.statusCode, 400);
+    const document = { ...defaultPolicy, maxQueuedScans: 1 };
+    const policy = (await f.app.inject({ method: "POST", url: "/v1/policies", headers: auth, payload: { alias: "bounded", document } })).json().policy;
+    const payload = { releaseId: release.releaseId, policyHash: policy.policyHash };
+    const first = await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "first" }, payload });
+    assert.equal(first.statusCode, 202);
+    assert.equal((await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "first" }, payload })).json().deduplicated, true);
+    assert.equal((await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "second" }, payload })).statusCode, 429);
+  } finally { await f.close(); }
+});
+
+test("remote AI is server-only and requires an explicit allow flag, key and model", () => {
+  const env = { CONTROL_PLANE_ENABLED: "true", CONTROL_PLANE_CREDENTIALS: JSON.stringify([{ tenantId: tenant, token, role: "admin" }]),
+    CONTROL_EVIDENCE_KEY: "1".repeat(64), CONTROL_AI_PROVIDER: "openai", OPENAI_API_KEY: "synthetic-provider-key" };
+  assert.deepEqual(controlConfig(env)!.scannerOptions, { sandbox: undefined, allowRemoteAi: false });
+  assert.throws(() => controlConfig({ ...env, CONTROL_ALLOW_REMOTE_AI: "true" }), /KEY_AND_MODEL_REQUIRED/);
+  const configured = controlConfig({ ...env, CONTROL_ALLOW_REMOTE_AI: "true", CONTROL_AI_MODEL: "explicit-test-model", CONTROL_SANDBOX_MODE: "docker" })!;
+  assert.equal(configured.scannerOptions!.aiToken, env.OPENAI_API_KEY);
+  assert.equal(configured.scannerOptions!.aiModel, "explicit-test-model");
+  assert.equal(configured.scannerOptions!.sandbox, "docker");
+  assert.throws(() => controlConfig({ ...env, CONTROL_ALLOW_REMOTE_AI: "true", CONTROL_AI_PROVIDER: "custom", CONTROL_AI_URL: "http://remote.test" }), /HTTPS_REQUIRED/);
+});
+
+test("validator policy cannot PASS incomplete MCP or unresolved critic evidence, or FAIL on AI alone", () => {
+  const bundle = structuredClone(mockBundle);
+  assert.equal(policyVerdict(bundle, mockResult), "PASS");
+  bundle.files["semantic/model-output.json"] = JSON.stringify({ findings: [], execution: { status: "REVIEW_REQUIRED" } });
+  assert.equal(policyVerdict(bundle, mockResult), "ABSTAIN");
+  bundle.files["semantic/model-output.json"] = JSON.stringify({ findings: [], execution: { status: "LOCAL_FALLBACK" } });
+  bundle.files["sandbox/mcp.json"] = JSON.stringify({ complete: false });
+  assert.equal(policyVerdict(bundle, mockResult), "ABSTAIN");
+  const aiResult = { ...mockResult, scanStatus: "FAILED", findings: [{ severity: "CRITICAL", deterministic: false, stage: "AI" }] };
+  bundle.files["report.json"] = JSON.stringify(aiResult);
+  assert.equal(policyVerdict(bundle, aiResult), "ABSTAIN");
+  assert.throws(() => policyVerdict(bundle, { ...aiResult, findings: [] }), /EVIDENCE_RESULT_MISMATCH/);
 });
 
 test("AES-GCM evidence rejects tenant crossing and modified bytes", async () => {

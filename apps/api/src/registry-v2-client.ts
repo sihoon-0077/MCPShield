@@ -10,7 +10,7 @@ export function v2ChainReader(config: { rpcUrls: string[]; registryContract: str
     const provider = new JsonRpcProvider(transport, undefined, { batchMaxCount: 1 });
     return { provider, registry: createReleaseRegistryV2(config.registryContract, provider) };
   });
-  return async (release: Record<string, any>, policy: Record<string, any>) => {
+  const read = async (release: Record<string, any>, policy: Record<string, any>) => {
     for (const { provider, registry } of readers) {
       try {
         const network = await provider.getNetwork(); if (network.chainId !== BigInt(config.chainId)) throw new Error("CHAIN_ID_MISMATCH");
@@ -42,4 +42,5 @@ export function v2ChainReader(config: { rpcUrls: string[]; registryContract: str
     }
     throw new Error("STATUS_UNAVAILABLE");
   };
+  return Object.assign(read, { close: () => readers.forEach(({ provider }) => provider.destroy()) });
 }

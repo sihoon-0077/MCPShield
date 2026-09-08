@@ -5,6 +5,10 @@ import type { FastifyInstance } from "fastify";
 import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2.js";
 import { ControlStore, type ScanJob } from "./control-store.js";
 import { currentTraceId, traceHeaders, withSpan, recordAdmission } from "../../../packages/telemetry/index.mjs";
+import { defaultPolicy, validPolicy } from "./control-policy.js";
+import { registerChainRoutes } from "./chain-control.js";
+import { enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
+export { defaultPolicy } from "./control-policy.js";
 
 export type Credential = { token: string; tenantId: string; role: "reader" | "operator" | "admin" };
 export interface ControlOptions {
@@ -15,6 +19,8 @@ export interface ControlOptions {
   verifyEvidence?: (bundle: Record<string, any>, expectedRoot: string) => boolean;
   chainDecision?: (release: Record<string, any>, policy: Record<string, any>) => Promise<Record<string, any>>;
   store?: ControlStore;
+  v2Relayer?: V2Relayer;
+  scannerOptions?: { sandbox?: "docker"; allowRemoteAi: boolean; aiProvider?: "custom" | "openai"; aiModel?: string; aiUrl?: string; aiToken?: string; aiTimeoutMs?: number };
 }
 export const canonical = (value: any): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
   : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
@@ -22,11 +28,6 @@ export const hash = (value: any) => `0x${createHash("sha256").update(canonical(v
 const bytes32 = /^0x[0-9a-f]{64}$/;
 const safeToken = (provided: string, expected: string) => Buffer.byteLength(provided) === Buffer.byteLength(expected) && timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
 const err = (code: string, statusCode = 400) => Object.assign(new Error(code), { statusCode });
-export const defaultPolicy = {
-  version: "1.0.0", validitySeconds: 86400, requiredTiers: ["static", "semantic", "sandbox"],
-  failClosed: true, maxArtifactBytes: 16777216, maxDailyScans: 100, maxQueuedScans: 20,
-  deterministicRevocationRequired: true,
-};
 
 export async function registerControlPlane(app: FastifyInstance, options: ControlOptions) {
   if (!/^[0-9a-f]{64}$/.test(options.evidenceKey)) throw new Error("CONTROL_EVIDENCE_KEY must be 32-byte hex");
@@ -36,6 +37,8 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
   const signingKey = options.signingKey ? createPrivateKey(options.signingKey) : undefined;
   if (signingKey && (signingKey.asymmetricKeyType !== "ed25519" || !options.signingKeyId)) throw new Error("Ed25519 signing key and key ID required");
   app.addHook("onClose", () => store.close());
+  if (options.v2Relayer) app.addHook("onClose", async () => options.v2Relayer!.close());
+  if (options.chainDecision && "close" in options.chainDecision) app.addHook("onClose", async () => (options.chainDecision as any).close());
   for (const tenant of new Set(options.credentials.map((c) => c.tenantId))) {
     await store.put(tenant, "policy", hash(defaultPolicy), { policyHash: hash(defaultPolicy), alias: "mvp-default-v1", version: "1.0.0", document: defaultPolicy, createdAt: new Date().toISOString(), deprecatedAt: null });
   }
@@ -57,6 +60,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       const code = /^[A-Z][A-Z0-9_]+$/.test(error.message) ? error.message : "CONTROL_PLANE_FAILED";
       reply.code(error.statusCode ?? (code === "CONTROL_PLANE_FAILED" ? 500 : 400)).send({ error: { code, message: code } });
     });
+    await registerChainRoutes(api, store, options, authenticate, authorize);
     api.get("/session", async (request) => {
       const { tenantId, role } = authenticate(request.headers.authorization);
       return { tenantId, role, capabilities: { read: true, scan: role !== "reader", evidence: role !== "reader", manage: role === "admin" } };
@@ -65,9 +69,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
     api.post("/policies", async (request, reply) => {
       const user = authenticate(request.headers.authorization); authorize(user, "admin");
       const body = request.body as any;
-      if (!body || !/^[a-zA-Z0-9_-]{1,80}$/.test(body.alias) || !body.document || Array.isArray(body.document)
-        || !Number.isInteger(body.document.validitySeconds) || body.document.validitySeconds < 60 || body.document.validitySeconds > 2592000
-        || body.document.failClosed !== true || body.document.deterministicRevocationRequired !== true) throw err("INVALID_POLICY");
+      if (!body || Object.keys(body).sort().join() !== "alias,document" || !/^[a-zA-Z0-9_-]{1,80}$/.test(body.alias) || !validPolicy(body.document)) throw err("INVALID_POLICY");
       const document = body.document;
       const policy = { policyHash: hash(document), alias: body.alias, version: String(document.version ?? "1"), document, createdAt: new Date().toISOString(), deprecatedAt: null };
       await store.put(user.tenantId, "policy", policy.policyHash, policy);
@@ -78,12 +80,14 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       const user = authenticate(request.headers.authorization); authorize(user, "admin");
       const policy = await get(user.tenantId, "policy", (request.params as any).policyHash);
       policy.deprecatedAt = new Date().toISOString(); await store.put(user.tenantId, "policy", policy.policyHash, policy, true);
+      if (options.v2Relayer) await enqueueChainAction(store, options.v2Relayer, user.tenantId, "DEPRECATE_POLICY", { policyHash: policy.policyHash });
       await store.event(user.tenantId, null, "policy.deprecated", { policyHash: policy.policyHash }); return { policy };
     });
     api.post("/releases/resolve", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
       const user = authenticate(request.headers.authorization); authorize(user, "operator");
       const body = request.body as any;
-      if (!body || !["npm", "tarball", "fixture"].includes(body.sourceType) || typeof body.locator !== "string" || body.locator.length > 2048) throw err("UNSUPPORTED_SOURCE");
+      if (!body || !["npm", "tarball", "oci", "fixture"].includes(body.sourceType) || typeof body.locator !== "string" || body.locator.length > 2048
+        || Object.keys(body).some((key) => !["sourceType", "locator"].includes(key))) throw err("UNSUPPORTED_SOURCE");
       // API clients can select shipped fixtures, never arbitrary server filesystem paths.
       const input = body.sourceType === "fixture" ? { sourceType: "local", locator: resolve("demo/fixtures", body.locator) } : { sourceType: body.sourceType, locator: body.locator };
       if (body.sourceType === "fixture" && !["mail-mcp-1.0.0", "mail-mcp-1.0.1"].includes(body.locator)) throw err("UNKNOWN_FIXTURE");
@@ -120,14 +124,15 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       const release = await get(user.tenantId, "release", body.releaseId);
       const policy = await get(user.tenantId, "policy", body.policyHash);
       if (policy.deprecatedAt) throw err("POLICY_DEPRECATED", 409);
+      if (body.requestedTiers && (!Array.isArray(body.requestedTiers) || [...body.requestedTiers].sort().join() !== [...policy.document.requiredTiers].sort().join())) throw err("REQUIRED_TIERS_MISSING");
       if (body.baselineReleaseId) await get(user.tenantId, "release", body.baselineReleaseId);
       const idempotencyKey = request.headers["idempotency-key"];
       if (typeof idempotencyKey !== "string" || !idempotencyKey.trim() || idempotencyKey.length > 256) throw err("IDEMPOTENCY_KEY_REQUIRED");
-      const previous = await store.scans(user.tenantId);
-      const today = new Date().toISOString().slice(0, 10);
-      if (previous.filter((scan) => scan.createdAt.startsWith(today)).length >= (policy.document.maxDailyScans ?? 100)
-        || previous.filter((scan) => ["QUEUED", "RUNNING"].includes(scan.status)).length >= (policy.document.maxQueuedScans ?? 20)) throw err("SCAN_QUOTA_EXCEEDED", 429);
       const input = { ...body, artifactDigest: release.artifactDigest };
+      const existing = await store.idempotentScan(user.tenantId, idempotencyKey, hash(input));
+      if (existing) return reply.code(202).send({ scan: publicScan(existing), deduplicated: true, links: { self: `/v1/scans/${existing.scanId}` } });
+      const usage = await store.scanUsage(user.tenantId);
+      if (usage.today >= policy.document.maxDailyScans || usage.queued >= policy.document.maxQueuedScans) throw err("SCAN_QUOTA_EXCEEDED", 429);
       const result = await withSpan("scan.accept", { "mcpshield.release_id": body.releaseId }, async () =>
         store.enqueue(user.tenantId, { ...input, traceparent: traceHeaders().traceparent }, idempotencyKey, hash(input), currentTraceId() ?? randomUUID()),
       { traceparent: typeof request.headers.traceparent === "string" ? request.headers.traceparent : undefined });
@@ -179,7 +184,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       await store.put(user.tenantId, "appeal", appeal.appealId, appeal, true);
       await store.event(user.tenantId, appeal.releaseId, "appeal.resolved", { appealId: appeal.appealId }); return { appeal };
     });
-    api.post("/admission/check", async (request) => {
+    api.post("/admission/check", async (request) => withSpan("admission.check", {}, async () => {
       const user = authenticate(request.headers.authorization), body = request.body as any;
       if (!body || !bytes32.test(body.releaseId) || !bytes32.test(body.policyHash) || !/^sha256:[0-9a-f]{64}$/.test(body.artifactDigest)
         || !bytes32.test(body.toolSurfaceHash) || !["strict", "balanced"].includes(body.mode)
@@ -209,10 +214,10 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       await store.event(user.tenantId, body.releaseId, "admission.decided", { decision, reasonCode, policyHash: body.policyHash, operationClass: body.operationClass }, traceId);
       recordAdmission({ decision, riskTier: body.operationClass, source: state.source, durationSeconds: (performance.now() - start) / 1000 });
       return response;
-    });
+    }, { traceparent: typeof request.headers.traceparent === "string" ? request.headers.traceparent : undefined }));
     api.get("/operations", async (request) => {
-      const user = authenticate(request.headers.authorization), scans = await store.scans(user.tenantId);
-      return { driver: store.driver, counts: Object.fromEntries(["QUEUED", "RUNNING", "COMPLETED", "DEAD_LETTER"].map((status) => [status, scans.filter((item) => item.status === status).length])), total: scans.length };
+      const user = authenticate(request.headers.authorization), usage = await store.scanUsage(user.tenantId);
+      return { driver: store.driver, counts: usage.counts, total: Object.values(usage.counts).reduce((a, b) => a + b, 0) };
     });
   }, { prefix: "/v1" });
   return store;

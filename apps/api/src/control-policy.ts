@@ -1,0 +1,27 @@
+export const defaultPolicy = {
+  version: "1.0.0", validitySeconds: 86400, requiredTiers: ["static", "semantic", "sandbox"],
+  failClosed: true, maxArtifactBytes: 16777216, maxDailyScans: 100, maxQueuedScans: 20,
+  deterministicRevocationRequired: true,
+};
+export function validPolicy(document: any): boolean {
+  return document && !Array.isArray(document) && Object.keys(document).sort().join() === Object.keys(defaultPolicy).sort().join()
+    && document.version === "1.0.0" && document.failClosed === true && document.deterministicRevocationRequired === true
+    && Number.isInteger(document.validitySeconds) && document.validitySeconds >= 60 && document.validitySeconds <= 2592000
+    && Number.isInteger(document.maxArtifactBytes) && document.maxArtifactBytes >= 1024 && document.maxArtifactBytes <= 16777216
+    && Number.isInteger(document.maxDailyScans) && document.maxDailyScans >= 1 && document.maxDailyScans <= 1000
+    && Number.isInteger(document.maxQueuedScans) && document.maxQueuedScans >= 1 && document.maxQueuedScans <= 100
+    && Array.isArray(document.requiredTiers) && [...document.requiredTiers].sort().join() === "sandbox,semantic,static";
+}
+export function policyVerdict(bundle: any, scanResult: any) {
+  const report = JSON.parse(bundle.files["report.json"] ?? "null"), sandbox = JSON.parse(bundle.files["sandbox/events.json"] ?? "null");
+  const semantic = JSON.parse(bundle.files["semantic/model-output.json"] ?? "null"), mcp = JSON.parse(bundle.files["sandbox/mcp.json"] ?? "null");
+  if (!report || report.artifactDigest !== scanResult.artifactDigest || report.toolSurfaceHash !== scanResult.toolSurfaceHash
+    || report.scanStatus !== scanResult.scanStatus || !isDeepStrictEqual(report.findings, scanResult.findings)) throw new Error("EVIDENCE_RESULT_MISMATCH");
+  const critical = scanResult.findings?.some((finding: any) => finding.deterministic === true && ["HIGH", "CRITICAL"].includes(finding.severity) && finding.stage !== "AI");
+  if (scanResult.scanStatus === "FAILED" && critical) return "FAIL";
+  if (semantic?.execution?.status === "REVIEW_REQUIRED" || semantic?.execution?.needsHumanReview || semantic?.report?.needsHumanReview) return "ABSTAIN";
+  if (scanResult.scanStatus === "PASSED" && !critical && report.scope === "STATIC_AI_SANDBOX" && sandbox?.mode === "DOCKER" && sandbox.complete === true
+    && mcp?.complete === true && Array.isArray(JSON.parse(bundle.files["static/findings.json"] ?? "null")) && Array.isArray(semantic?.findings)) return "PASS";
+  return "ABSTAIN";
+}
+import { isDeepStrictEqual } from "node:util";

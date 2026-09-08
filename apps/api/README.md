@@ -107,3 +107,54 @@ Set `CONTROL_SIGNING_KEY` to an Ed25519 PKCS8 PEM and `CONTROL_SIGNING_KEY_ID` t
 Verification: `node --import tsx --test tests/api/control-plane.test.ts tests/contracts/release-registry-v2.test.ts`. Set `MCPSHIELD_POSTGRES_TEST_URL` to run the actual PostgreSQL case (otherwise explicitly skipped). Existing tests are unchanged.
 
 Current boundaries: V2 contracts/reader are separate from V1 and have not been publicly deployed. V2 write relayer/validator fanout and durable chain projection are next integration work; never label a completed off-chain scan VERIFIED. SQL queue is the durable source; Redis stage streams, S3-compatible object replication, richer stage scheduling, PITR and production governance are not implemented by this batch.
+# V2 authenticated control plane
+
+The original `/api` demo stays compatible. `/v1` requires a tenant-scoped bearer token;
+readers cannot retrieve evidence, operators scan and sign, and admins register chain
+identities and publish/deprecate policies. Never expose the relayer or validator keys
+to the browser. SQL is the durable queue and transaction outbox (SQLite locally,
+PostgreSQL for shared workers); evidence is AES-256-GCM encrypted with tenant AAD.
+
+Run `node --import tsx apps/api/src/control-worker-cli.ts` with the same control-plane
+database/evidence/artifact configuration as the API. `--scan-only`, `--chain-only`, and
+`--once` select bounded worker modes. The scanner defaults to static-only and returns
+`INCONCLUSIVE`/`ABSTAIN`, not a fabricated PASS. A dedicated trusted Linux worker with
+Docker may set `CONTROL_SANDBOX_MODE=docker`; do not mount its Docker socket in the API.
+
+V2 chain configuration: `CONTROL_V2_RPC_URLS`, `CONTROL_V2_REGISTRY_ADDRESS`,
+`CONTROL_V2_CHAIN_ID`, `CONTROL_V2_CONFIRMATIONS` (default 2),
+`CONTROL_V2_DEPLOYMENT_BLOCK`, and the worker/server-only `CONTROL_V2_RELAYER_KEY`.
+The first RPC submits transactions; all configured read RPCs can serve admission.
+`node --import tsx contracts/scripts/deploy-v2.ts` is a read-only preflight; `--deploy`
+is required to spend gas. Deployment also needs `DEPLOYER_PRIVATE_KEY` and three comma-
+separated `VALIDATOR_ADDRESSES`. `V2_GOVERNANCE_ADMIN` optionally assigns policy and
+validator administration externally; the deployer stays the release-registration relayer.
+
+Workflow: resolve a release, enqueue `/v1/releases/:releaseId/register`, enqueue
+`/v1/policies/:policyHash/publish`, submit a scan, await completion, then fetch
+`/v1/scans/:scanId/attestation?validator=0x...`. Sign its EIP-712 payload and POST it to
+`/v1/validator/attestations`. A deterministic critical report also exposes the
+`quarantine` template and `/v1/validator/quarantines`. Poll `/v1/chain/actions/:actionId`;
+the same signed request is idempotent. Prepared raw transaction bytes are persisted
+before broadcast and retained for identical rebroadcast after uncertain outcomes.
+An expiring SQL lease serializes each relayer's nonce stream. Reorg reconciliation
+rewinds missing receipts and indexer checkpoints, appending orphan notices to history.
+
+`node --import tsx apps/validator/src/v2.ts` demonstrates two distinct signers after
+each independently retrieves and checks the report Merkle root. Supply `CONTROL_API_URL`,
+`CONTROL_API_TOKEN`, `CONTROL_SCAN_ID`, and `VALIDATOR_PRIVATE_KEYS` (JSON array) privately.
+This convenience command is explicitly `SINGLE_INSTITUTION_DEMO`, not independent organizations.
+
+Remote semantic analysis is disabled unless `CONTROL_ALLOW_REMOTE_AI=true`. For OpenAI,
+set `CONTROL_AI_PROVIDER=openai`, `CONTROL_AI_MODEL`, and server-only `OPENAI_API_KEY`
+(or `CONTROL_AI_TOKEN`). For an existing compatible service use `CONTROL_AI_PROVIDER=custom`
+and `CONTROL_AI_URL`. `CONTROL_AI_TIMEOUT_MS` is bounded to 100–120000 ms. These settings
+are never accepted from scan request JSON; provider failures remain labeled fallback evidence.
+Keys stay server-side, as required by the [official OpenAI authentication guidance](https://developers.openai.com/api/reference/overview).
+
+Verification: `npm run test:api` and `npm run test:contracts`. The default V2 full-cycle
+test runs genuine local EVM transactions with an explicitly labeled report fixture;
+`MCPSHIELD_DOCKER_TESTS=1 node --import tsx --test tests/api/v2-fullcycle.test.ts` adds
+actual isolated scanning before the same quorum → verified MCP execution → quarantine
+→ revocation → two-Gateway pre-spawn blocking flow. No testnet or live AI verification
+is implied by those local tests.

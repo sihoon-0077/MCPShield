@@ -38,6 +38,10 @@ export class ControlStore {
     }
     const sql = readFileSync(fileURLToPath(new URL("../../../database/migrations/002_control_plane.sql", import.meta.url)), "utf8");
     if (store.sqlite) store.sqlite.exec(sql); else await store.pool!.query(sql);
+    const audit = readFileSync(fileURLToPath(new URL(`../../../database/migrations/003_scan_audit.${store.pool ? "pg" : "sqlite"}.sql`, import.meta.url)), "utf8");
+    if (store.sqlite) store.sqlite.exec(audit); else await store.pool!.query(audit);
+    const chain = readFileSync(fileURLToPath(new URL("../../../database/migrations/004_chain_outbox.sql", import.meta.url)), "utf8");
+    if (store.sqlite) store.sqlite.exec(chain); else await store.pool!.query(chain);
     return store;
   }
   get driver() { return this.pool ? "POSTGRESQL" : "SQLITE"; }
@@ -85,6 +89,17 @@ export class ControlStore {
   async scan(tenantId: string, scanId: string) {
     const [row] = await this.query("SELECT * FROM cp_scans WHERE tenant_id = ? AND scan_id = ?", [tenantId, scanId]);
     return row ? job(row) : undefined;
+  }
+  async idempotentScan(tenantId: string, key: string, requestHash: string) {
+    const [row] = await this.query("SELECT * FROM cp_scans WHERE tenant_id = ? AND idempotency_key = ?", [tenantId, key]);
+    if (row && row.request_hash !== requestHash) throw Object.assign(new Error("IDEMPOTENCY_CONFLICT"), { statusCode: 409 });
+    return row ? job(row) : undefined;
+  }
+  async scanUsage(tenantId: string) {
+    const counts: Record<string, number> = { QUEUED: 0, RUNNING: 0, COMPLETED: 0, DEAD_LETTER: 0 };
+    for (const row of await this.query("SELECT state, COUNT(*) AS count FROM cp_scans WHERE tenant_id = ? GROUP BY state", [tenantId])) counts[row.state] = Number(row.count);
+    const [daily] = await this.query("SELECT COUNT(*) AS count FROM cp_scans WHERE tenant_id = ? AND created_at >= ?", [tenantId, new Date().toISOString().slice(0, 10)]);
+    return { counts, today: Number(daily.count), queued: counts.QUEUED + counts.RUNNING };
   }
   async scans(tenantId: string) { return (await this.query("SELECT * FROM cp_scans WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 250", [tenantId])).map(job); }
   async claim(owner: string, leaseMs = 180000) {
