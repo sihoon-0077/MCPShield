@@ -26,13 +26,21 @@
   Docker Compose와 Grafana 익명 접근 거부·dashboard provisioning·실제 exporter→collector→Prometheus
   지표 수집 및 6개 panel query 검증이 통과했다. 주입한 지표는 명시적 SYNTHETIC_MOCK다.
   job `102210667857` 로그의 결과를 확인했으며, 이 실행에는 새 OCI review/binding 코드는 없다.
-  후속 10회 반복·signed-image job은 진행 중으로 전체 CI 성공을 아직 주장하지 않는다.
+  후속 두 job은 실패했다. 10회 반복은 첫회 safe sandbox의 sink startup timeout으로 ABSTAIN,
+  signed-image는 첫 judge session POST의 503으로 실패했다. 최신 배포 이미지 서명·취약점 단계는
+  도달하지 못했으며 전체 CI는 실패다. `03a8cce`는 web 준비와 API demo route 준비를 분리해
+  상태 변경 없는 GET으로 확인하고 subprocess 예외를 고정 코드로 제한한다. sink의 실제 HTTP
+  readiness 및 bounded Docker 진단도 추가했다. 두 실패의 실제 해소 여부는 다음 Linux 실행으로 판단한다.
 - `f6bdc69`·`59a7fe1`: 부하 실험의 외부 fallback/telemetry 상속을 차단하고 자원 표본을 기록한다.
   명시적 1만 key 실험은 setup 15분/전체 60분의 watchdog으로 제한한다.
   별도 clean backend `9dccfd0`에서 실제 10,000개 등록·20,000건 PASS 서명·30,004건 transaction
   검사를 끝내고 99,000요청 행렬 측정 중이다. 최종 결과 파일 전에는 성공률·p95를 확정하지 않는다.
   서명은 명시적 TEST_ONLY이고 공유 Windows 개발 PC의 Ganache 실험이지 독립 검증기관이나 운영 SLO가 아니다.
-- break-glass는 별도 Gateway 브랜치에서 교차 리뷰 중이며 Main에 아직 통합되지 않았다.
+- `15d61b9` break-glass 통합: operator-signed 60초 이하 grant, 정확한 읽기 1회/identity/arguments/
+  client metadata 고정, 원자적 ADMISSION→CALL 사용 기록, 암호화 audit, 원래 REVOKED 유지.
+  Main 실제 stdio·별도 OS 프로세스 claim·준비 격리 계약 회귀 18개 통과. 공개 HTTP는 허용하지 않는다.
+  사용 기록은 signed grant를 포함한 LOCAL_ENCRYPTED_UNANCHORED이며 외부 앵커 증거가 아니다.
+  모든 RPC의 장애와 trust rejection 구분은 후속 작업이고 실제 prepared Docker emergency 검증도 대기다.
 
 ### 이전 체크포인트 이력 (해당 커밋 당시 상태)
 
