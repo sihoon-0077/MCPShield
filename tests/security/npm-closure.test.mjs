@@ -14,6 +14,8 @@ import { removeFixtureSnapshot } from '../../services/scanner/src/snapshot.mjs';
 import { hashPreparedRuntimeDescriptor } from '../../services/resolver/src/runtime-preflight.mjs';
 import { observePreparedRuntime } from '../../services/scanner/src/prepared-runtime.mjs';
 import { verifyEvidenceBundle } from '../../services/scanner/src/evidence.mjs';
+import { prepareAndScanRuntime, readTrustedPreparedRuntime, assessPreparedPolicy, scanPreparedRuntime } from '../../services/scanner/src/prepared-scan.mjs';
+import { createServer } from 'node:http';
 
 const exec = promisify(execFile);
 const builderImageDigest = process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE ?? `sha256:${'b'.repeat(64)}`;
@@ -180,4 +182,58 @@ test('actual prepared image MCP discovery paginates, normal tools run and advers
     assert.equal(verifyEvidenceBundle(observed.bundle, observed.bundle.manifest.root), true);
     assert.equal(JSON.stringify(observed).includes('CANARY::'), false);
   } finally { await prepared.cleanup?.(); }
+}));
+
+test('actual Linux prepared full scan and independent image export validate PASS; absent AI remains ABSTAIN (stubbed model)', {
+  skip: process.env.MCPSHIELD_DOCKER_TESTS !== '1' || !process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE,
+  timeout: 300_000,
+}, async () => fixture(async ({ root, options, bytes }) => {
+  await writeFile(join(root, 'server.js'), [
+    "const readline=require('node:readline');",
+    "const tools=['list_messages','inspect_scope'].map(name=>({name,inputSchema:{type:'object',properties:{},additionalProperties:false}}));",
+    "readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(!Object.hasOwn(m,'id'))return;let result;",
+    "if(m.method==='initialize')result={protocolVersion:'2025-11-25',capabilities:{tools:{}},serverInfo:{name:'synthetic-closure',version:'1.0.0'}};",
+    "else if(m.method==='tools/list')result=m.params?.cursor==='second'?{tools:[tools[1]]}:{tools:[tools[0]],nextCursor:'second'};",
+    "else if(m.method==='tools/call')result={content:[{type:'text',text:require('fixture')}]};else result={};",
+    "process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});",
+  ].join('\n'));
+  const source = await artifactDigest(root);
+  let modelCalls = 0;
+  // Real local HTTP protocol only; deliberately not a claim of live commercial AI accuracy.
+  const provider = createServer(async (request, response) => {
+    for await (const _chunk of request) { /* consume synthetic source, never log it */ }
+    modelCalls++;
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ riskClaims: [],
+      semanticDiff: { purposeChanged: false, dataScopeExpanded: false, newHiddenObligation: false }, needsHumanReview: false }));
+  });
+  await new Promise((resolve) => provider.listen(0, '127.0.0.1', resolve));
+  const probePlan = { scenarios: [
+    { scenarioId: 'normal-read', kind: 'NORMAL', goal: 'Read synthetic messages.', toolName: 'list_messages', argumentsJson: '{}' },
+    { scenarioId: 'scope-boundary', kind: 'ADVERSARIAL', goal: 'Observe the synthetic scope boundary.', toolName: 'inspect_scope', argumentsJson: '{}' },
+  ] };
+  let output;
+  try {
+    output = await prepareAndScanRuntime({ preparation: { ...options, sourceDigest: source, sourceTreeDigest: source },
+      sourceReleaseId: `0x${'a'.repeat(64)}`, releaseId: 'closure-fixture@1.0.0', probePlan,
+      ai: { allowRemoteAi: true, provider: 'custom', url: `http://127.0.0.1:${provider.address().port}`, timeoutMs: 1000 } },
+    { download: async () => bytes });
+    assert.equal(output.result?.scanStatus, 'PASSED', JSON.stringify(output.analysis));
+    assert.equal(output.analysis.verdict, 'PASS', JSON.stringify(output.analysis));
+    assert.equal(output.binding.sourceArtifactDigest, source);
+    assert.notEqual(output.binding.artifactDigest, source);
+    assert.equal(verifyEvidenceBundle(output.bundle, output.bundle.manifest.root), true);
+    assert.ok(modelCalls >= 2);
+    assert.ok(JSON.parse(output.bundle.files['static/closure-inventory.json']).entries.some(({ path }) => path === 'node_modules/fixture/index.js'));
+    const trusted = await readTrustedPreparedRuntime({ descriptor: output.binding.descriptor,
+      expectedDescriptorDigest: output.binding.descriptorDigest, builderImageDigest });
+    assert.equal(assessPreparedPolicy(output.bundle, output.result, output.binding, trusted).verdict, 'PASS');
+    const incomplete = await scanPreparedRuntime({ descriptor: output.binding.descriptor, expectedDescriptorDigest: output.binding.descriptorDigest,
+      sourceReleaseId: output.binding.sourceReleaseId, releaseId: 'closure-fixture@1.0.0', probePlan, trusted });
+    assert.equal(incomplete.result.scanStatus, 'INCONCLUSIVE');
+    assert.equal(incomplete.analysis.verdict, 'ABSTAIN');
+    assert.equal(incomplete.binding.descriptorDigest, output.binding.descriptorDigest);
+  } finally {
+    await output?.cleanup?.();
+    await new Promise((resolve) => provider.close(resolve));
+  }
 }));
