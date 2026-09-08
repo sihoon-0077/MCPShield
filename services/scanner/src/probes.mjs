@@ -49,24 +49,32 @@ function syntheticValue(value, depth = 0) {
 }
 
 export function validateProbePlan(value, tools) {
-  const ajv = new Ajv2020({ strict: false, allErrors: false, validateFormats: false });
   const parsed = planSchema.parse(value);
   if (new Set(parsed.scenarios.map(({ scenarioId }) => scenarioId)).size !== parsed.scenarios.length || !['NORMAL', 'ADVERSARIAL'].every((kind) => parsed.scenarios.some((scenario) => scenario.kind === kind))) throw new TypeError('probe plan requires unique normal and adversarial scenarios');
-  const available = new Map(tools.map((tool) => [tool.name, tool]));
   const scenarios = parsed.scenarios.map((scenario) => {
-    const tool = available.get(scenario.toolName);
-    if (!tool) throw new TypeError('probe references unknown tool');
     let args;
     try { args = JSON.parse(scenario.argumentsJson); } catch { throw new TypeError('probe arguments must be JSON'); }
-    if (!args || typeof args !== 'object' || Array.isArray(args)) throw new TypeError('probe arguments must be an object');
-    syntheticValue(args);
-    safeSchema(tool.inputSchema);
-    if (!ajv.compile(tool.inputSchema)(args)) throw new TypeError('probe arguments violate tool input schema');
+    const toolCall = validateSyntheticToolCalls([{ name: scenario.toolName, arguments: args }], tools)[0];
     return { scenarioId: scenario.scenarioId, kind: scenario.kind, goal: redactPromptText(scenario.goal),
-      toolCall: { name: scenario.toolName, arguments: args },
+      toolCall,
       setup: 'EIGHT_PER_RUN_SYNTHETIC_CANARIES', failOn: ['CANARY_READ', 'CANARY_EGRESS', 'UNDECLARED_HOST'] };
   });
   return { scenarios };
+}
+
+export function validateSyntheticToolCalls(calls, tools) {
+  if (!Array.isArray(calls) || calls.length > 8 || Buffer.byteLength(JSON.stringify(calls)) > 16_384) throw new TypeError('probe call list exceeds limit');
+  const ajv = new Ajv2020({ strict: false, allErrors: false, validateFormats: false });
+  const available = new Map(tools.map((tool) => [tool.name, tool]));
+  return calls.map((call) => {
+    const tool = available.get(call?.name);
+    if (!tool) throw new TypeError('probe references unknown tool');
+    if (!call.arguments || typeof call.arguments !== 'object' || Array.isArray(call.arguments)) throw new TypeError('probe arguments must be an object');
+    syntheticValue(call.arguments);
+    safeSchema(tool.inputSchema);
+    if (!ajv.compile(tool.inputSchema)(call.arguments)) throw new TypeError('probe arguments violate tool input schema');
+    return { name: call.name, arguments: call.arguments };
+  });
 }
 
 export async function generateSyntheticProbes({ tools, ...options }) {
@@ -79,6 +87,6 @@ export async function generateSyntheticProbes({ tools, ...options }) {
     'Goals describe scope expansion or canary access to observe. The isolated runner, never the model, enforces limits and decides whether calls may execute.',
     canonicalJson({ tools: redactEvidenceDocument(tools) }),
   ].join('\n');
-  const response = await requestAiJson({ ...options, prompt, responseSchema: probeOutputSchema, schemaName: 'mcpshield_synthetic_probes' });
+  const response = await requestAiJson({ ...options, prompt, purpose: 'security', responseSchema: probeOutputSchema, schemaName: 'mcpshield_synthetic_probes' });
   return { ...validateProbePlan(response.payload, tools), execution: { status: 'GENERATED_VALIDATED', templateVersion: 'synthetic-probes-v1', ...response.metadata } };
 }

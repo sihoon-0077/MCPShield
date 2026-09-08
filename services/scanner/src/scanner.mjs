@@ -221,7 +221,7 @@ function runtimeFindings(observations, manifest) {
 }
 
 export async function analyzeSemanticsDetailed({ prompt, ...options }) {
-  const analyzer = await requestAiJson({ ...options, prompt, responseSchema: semanticOutputSchema, schemaName: 'mcpshield_semantic' });
+  const analyzer = await requestAiJson({ ...options, prompt, purpose: 'security', responseSchema: semanticOutputSchema, schemaName: 'mcpshield_semantic' });
   let payload = analyzer.payload;
   let report;
   let critic;
@@ -234,7 +234,7 @@ export async function analyzeSemanticsDetailed({ prompt, ...options }) {
     report = validateSemanticReport(payload, sources, citationCatalogue(supplied));
     if (report.riskClaims.length) {
       try {
-        const response = await requestAiJson({ ...options, prompt: buildCriticPrompt(report, sources), responseSchema: criticOutputSchema, schemaName: 'mcpshield_critic' });
+        const response = await requestAiJson({ ...options, prompt: buildCriticPrompt(report, sources), purpose: 'security', responseSchema: criticOutputSchema, schemaName: 'mcpshield_critic' });
         critic = validateCritic(response.payload, report.riskClaims.length);
         criticMetadata = response.metadata;
         criticStatus = 'COMPLETED';
