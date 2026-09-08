@@ -55,6 +55,7 @@ jobs:
           docker compose --env-file .env.master.local -f docker-compose.yml -f compose.observability.yml config --quiet
           docker compose --env-file .env.master.local -f docker-compose.yml -f compose.control.yml config --quiet
       - name: Build and inspect the trusted offline npm runtime builder
+        id: runtime_builder
         if: matrix.node == 22
         timeout-minutes: 5
         run: |
@@ -68,25 +69,25 @@ jobs:
           sha256sum -c runtime-builder-artifact/SHA256SUMS
           node scripts/ops/check-image-report.mjs runtime-builder-artifact/reports/image-scan.json runtime-builder-artifact/image-id.txt "$GITHUB_SHA" --runtime-builder
       - name: Exercise supplied and isolated generated locks with immutable closure scans
-        if: matrix.node == 22
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
         timeout-minutes: 5
         env:
           MCPSHIELD_DOCKER_TESTS: "1"
         run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/security/npm-closure.test.mjs
       - name: Exercise isolated prepared npm Gateway and per-call revocation
-        if: matrix.node == 22
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
         timeout-minutes: 5
         env:
           MCPSHIELD_DOCKER_TESTS: "1"
         run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --test apps/gateway/test/prepared-docker.test.mjs
       - name: Exercise native OCI import and external non-Node MCP observation
-        if: matrix.node == 22
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
         timeout-minutes: 4
         env:
           MCPSHIELD_DOCKER_TESTS: "1"
         run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/security/oci-runtime.test.mjs
       - name: Exercise prepared Docker scans and single-key validators through V2 and both Gateways
-        if: matrix.node == 22
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
         timeout-minutes: 11
         env:
           MCPSHIELD_DOCKER_TESTS: "1"
