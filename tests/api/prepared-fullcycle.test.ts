@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:http";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +24,6 @@ import { preparations } from "../../apps/api/src/preparation-store.js";
 import { V2Relayer, runChainActionOnce } from "../../apps/api/src/chain-outbox.js";
 import { v2ChainReader } from "../../apps/api/src/registry-v2-client.js";
 import { indexV2 } from "../../apps/indexer/src/v2-indexer.js";
-import { runValidatorFanout } from "../../apps/validator/src/v2.js";
 // @ts-expect-error Shared actual scanner implementation.
 import { artifactDigest, toolSurfaceHash } from "../../services/scanner/src/scanner.mjs";
 // @ts-expect-error Shared actual prepared scanner implementation.
@@ -125,10 +126,19 @@ test("prepared source → actual Docker/AI-stub scans → independent validators
       let pumping = true;
       const pump = (async () => { while (pumping) { await chain.provider.request({ method: "evm_mine", params: [] }); await runChainActionOnce(store!, relayer!); await pause(100); } })();
       try {
-        const outcome = await runValidatorFanout({ apiUrl, token, scanId, privateKeys: accounts.slice(1, 3).map(({ secretKey }) => secretKey),
-          chainId: 1337, registryAddress: deployment.releaseRegistry.address, policyHash, rpcUrl: rpc, preparedRuntime: config,
-          preparedAi: { allowRemoteAi: true, provider: "custom", url: aiUrl, timeoutMs: 5000 }, verificationReceiptsPath: join(dir, "local-verifications.jsonl") });
-        assert.equal(outcome.mode, "SINGLE_INSTITUTION_DEMO"); assert.equal(outcome.operations.length, 2);
+        for (const { secretKey } of accounts.slice(1, 3)) {
+          // Separate key-owning process; neither validator receives its peer's key or an injected scanner/proof callback.
+          const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../../apps/validator/src/v2.ts", import.meta.url))],
+            { timeout: 240000, maxBuffer: 256 * 1024, windowsHide: true, env: { ...getDefaultEnvironment(), VALIDATOR_PRIVATE_KEY: secretKey,
+              CONTROL_API_URL: apiUrl, CONTROL_API_TOKEN: token, CONTROL_SCAN_ID: scanId, CONTROL_V2_RPC_URLS: rpc,
+              CONTROL_V2_CHAIN_ID: "1337", CONTROL_V2_REGISTRY_ADDRESS: deployment.releaseRegistry.address, CONTROL_VALIDATOR_POLICY_HASH: policyHash,
+              VALIDATOR_PREPARED_BUILDER_DIGEST: config.builderImageDigest, VALIDATOR_PREPARED_ARCHITECTURE: "amd64",
+              VALIDATOR_ALLOW_REMOTE_AI: "true", VALIDATOR_AI_PROVIDER: "custom", VALIDATOR_AI_URL: aiUrl, VALIDATOR_AI_TIMEOUT_MS: "5000",
+              VALIDATOR_VERIFICATION_RECEIPTS_PATH: join(dir, "local-verifications.jsonl") } });
+          assert.ok(!stdout.includes(secretKey) && !stderr.includes(secretKey) && !stdout.includes(token) && !stderr.includes(token));
+          const outcome = JSON.parse(stdout.trim().split("\n").at(-1)!);
+          assert.equal(outcome.mode, "SINGLE_VALIDATOR"); assert.equal(outcome.operations.length, 1);
+        }
       } finally { pumping = false; await pump; }
       await indexV2(store!, relayer!, { deploymentBlock: deployment.releaseRegistry.blockNumber, confirmations: 1 });
     };

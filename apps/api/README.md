@@ -296,6 +296,8 @@ share tenant queue/daily quotas; a completed preparation's child scan is counted
 `COMPLETED` means the job finished, not PASS, READY, or VERIFIED. These image IDs
 are local Docker-daemon config IDs, not publicly pullable registry digests. Source
 records remain unchanged and the legacy policy never approves prepared evidence.
+Preparation and regular scan workers use a bounded 20-minute ownership lease;
+the source admission limit stays 16 MiB and large/opaque closures may require review.
 The preparation worker stores a distinct release plus completed scan atomically only
 after evidence/identity checks and a live ownership lease. Missing discovery creates
 an INCONCLUSIVE result with no invented release identity. Successful new rows own
@@ -323,10 +325,15 @@ own fresh synthetic probes, analyzer and critic before signing the original root
 Verdict and deterministic violation scopes must agree. The API proposes templates
 using a private worker proof but does not have a Docker socket or prove independent
 execution. Nonce, deadline and validator-set version are fetched after the rerun.
+Set `VALIDATOR_PRIVATE_KEY` for a single operator-owned key: the CLI verifies,
+submits one validator's vote, confirms that transaction and exits as `SINGLE_VALIDATOR`.
+Other institutions run separately; one vote does not claim quorum. The existing
+`VALIDATOR_PRIVATE_KEYS` JSON array is `SINGLE_INSTITUTION_DEMO` for two/three keys.
+Both variables together are rejected. No browser key input or key sharing is needed.
 
 `VALIDATOR_VERIFICATION_RECEIPTS_PATH` (default `data/validator-verifications.jsonl`)
 stores digest-only original/independent-root links. `LOCAL_VERIFICATION_ONLY` is a
-local audit record, not an immutable chain receipt or independent-organizations
+private append log, not OS-enforced append-only/WORM, an immutable chain receipt or independent-organizations
 claim. Raw closure bytes and tool definitions remain tenant-encrypted off-chain;
 validator evidence downloads alone allow 32 MiB with a 15-second total deadline.
 Synthetic worker/signing tests prove contracts and failure handling, not actual

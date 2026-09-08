@@ -8,6 +8,7 @@ import { scanPreparedRelease } from "./preparation-worker.js";
 import { verifyEvidenceBundle } from "../../../services/scanner/src/evidence.mjs";
 
 export async function runControlWorkerOnce(store: ControlStore, options: ControlOptions, owner = randomUUID()) {
+  // Existing bounded claim fence covers closure export + three probes + full AI/critic review, not a 3-minute partial lease.
   const scan = await store.claim(owner, 20 * 60 * 1000);
   if (!scan) return false;
   try {

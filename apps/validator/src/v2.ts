@@ -61,7 +61,7 @@ export async function runValidatorFanout(options: { apiUrl: string; token: strin
   if (!Number.isSafeInteger(options.chainId) || options.chainId <= 0 || !/^0x[0-9a-fA-F]{40}$/.test(options.registryAddress)
     || !/^0x[0-9a-f]{64}$/.test(options.policyHash) || !/^[0-9a-f-]{36}$/.test(options.scanId)) throw new Error("VALIDATOR_TRUST_CONFIG_REQUIRED");
   const wallets = options.privateKeys.map((key) => new Wallet(key));
-  if (wallets.length < 2 || wallets.length > 3 || new Set(wallets.map((wallet) => wallet.address)).size !== wallets.length) throw new Error("TWO_OR_THREE_UNIQUE_VALIDATORS_REQUIRED");
+  if (wallets.length < 1 || wallets.length > 3 || new Set(wallets.map((wallet) => wallet.address)).size !== wallets.length) throw new Error("ONE_TO_THREE_UNIQUE_VALIDATORS_REQUIRED");
   const base = checkedServiceUrl(options.apiUrl), provider = new JsonRpcProvider(v2RpcRequest(options.rpcUrl), undefined, { batchMaxCount: 1 });
   const registry = createReleaseRegistryV2(options.registryAddress, provider);
   let scanTraceparent: string | undefined;
@@ -92,7 +92,8 @@ export async function runValidatorFanout(options: { apiUrl: string; token: strin
     await request(`/v1/scans/${options.scanId}`);
     return await withSpan("validator.fanout", { "mcpshield.scan_id": options.scanId, "mcpshield.chain_id": options.chainId }, async () => {
     const operations: Record<string, any>[] = [];
-    for (let index = 0; index < 2; index++) {
+    // A production organization supplies one local key; the multi-key path remains an explicit demo convenience.
+    for (let index = 0; index < Math.min(wallets.length, 2); index++) {
       const wallet = wallets[index], { scan } = await request(`/v1/scans/${options.scanId}`), evidence = await request(`/v1/scans/${options.scanId}/evidence`);
       const policy = (await request("/v1/policies")).items.find((item: any) => item.policyHash === options.policyHash && !item.deprecatedAt)?.document;
       if (!validPolicy(policy) || hash(policy) !== options.policyHash || scan.status !== "COMPLETED" || scan.policyHash !== options.policyHash
@@ -126,12 +127,20 @@ export async function runValidatorFanout(options: { apiUrl: string; token: strin
       if (index === 0 && options.quarantineFirst && scan.result?.verdict === "FAIL") await submit(true);
       await submit();
     }
-    return { mode: "SINGLE_INSTITUTION_DEMO", validators: wallets.slice(0, 2).map((wallet) => wallet.address), operations };
+    return { mode: wallets.length === 1 ? "SINGLE_VALIDATOR" : "SINGLE_INSTITUTION_DEMO", validators: wallets.slice(0, 2).map((wallet) => wallet.address), operations };
     }, { traceparent: scanTraceparent });
   } finally { provider.destroy(); }
 }
+export function configuredValidatorKeys(env: Record<string, string | undefined>) {
+  if (env.VALIDATOR_PRIVATE_KEY !== undefined && env.VALIDATOR_PRIVATE_KEYS !== undefined) throw new Error("VALIDATOR_KEY_MODES_CONFLICT");
+  let keys;
+  try { keys = env.VALIDATOR_PRIVATE_KEY !== undefined ? [env.VALIDATOR_PRIVATE_KEY] : JSON.parse(env.VALIDATOR_PRIVATE_KEYS ?? "[]"); }
+  catch { throw new Error("VALIDATOR_KEY_CONFIG_INVALID"); }
+  if (!Array.isArray(keys) || keys.length < 1 || keys.length > 3 || keys.some((key) => typeof key !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(key))) throw new Error("VALIDATOR_KEY_CONFIG_INVALID");
+  return keys as string[];
+}
 async function main() {
-  const privateKeys = JSON.parse(process.env.VALIDATOR_PRIVATE_KEYS ?? "[]");
+  const privateKeys = configuredValidatorKeys(process.env);
   const { CONTROL_API_URL, CONTROL_API_TOKEN, CONTROL_SCAN_ID, CONTROL_V2_RPC_URLS, CONTROL_V2_CHAIN_ID, CONTROL_V2_REGISTRY_ADDRESS, CONTROL_VALIDATOR_POLICY_HASH } = process.env;
   if (!CONTROL_API_URL || !CONTROL_API_TOKEN || !CONTROL_SCAN_ID || !CONTROL_V2_RPC_URLS || !CONTROL_V2_CHAIN_ID || !CONTROL_V2_REGISTRY_ADDRESS || !CONTROL_VALIDATOR_POLICY_HASH) throw new Error("VALIDATOR_TRUST_CONFIG_REQUIRED");
   console.log(JSON.stringify(await runValidatorFanout({ apiUrl: CONTROL_API_URL, token: CONTROL_API_TOKEN, scanId: CONTROL_SCAN_ID, privateKeys,

@@ -55,7 +55,7 @@ export async function recordPreparedVerification(path: string, fields: { chainId
   comparison: ReturnType<typeof comparePreparedScans>) {
   const receipt = { schemaVersion: "mcpshield.independent-scan-receipt.v1", verificationId: randomUUID(), ...fields, ...comparison,
     verifiedAt: new Date().toISOString(), state: "LOCAL_VERIFICATION_ONLY" };
-  // Digest-only local audit receipt; no source bytes, tool data, provider response, credentials or private key.
+  // Private append log, NOT OS-enforced append-only/WORM. No source/tool/provider data, credentials or key.
   const target = resolve(path); await mkdir(dirname(target), { recursive: true });
   await appendFile(target, `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
   return receipt;

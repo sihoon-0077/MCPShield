@@ -184,7 +184,11 @@ test("prepared worker atomically creates a distinct identity and encrypted scan 
     }
     assert.equal((await f.app.inject({ url: `/v1/preparations/${jobId}/evidence`, headers: { authorization: `Bearer ${reader}` } })).statusCode, 403);
     await f.request("duplicate-image"); await runPreparationWorkerOnce(f.store, f.options); assert.equal(cleaned, 1);
-    f.options.scanPreparedRuntime = async (input) => syntheticPreparedOutput({ ...input, preparation: { platform: input.descriptor.platform } }, async () => {});
+    f.options.scanPreparedRuntime = async (input) => {
+      const [claimed] = await f.store.query("SELECT lease_expires_at FROM cp_scans WHERE scan_id=?", [input.scanId]);
+      assert.ok(Date.parse(claimed.lease_expires_at) - Date.now() > 19 * 60 * 1000, "prepared full review needs the bounded 20-minute worker lease");
+      return syntheticPreparedOutput({ ...input, preparation: { platform: input.descriptor.platform } }, async () => {});
+    };
     const rescan = await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "prepared-rescan" }, payload: { releaseId, policyHash: hash(preparedPolicy) } });
     assert.equal(rescan.statusCode, 202); assert.equal(rescan.json().scan.baselineReleaseId, null);
     await runControlWorkerOnce(f.store, f.options);

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { comparePreparedScans, independentlyScanPrepared, recordPreparedVerification, checkedPreparedValidatorAi } from "../../apps/validator/src/prepared-verification.js";
-import { checkedValidatorPayload } from "../../apps/validator/src/v2.js";
+import { checkedValidatorPayload, configuredValidatorKeys } from "../../apps/validator/src/v2.js";
 import { preparedPolicy } from "../../apps/api/src/control-policy.js";
 import { hash } from "../../apps/api/src/control-plane.js";
 import { attestationV2Domain, attestationV2Types, bytes32 } from "../../packages/contracts-sdk/src/v2.js";
@@ -69,4 +69,13 @@ test("independent FAIL compares violation scopes, not random canaries or inciden
   const original = failure(1, "a".repeat(64)), independent = failure(2, "b".repeat(64));
   assert.equal(comparePreparedScans(original, independent, preparedPolicy, f.trusted).verdict, "FAIL");
   assert.throws(() => comparePreparedScans(original, failure(1, "b".repeat(64), "UNDECLARED_EGRESS"), preparedPolicy, f.trusted), /DID_NOT_CONFIRM/);
+});
+
+test("one institution can configure one key without sharing keys; CLI rejects ambiguous or malformed modes", () => {
+  const key = `0x${"1".repeat(64)}`, second = `0x${"2".repeat(64)}`; // Public synthetic test keys only.
+  assert.deepEqual(configuredValidatorKeys({ VALIDATOR_PRIVATE_KEY: key }), [key]);
+  assert.deepEqual(configuredValidatorKeys({ VALIDATOR_PRIVATE_KEYS: JSON.stringify([key, second]) }), [key, second]);
+  assert.throws(() => configuredValidatorKeys({ VALIDATOR_PRIVATE_KEY: key, VALIDATOR_PRIVATE_KEYS: "[]" }), /MODES_CONFLICT/);
+  for (const env of [{}, { VALIDATOR_PRIVATE_KEY: "" }, { VALIDATOR_PRIVATE_KEYS: "not-json" }, { VALIDATOR_PRIVATE_KEYS: "{}" }, { VALIDATOR_PRIVATE_KEYS: "[]" }])
+    assert.throws(() => configuredValidatorKeys(env), /CONFIG_INVALID/);
 });
