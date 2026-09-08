@@ -45,10 +45,38 @@ function readJson(request) {
   });
 }
 
-export async function startSink({ host = '127.0.0.1', port = 0, token, eventFile, onEvent } = {}) {
+export async function startSink({ host = '127.0.0.1', port = 0, token, eventFile, onEvent, egressAllowHosts = ['mail-api.local', 'exfil-sink.local'] } = {}) {
   if (!token) throw new TypeError('sink token is required');
+  if (!Array.isArray(egressAllowHosts) || egressAllowHosts.length > 32 || egressAllowHosts.some((name) => !/^[a-z0-9][a-z0-9.-]*\.(?:local|test)$/.test(name))) throw new TypeError('proxy allowlist only accepts synthetic .local/.test hosts');
   const events = [];
+  const saveEvent = async (event) => {
+    if (events.length >= MAX_EVENTS) throw Object.assign(new Error('event limit reached'), { statusCode: 429 });
+    events.push(event);
+    onEvent?.(event);
+    if (eventFile) await appendFile(eventFile, `${JSON.stringify(event)}\n`, { encoding: 'utf8' });
+  };
   const server = createServer(async (request, response) => {
+    if (/^https?:\/\//i.test(request.url ?? '')) {
+      if (!tokenMatches(request.headers['proxy-authorization'], token)) { json(response, 407, { error: 'proxy authorization required' }); return; }
+      try {
+        const target = new URL(request.url);
+        const allowed = target.protocol === 'http:' && !target.username && !target.password && (!target.port || target.port === '80') && egressAllowHosts.includes(target.hostname);
+        if (!allowed) {
+          await saveEvent({ type: 'EGRESS_BLOCKED', destinationHash: createHash('sha256').update(target.hostname).digest('hex'), reason: 'UNDECLARED_HOST_OR_PORT' });
+          json(response, 403, { error: 'UNDECLARED_EGRESS' });
+          return;
+        }
+        if (!['GET', 'POST'].includes(request.method)) { json(response, 405, { error: 'method not allowed' }); return; }
+        const body = request.method === 'POST' ? await readJson(request) : {};
+        const synthetic = JSON.stringify({ body, headers: request.headers });
+        const canaries = [...new Set(synthetic.match(/CANARY::[A-Za-z0-9:_-]+/g) ?? [])].slice(0, 32);
+        for (const canary of canaries) await saveEvent({ type: 'CANARY_EGRESS', canaryHash: createHash('sha256').update(canary).digest('hex'), bytes: Buffer.byteLength(canary) });
+        await saveEvent({ type: 'EGRESS_ALLOWED', hostname: target.hostname, method: request.method, requestBytes: Buffer.byteLength(JSON.stringify(body)), canaryCount: canaries.length });
+        // No network forwarding: each allowed hostname represents a synthetic endpoint inside the test environment.
+        json(response, 200, { synthetic: true, endpoint: target.hostname, messages: [{ id: 'proxy-demo-1', subject: 'Synthetic response' }] });
+      } catch (error) { json(response, error.statusCode ?? 400, { error: error.statusCode ? error.message : 'invalid proxy request' }); }
+      return;
+    }
     if (request.method === 'GET' && request.url === '/health') {
       json(response, 200, { ok: true });
       return;
@@ -81,15 +109,13 @@ export async function startSink({ host = '127.0.0.1', port = 0, token, eventFile
         canaryHash: createHash('sha256').update(body.canary).digest('hex'),
         bytes: Buffer.byteLength(body.canary),
       };
-      if (events.length >= MAX_EVENTS) throw Object.assign(new Error('event limit reached'), { statusCode: 429 });
-      events.push(event);
-      onEvent?.(event);
-      if (eventFile) await appendFile(eventFile, `${JSON.stringify(event)}\n`, { encoding: 'utf8' });
+      await saveEvent(event);
       json(response, 202, { accepted: true });
     } catch (error) {
       json(response, error.statusCode ?? 500, { error: error.statusCode ? error.message : 'internal error' });
     }
   });
+  server.on('connect', (_request, socket) => { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, resolve);
@@ -108,6 +134,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     port: Number(process.env.PORT ?? 8080),
     token: process.env.SINK_TOKEN,
     eventFile: process.env.EVENT_FILE,
+    ...(process.env.EGRESS_ALLOW_HOSTS ? { egressAllowHosts: process.env.EGRESS_ALLOW_HOSTS.split(',') } : {}),
   });
   process.stdout.write(`READY ${sink.url}\n`);
   const stop = async () => { await sink.close(); process.exit(0); };

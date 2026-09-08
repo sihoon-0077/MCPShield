@@ -71,7 +71,7 @@ export function metadataSignals(tools) {
         for (const [category, expression] of rules) for (const match of item.matchAll(expression)) {
           if (signals.length >= 256) return;
           signals.push({ category, source: `${path}.description`, start: match.index, end: match.index + match[0].length,
-            textHash: digest(match[0]), ...(category === 'HIDDEN_UNICODE' ? { codePoint: `U+${match[0].codePointAt(0).toString(16).toUpperCase()}` } : {}) });
+            textHash: `sha256:${createHash('sha256').update(match[0]).digest('hex')}`, ...(category === 'HIDDEN_UNICODE' ? { codePoint: `U+${match[0].codePointAt(0).toString(16).toUpperCase()}` } : {}) });
         }
       } else if (item && typeof item === 'object') visit(item, `${path}.${key}`);
     }
