@@ -45,10 +45,14 @@
   업무 transaction과 경합했다. `3285714`에서 적용 이력·checksum 및 병렬 실제 PG 회귀를 보완했다.
   새 builder·prepared Docker 전체 회귀·최신 서명 image 단계는 이 실행에서 도달하지 못했다.
 - `6e0ab7b`를 [Linux CI 34264417839](https://github.com/sihoon-0077/MCPShield/actions/runs/34264417839)로
-  다시 실행 중이다. Node 22/24·실제 PostgreSQL·실제 Docker 및 승인 게이트 후 10회 데모 반복을 요청했다.
+  다시 실행했으며 최종 실패했다. Node 24 전체 회귀·빌드는 성공했다.
   PostgreSQL job `102190519546`는 성공: 동시 open, 업무 테이블 락 중 재연결,
   checksum 변조 거부, 준비 작업의 quota/원자성, 별도 DB backup/restore를 실제 검증했다.
-  나머지 시작/진행 중 상태는 통과 증거가 아니며 결과 확인 전에는 완료로 표시하지 않는다.
+  Node 22는 실제 builder 보안 검사, supplied-lock 오프라인 설치 및 두 페이지 MCP discovery를 통과했다.
+  격리된 lock 생성 자체는 성공했지만 후속 설치가 `RUNTIME_INSTALL_EUSAGE`로 실패했고,
+  full prepared scan은 `PREPARED_TRUST_ANCHOR_MISMATCH`로 INCONCLUSIVE였다. 원인 수정 및 Linux 재검증 필요.
+  prepared 전체 흐름·OCI·Grafana 및 새 이미지 검증은 아직 통과 증거가 없고,
+  10회 반복·signed-image 후속 job은 skipped다. 이전 이미지 성공을 최신 구현의 성공으로 대체하지 않는다.
   secret scan은 전체 파일을 검사하고 정확한 비밀키 유출 방지 assertion만 non-secret 예외로 추가했다.
 - `8189363`: 기본 `/v1` 정책도 운영자 로컬 원본 catalog에서 새로 취득해 체인의 전체 identity와
   대조하고 독립 Docker 재스캔 후에만 서명하도록 연결했다. 원본·baseline·Docker가 없으면 서명하지 않는다.
@@ -56,6 +60,14 @@
   이 변경은 위 `6e0ab7b` 실행에 포함되지 않으며 후속 Linux source-validator/fullcycle 검증이 필요하다.
   portable OTLP 회귀의 서명 span은 이제 명시적 TEST_ONLY_SIGNING이며 실제 production 독립 검증자
   실행을 증명하지 않는다. 실제 Docker 회귀는 production 서명 경로와 별도 root 연결 기록을 검사한다.
+- `15319ab`: API와 Gateway가 plain Node 공통 V2 체인 조회기를 재사용한다. 전체 release identity,
+  최신/확정 attestation 및 캐시 없는 블록 재확인을 유지하며 이동/재조직된 view는 허용하지 않는다.
+  통합 타입 검사와 실제 로컬 EVM/원본·서명·전송 회귀 7개 통과, Docker 2개 명시 skip.
+  standalone Gateway 이미지에 SDK와 prepared identity 검증의 누락된 import 파일을 추가했다.
+- OCI native import·외부 MCP 관측 checkpoint를 통합하고 Linux 수용 검사를 추가했다.
+  후보 바이너리는 Docker 내부에서만 실행하며, 원본/config/최종 filesystem/entrypoint digest를 바인딩한다.
+  현 단계는 관측 전용으로 `ABSTAIN`, filesystem `NOT_OBSERVED`, binary `NOT_REVIEWED`이며
+  OCI PASS·Gateway 실행·전체 100MiB 지원을 완료로 간주하지 않는다. 실제 Linux 결과는 아직 없다.
 - clean `de4fc9f`의 실제 로컬 EVM·SQLite·HTTP 측정(40회/동시4/identity4):
   hot p95 83.500ms, uniform p95 60.727ms, signed REVOKED 40/40 BLOCK·캐시 재사용0회,
   해당 BLOCK p95 46.899ms, 다음 admission의 차단 확인 49.126ms.
