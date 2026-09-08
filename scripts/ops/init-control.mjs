@@ -3,9 +3,14 @@ import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
-const { values } = parseArgs({ options: { output: { type: 'string', default: '.env.master.local' } } });
-const destination = resolve(values.output);
+const { values } = parseArgs({ options: { output: { type: 'string' }, observability: { type: 'boolean', default: false } } });
+const destination = resolve(values.output ?? (values.observability ? '.env.observability.local' : '.env.master.local'));
 const token = () => randomBytes(32).toString('hex');
+if (values.observability) {
+  writeFileSync(destination, `# PRIVATE observability-only configuration. Never commit or share.\nMCPSHIELD_GRAFANA_ADMIN_PASSWORD='${token()}'\n`, { flag: 'wx', mode: 0o600 });
+  console.log(`Private observability configuration created: ${destination}. Password was not printed.`);
+  process.exit(0);
+}
 const keys = generateKeyPairSync('ed25519', {
   publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
 });
@@ -26,7 +31,7 @@ const entries = {
   MCPSHIELD_PUBLIC_ORIGIN: 'http://127.0.0.1:3300',
   MCPSHIELD_CONTROL_ALLOW_LOOPBACK_HTTP: 'true',
   MCPSHIELD_CONTROL_TOKEN: credentials[1].token, MCPSHIELD_ADMISSION_MODE: 'strict',
-  POSTGRES_PASSWORD: token(), MCPSHIELD_TELEMETRY_ENABLED: 'false',
+  POSTGRES_PASSWORD: token(), MCPSHIELD_GRAFANA_ADMIN_PASSWORD: token(), MCPSHIELD_TELEMETRY_ENABLED: 'false',
 };
 // Exclusive creation: re-running must not overwrite the evidence decryption key.
 writeFileSync(destination, '# PRIVATE local control-plane configuration. Never commit or share.\n' +

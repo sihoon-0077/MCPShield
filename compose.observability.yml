@@ -1,5 +1,6 @@
 # Explicit opt-in overlay; no telemetry is exported by the default demo stack.
-# docker compose -f docker-compose.yml -f compose.observability.yml up --build --wait
+# node scripts/ops/init-control.mjs --observability --output .env.observability.local
+# docker compose --env-file .env.observability.local -f docker-compose.yml -f compose.observability.yml up --build --wait
 x-telemetry: &telemetry
   MCPSHIELD_TELEMETRY_ENABLED: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
@@ -52,5 +53,38 @@ services:
     ports:
       - "127.0.0.1:9090:9090"
     restart: unless-stopped
+  grafana:
+    image: grafana/grafana:13.2.1@sha256:f772d434e8fab0049deb2b1b30abd43342bcfca1537614aa8d36080232cf4283
+    user: "472:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 128
+    environment:
+      GF_SECURITY_ADMIN_USER: operator
+      GF_SECURITY_ADMIN_PASSWORD: ${MCPSHIELD_GRAFANA_ADMIN_PASSWORD:?Generate a private observability configuration first}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/etc/grafana/dashboard-files:ro
+    ports:
+      - "127.0.0.1:3100:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    restart: unless-stopped
 volumes:
   metrics-data:
+  grafana-data:

@@ -48,14 +48,26 @@ OTEL_SERVICE_NAME=mcpshield-api
 OTEL_EXPORTER_OTLP_ENDPOINT=https://your-private-collector.example
 ```
 
-로컬 개발용 수집기와 Prometheus는 아래 overlay로 실행한다.
+로컬 개발용 수집기·Prometheus·Grafana는 아래 overlay로 실행한다.
 원격 운영에는 사설 네트워크와 인증/TLS가 필요하다. 대시보드·수집기 포트를 공개하지 않는다.
 
 ```sh
-docker compose -f docker-compose.yml -f compose.observability.yml up --build --wait
+node scripts/ops/init-control.mjs --observability --output .env.observability.local
+docker compose --env-file .env.observability.local -f docker-compose.yml -f compose.observability.yml up --build --wait
 ```
 
 Prometheus: `http://127.0.0.1:9090`. 알림은 Prometheus Alerts 화면에서 확인한다.
+Grafana: `http://127.0.0.1:3100/d/mcpshield-operations`. 사용자 `operator`, 비밀번호는
+비공개 `.env.observability.local` 파일의 값이다. 익명 접근·가입·사용량 통계 전송은 끈다.
+이미 만든 설정은 덮어쓰지 않으며, control-plane 암호화 키와 별개로 생성한다.
+컨테이너의 기존 Grafana 데이터 볼륨이 있으면 환경변수 변경으로 관리자 비밀번호가
+자동 재설정되지는 않는다. UI의 비밀번호 변경 절차를 사용하고 볼륨을 삭제하지 않는다.
+기본 dashboard는 실제 측정된 허용·차단, 지연, 단계 오류·처리시간과 수집기 상태를 표시한다.
+없는 데이터는 `No data`이며 0이나 SLO 달성으로 채우지 않는다. 실행 원문은 포함하지 않는다.
+CI의 `smoke-observability.mjs`는 실제 Grafana 13 API 프로비저닝·익명 거부와 공식 exporter→
+collector→Prometheus 전달을 검증한다. 의도적으로 `MOCK` 지표만 생성한다. 공개 운영 배포 증거는 아니다.
+구성 기준: [Grafana 파일 프로비저닝](https://grafana.com/docs/grafana/latest/administration/provisioning/),
+[Grafana 13 dashboard API](https://grafana.com/docs/grafana/latest/developer-resources/api-reference/http-api/dashboard/).
 현재 collector는 trace 요약을 stdout으로 내보내며 장기 trace 보존/조회 저장소가 아니다.
 실제 알림 수신자를 연결하려면 운영 Alertmanager를 설정한다. 수신자가 없는 상태를
 “사람에게 알림이 전달됨”으로 표현하지 않는다.

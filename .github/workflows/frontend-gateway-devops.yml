@@ -51,8 +51,8 @@ jobs:
         if: matrix.node == 22
         run: |
           docker compose config --quiet
-          docker compose -f docker-compose.yml -f compose.observability.yml config --quiet
           node scripts/ops/init-control.mjs
+          docker compose --env-file .env.master.local -f docker-compose.yml -f compose.observability.yml config --quiet
           docker compose --env-file .env.master.local -f docker-compose.yml -f compose.control.yml config --quiet
       - name: Build and inspect the trusted offline npm runtime builder
         if: matrix.node == 22
@@ -106,12 +106,23 @@ jobs:
         run: |
           docker compose up --build --wait
           node -e "fetch('http://127.0.0.1:3000/api/live').then(r=>r.json()).then(x=>{if(x.source!=='LIVE'||x.ledgerMode!=='EVM'||x.admissions?.length!==2||!x.admissions.every(a=>a.decision==='BLOCK'&&a.source==='LIVE'&&a.spawnAttempted===false))process.exit(1)})"
+      - name: Verify actual provisioned Grafana and exporter to Prometheus pipeline
+        if: matrix.node == 22
+        timeout-minutes: 4
+        run: |
+          docker compose --env-file .env.master.local -f docker-compose.yml -f compose.observability.yml up --wait --no-deps otel-collector prometheus grafana
+          node --env-file=.env.master.local scripts/ops/smoke-observability.mjs
       - name: Collect bounded service diagnostics
         if: failure() && matrix.node == 22
         run: docker compose logs --no-color --tail=100 contract-init backend indexer demo-seed gateway-a gateway-b dashboard
       - name: Stop Docker Compose
         if: always() && matrix.node == 22
-        run: docker compose down --volumes --remove-orphans
+        run: |
+          if [ -f .env.master.local ]; then
+            docker compose --env-file .env.master.local -f docker-compose.yml -f compose.observability.yml down --volumes --remove-orphans
+          else
+            docker compose down --volumes --remove-orphans
+          fi
       - name: Audit production dependencies
         if: matrix.node == 22
         run: npm audit --omit=dev --audit-level=high
