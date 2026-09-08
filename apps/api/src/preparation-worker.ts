@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { ControlStore } from "./control-store.js";
-import { hash, saveEvidence, type ControlOptions } from "./control-plane.js";
+import { ControlStore, type ScanJob } from "./control-store.js";
+import { hash, loadEvidence, saveEvidence, type ControlOptions } from "./control-plane.js";
 import { claimPreparation, failPreparation, preparations, type PreparationJob } from "./preparation-store.js";
-import { preparedTrust } from "./prepared-config.js";
+import { inspectPreparedRuntime, preparedAi, preparedTrust } from "./prepared-config.js";
 import { preparedPolicy, policyVerdict, validPolicy } from "./control-policy.js";
 import { sourceIdentity } from "./preparation-control.js";
 import { checkedPreparedEvidence } from "./prepared-evidence.js";
@@ -25,18 +25,17 @@ async function checkedInput(store: ControlStore, job: PreparationJob) {
   if ((source.metadata?.expandedBytes ?? source.metadata?.sizeBytes ?? 0) > policy.document.maxArtifactBytes) throw new Error("ARTIFACT_TOO_LARGE");
   return { source, policy };
 }
-export async function runPreparationWorkerOnce(store: ControlStore, options: ControlOptions, owner = randomUUID()) {
+export async function runPreparationWorkerOnce(store: ControlStore, options: ControlOptions, owner: string = randomUUID()) {
   const job = await claimPreparation(store, owner); if (!job) return false;
   let output: any, transferred = false, finalizationStarted = false, cleanupSafe = true;
   try {
     const trusted = checkedConfig(options, job), { source, policy } = await checkedInput(store, job);
     // @ts-expect-error Shared prepared scanner is ESM JavaScript.
     const execute = options.prepareRuntime ?? (await import("../../../services/scanner/src/prepared-scan.mjs")).prepareAndScanRuntime;
-    const { sandbox: _sandbox, ...ai } = options.scannerOptions!;
     output = await withSpan("scan.execute", { "mcpshield.release_id": job.sourceReleaseId }, () => execute({
       preparation: { root: source.artifactDir, sourceDigest: source.metadata?.archiveDigest ?? source.artifactDigest, sourceTreeDigest: source.artifactDigest,
         builderImageDigest: trusted.builderImageDigest, platform: trusted.platform, ...(trusted.binName ? { binName: trusted.binName } : {}) },
-      sourceReleaseId: job.sourceReleaseId, releaseId: source.legacyReleaseId, scanId: job.preparationId, ai, trusted }), { traceparent: job.request.traceparent });
+      sourceReleaseId: job.sourceReleaseId, releaseId: source.legacyReleaseId, scanId: job.preparationId, ai: preparedAi(options), trusted }), { traceparent: job.request.traceparent });
     checkedConfig(options, job);
     const issues = (output.analysis?.issues ?? []).filter((code: any) => typeof code === "string" && /^[A-Z][A-Z0-9_]{0,100}$/.test(code)).slice(0, 32);
     const originalBundle = output.bundle ?? (!output.binding && !output.result ? createEvidenceBundle({ "prepared/failure.json": {
@@ -53,11 +52,12 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
         || output.result?.scanId !== job.preparationId || output.result?.releaseId !== source.legacyReleaseId
         || output.result?.artifactDigest !== binding.artifactDigest || output.result?.toolSurfaceHash !== binding.toolSurfaceHash
         || binding.descriptor.builderImageDigest !== trusted.builderImageDigest || hash(binding.platform) !== hash(trusted.platform)) throw new Error("PREPARED_RELEASE_IDENTITY_MISMATCH");
-      const verdict = policyVerdict(bundle, output.result, policy.document, trusted);
+      const runtimeTrust = await inspectPreparedRuntime(binding, options.preparedRuntime!, options.inspectPreparedRuntime);
+      const verdict = policyVerdict(bundle, output.result, policy.document, runtimeTrust);
       const now = Date.now();
       scanResult = { scanResult: output.result, reportRoot: bundle.manifest.root, analysis: output.analysis, policyHash: job.policyHash,
         validFrom: new Date(now).toISOString(), validUntil: new Date(now + policy.document.validitySeconds * 1000).toISOString(), evidenceKey,
-        verdict, state: verdict === "ABSTAIN" ? "REVIEW_REQUIRED" : "READY_FOR_VALIDATORS" };
+        verdict, preparedRuntimeTrust: runtimeTrust, state: verdict === "ABSTAIN" ? "REVIEW_REQUIRED" : "READY_FOR_VALIDATORS" };
       if (typeof output.runtimeTag !== "string" || !/^mcpshield-runtime-[a-f0-9-]{36}:local$/.test(output.runtimeTag) || typeof output.cleanup !== "function") throw new Error("PREPARED_IMAGE_OWNERSHIP_MISSING");
       derived = { ...identity, artifactDigest: binding.artifactDigest, manifestDigest: binding.manifestDigest, toolSurfaceHash: binding.toolSurfaceHash,
         legacyReleaseId: source.legacyReleaseId, version: source.version, sourceType: "prepared-npm", runtimeProfile: preparedPolicy.profile, sourceReleaseId: source.releaseId,
@@ -108,4 +108,22 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
     if (!transferred && cleanupSafe) try { await output?.cleanup?.(); } catch { /* no raw Docker errors or private metadata in logs */ }
   }
   return true;
+}
+
+export async function scanPreparedRelease(scan: ScanJob, release: Record<string, any>, options: ControlOptions) {
+  if (!options.preparedRuntime || options.scannerOptions?.sandbox !== "docker") throw new Error("PREPARATION_NOT_CONFIGURED");
+  const previous = await loadEvidence(options, scan.tenantId, release.preparedEvidenceKey, release.preparedReportRoot);
+  const { binding, source } = checkedPreparedEvidence(previous, release);
+  const runtimeTrust = await inspectPreparedRuntime(binding, options.preparedRuntime, options.inspectPreparedRuntime);
+  // @ts-expect-error Shared prepared scanner is ESM JavaScript.
+  const execute = options.scanPreparedRuntime ?? (await import("../../../services/scanner/src/prepared-scan.mjs")).scanPreparedRuntime;
+  const output = await execute({ descriptor: binding.descriptor, expectedDescriptorDigest: binding.descriptorDigest, sourceReleaseId: binding.sourceReleaseId,
+    releaseId: release.legacyReleaseId, scanId: scan.scanId, ai: preparedAi(options), trusted: runtimeTrust });
+  if (!output.bundle?.manifest?.root || !verifyEvidenceBundle(output.bundle, output.bundle.manifest.root)) throw new Error("EVIDENCE_INTEGRITY_MISMATCH");
+  assertCanonicalScanResult(output.result);
+  if (output.result.scanId !== scan.scanId || output.result.releaseId !== release.legacyReleaseId) throw new Error("PREPARED_SCAN_IDENTITY_MISMATCH");
+  const bundle = createEvidenceBundle({ ...Object.fromEntries(Object.entries(output.bundle.files).map(([path, content]) => [path, JSON.parse(content as string)])),
+    "prepared/source-identity.json": source });
+  checkedPreparedEvidence(bundle, release);
+  return { ...output, bundle, preparedRuntimeTrust: runtimeTrust };
 }

@@ -307,6 +307,28 @@ Operators can fetch private evidence at `GET /v1/preparations/:id/evidence` and 
 Gateway envelope at `GET /v1/releases/:releaseId/gateway-config`. Both use tenant
 AES-GCM evidence and independently recheck commitments. Reader lists never expose
 raw tools, descriptors, image tags or evidence storage keys. An export is not admission.
-This checkpoint keeps prepared policy verdicts ABSTAIN-only and does not enable CLI
-dispatch until the independently verified runtime policy is integrated. Synthetic
-worker tests prove transactions, ACL and failure handling, not actual Docker execution.
+The control worker dispatches this queue only when explicitly enabled. It derives
+PASS/FAIL/ABSTAIN from the separate strict policy, not advertised scanner checks.
+All 13 coverage/completion checks are required for PASS; missing local image,
+explicit AI, independent critic, or complete probes cannot become approval. Regular
+rescans use the bound prepared image; cross-profile/baseline mixing is rejected.
+
+Each signing validator must have the exact runtime image on its own Docker daemon
+and its own `VALIDATOR_PREPARED_BUILDER_DIGEST`, `VALIDATOR_PREPARED_ARCHITECTURE`,
+`VALIDATOR_ALLOW_REMOTE_AI=true`, and `VALIDATOR_AI_PROVIDER` configuration. Set
+`VALIDATOR_AI_URL` for a custom provider or `VALIDATOR_AI_MODEL` and
+`VALIDATOR_AI_TOKEN` for OpenAI; these are local operator settings, never API input.
+The signer independently exports the image closure and reruns the scanner with its
+own fresh synthetic probes, analyzer and critic before signing the original root.
+Verdict and deterministic violation scopes must agree. The API proposes templates
+using a private worker proof but does not have a Docker socket or prove independent
+execution. Nonce, deadline and validator-set version are fetched after the rerun.
+
+`VALIDATOR_VERIFICATION_RECEIPTS_PATH` (default `data/validator-verifications.jsonl`)
+stores digest-only original/independent-root links. `LOCAL_VERIFICATION_ONLY` is a
+local audit record, not an immutable chain receipt or independent-organizations
+claim. Raw closure bytes and tool definitions remain tenant-encrypted off-chain;
+validator evidence downloads alone allow 32 MiB with a 15-second total deadline.
+Synthetic worker/signing tests prove contracts and failure handling, not actual
+Docker execution or real AI quality. PostgreSQL concurrency coverage runs only
+when `MCPSHIELD_POSTGRES_TEST_URL` is explicitly configured.

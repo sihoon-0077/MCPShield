@@ -3,7 +3,7 @@ import { canonical } from "./control-plane.js";
 // @ts-expect-error Shared pure scanner binding is ESM JavaScript.
 import { validatePreparedReleaseBinding } from "../../../services/scanner/src/prepared-binding.mjs";
 // @ts-expect-error Shared scanner surface identity is ESM JavaScript.
-import { toolSurfaceHash } from "../../../services/scanner/src/scanner.mjs";
+import { toolSurfaceHash } from "../../../services/scanner/src/tool-surface.mjs";
 
 // Pure independent commitment verification. A valid identity does not assert behavior, PASS, or chain state.
 export function checkedPreparedEvidence(bundle: any, identity?: any) {

@@ -6,12 +6,17 @@ import { hash } from "../../api/src/control-plane.js";
 import { attestationV2Domain, attestationV2Types, bytes32, createReleaseRegistryV2, exactReleaseIdentity, quarantineV2Types } from "../../../packages/contracts-sdk/src/v2.js";
 import { boundedServiceRequest, checkedServiceUrl, v2RpcRequest } from "../../../packages/contracts-sdk/src/transport.js";
 import { traceHeaders, withSpan } from "../../../packages/telemetry/index.mjs";
+import { checkedPreparedConfig, checkedPreparedTrust, type PreparedConfig } from "../../api/src/prepared-config.js";
+import { checkedPreparedEvidence } from "../../api/src/prepared-evidence.js";
+import { comparePreparedScans, independentlyScanPrepared, recordPreparedVerification, type PreparedValidatorAi } from "./prepared-verification.js";
 // @ts-expect-error Scanner evidence is shared ESM JavaScript.
 import { verifyEvidenceBundle } from "../../../services/scanner/src/evidence.mjs";
 
 interface ValidatorContext {
   chainId: number; registryAddress: string; policyHash: string; policy: any; scan: any; evidence: any;
   identity: any; validatorSetVersion: number; nonce: number; now?: number;
+  preparedRuntime?: PreparedConfig; preparedRuntimeTrust?: Record<string, any>;
+  independentPreparedEvidence?: { result: any; bundle: any };
 }
 export function checkedValidatorPayload(template: any, context: ValidatorContext, quarantine = false) {
   const { scan, evidence, identity, policy } = context, now = context.now ?? Math.floor(Date.now() / 1000);
@@ -21,7 +26,13 @@ export function checkedValidatorPayload(template: any, context: ValidatorContext
     || Object.keys(template.payload).sort().join() !== Object.values(types)[0].map((field) => field.name).sort().join()) fail();
   if (!validPolicy(policy) || hash(policy) !== context.policyHash || scan.status !== "COMPLETED" || scan.policyHash !== context.policyHash
     || !scan.result || scan.result.reportRoot !== evidence.reportRoot || !verifyEvidenceBundle(evidence.bundle, evidence.reportRoot)) fail();
-  const report = JSON.parse(evidence.bundle.files["report.json"]), verdict = policyVerdict(evidence.bundle, scan.result.scanResult, policy);
+  if (policy.profile) {
+    checkedPreparedEvidence(evidence.bundle, identity);
+    if (!checkedPreparedTrust(context.preparedRuntimeTrust, context.preparedRuntime) || !context.independentPreparedEvidence) fail();
+    comparePreparedScans({ bundle: evidence.bundle, result: scan.result.scanResult }, context.independentPreparedEvidence, policy, context.preparedRuntimeTrust!);
+  }
+  const report = JSON.parse(evidence.bundle.files["report.json"]), verdict = policyVerdict(evidence.bundle, scan.result.scanResult, policy,
+    checkedPreparedTrust(context.preparedRuntimeTrust, context.preparedRuntime));
   if (!identity.exists || identity.artifactDigest !== bytes32(report.artifactDigest) || identity.toolSurfaceDigest !== bytes32(report.toolSurfaceHash)
     || exactReleaseIdentity({ toolId: identity.toolId, artifactDigest: identity.artifactDigest, manifestDigest: identity.manifestDigest, toolSurfaceHash: identity.toolSurfaceDigest }).releaseId !== scan.releaseId) fail();
   const q = template.payload;
@@ -46,7 +57,7 @@ export function checkedValidatorPayload(template: any, context: ValidatorContext
 }
 
 export async function runValidatorFanout(options: { apiUrl: string; token: string; scanId: string; privateKeys: string[]; quarantineFirst?: boolean;
-  chainId: number; registryAddress: string; policyHash: string; rpcUrl: string }) {
+  chainId: number; registryAddress: string; policyHash: string; rpcUrl: string; preparedRuntime?: PreparedConfig; preparedAi?: PreparedValidatorAi; verificationReceiptsPath?: string }) {
   if (!Number.isSafeInteger(options.chainId) || options.chainId <= 0 || !/^0x[0-9a-fA-F]{40}$/.test(options.registryAddress)
     || !/^0x[0-9a-f]{64}$/.test(options.policyHash) || !/^[0-9a-f-]{36}$/.test(options.scanId)) throw new Error("VALIDATOR_TRUST_CONFIG_REQUIRED");
   const wallets = options.privateKeys.map((key) => new Wallet(key));
@@ -56,7 +67,8 @@ export async function runValidatorFanout(options: { apiUrl: string; token: strin
   let scanTraceparent: string | undefined;
   const request = async (path: string, body?: any) => {
     const response = await boundedServiceRequest(new URL(path, base).href, { method: body ? "POST" : "GET",
-      headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json", ...traceHeaders() }, body: body ? JSON.stringify(body) : undefined });
+      headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json", ...traceHeaders() }, body: body ? JSON.stringify(body) : undefined },
+      path === `/v1/scans/${options.scanId}/evidence` ? { maxBytes: 32 * 1024 * 1024, timeoutMs: 15000 } : undefined);
     if (response.statusCode < 200 || response.statusCode >= 300) throw new Error(`VALIDATOR_API_HTTP_${response.statusCode}`);
     if (path === `/v1/scans/${options.scanId}` && !scanTraceparent) scanTraceparent = response.headers.traceparent;
     return JSON.parse(response.body.toString());
@@ -83,13 +95,29 @@ export async function runValidatorFanout(options: { apiUrl: string; token: strin
     for (let index = 0; index < 2; index++) {
       const wallet = wallets[index], { scan } = await request(`/v1/scans/${options.scanId}`), evidence = await request(`/v1/scans/${options.scanId}/evidence`);
       const policy = (await request("/v1/policies")).items.find((item: any) => item.policyHash === options.policyHash && !item.deprecatedAt)?.document;
+      if (!validPolicy(policy) || hash(policy) !== options.policyHash || scan.status !== "COMPLETED" || scan.policyHash !== options.policyHash
+        || !scan.result || scan.result.reportRoot !== evidence.reportRoot || !verifyEvidenceBundle(evidence.bundle, evidence.reportRoot)) throw new Error("VALIDATOR_EVIDENCE_BINDING_MISMATCH");
       const validators = new Contract(await registry.validators(), ["function version() view returns(uint32)", "function isActiveValidator(address,uint32) view returns(bool)"], provider);
       const submit = async (quarantine = false) => withSpan("validator.attest", { "mcpshield.scan_id": options.scanId, "mcpshield.validator_id": wallet.address }, async () => {
-        const version = Number(await validators.version());
-        if (!await validators.isActiveValidator(wallet.address, version)) throw new Error("NOT_VALIDATOR");
-        const template = await request(`/v1/scans/${options.scanId}/${quarantine ? "quarantine" : "attestation"}?validator=${wallet.address}`);
-        const checked = await withSpan("validator.verify", { "mcpshield.scan_id": options.scanId }, async () => checkedValidatorPayload(template, { ...options, scan, evidence, policy, identity: await registry.releases(scan.releaseId),
-          validatorSetVersion: version, nonce: Number(await registry.nonces(wallet.address)) }, quarantine));
+        const checked = await withSpan("validator.verify", { "mcpshield.scan_id": options.scanId }, async () => {
+          let preparedRuntimeTrust, independentPreparedEvidence;
+          if (policy?.profile) {
+            if (!options.preparedRuntime) throw new Error("PREPARED_VALIDATOR_TRUST_REQUIRED");
+            const identity = await registry.releases(scan.releaseId);
+            if (!identity.exists) throw new Error("PREPARED_RELEASE_NOT_REGISTERED");
+            checkedPreparedEvidence(evidence.bundle, identity);
+            const verification = await independentlyScanPrepared({ bundle: evidence.bundle, result: scan.result.scanResult }, policy, options.preparedRuntime, options.preparedAi);
+            preparedRuntimeTrust = verification.trusted; independentPreparedEvidence = verification.independent;
+            await recordPreparedVerification(options.verificationReceiptsPath ?? "data/validator-verifications.jsonl", { chainId: options.chainId, registryContract: options.registryAddress,
+              validator: wallet.address, releaseId: scan.releaseId, policyHash: options.policyHash }, verification.comparison);
+          }
+          // Obtain short-lived nonce/deadline/version only after the potentially long independent scan.
+          const version = Number(await validators.version());
+          if (!await validators.isActiveValidator(wallet.address, version)) throw new Error("NOT_VALIDATOR");
+          const template = await request(`/v1/scans/${options.scanId}/${quarantine ? "quarantine" : "attestation"}?validator=${wallet.address}`);
+          return checkedValidatorPayload(template, { ...options, scan, evidence, policy, identity: await registry.releases(scan.releaseId), preparedRuntimeTrust, independentPreparedEvidence,
+            validatorSetVersion: version, nonce: Number(await registry.nonces(wallet.address)) }, quarantine);
+        });
         // Never sign server-supplied domain/types: only the pinned local definitions and reconstructed payload survive.
         const signature = await withSpan("validator.sign", { "mcpshield.validator_id": wallet.address }, () => wallet.signTypedData(checked.domain, checked.types, checked.payload));
         const { action } = await request(`/v1/validator/${quarantine ? "quarantines" : "attestations"}`, { scanId: options.scanId, payload: checked.payload, signature });
@@ -108,6 +136,11 @@ async function main() {
   if (!CONTROL_API_URL || !CONTROL_API_TOKEN || !CONTROL_SCAN_ID || !CONTROL_V2_RPC_URLS || !CONTROL_V2_CHAIN_ID || !CONTROL_V2_REGISTRY_ADDRESS || !CONTROL_VALIDATOR_POLICY_HASH) throw new Error("VALIDATOR_TRUST_CONFIG_REQUIRED");
   console.log(JSON.stringify(await runValidatorFanout({ apiUrl: CONTROL_API_URL, token: CONTROL_API_TOKEN, scanId: CONTROL_SCAN_ID, privateKeys,
     chainId: Number(CONTROL_V2_CHAIN_ID), registryAddress: CONTROL_V2_REGISTRY_ADDRESS, policyHash: CONTROL_VALIDATOR_POLICY_HASH,
-    rpcUrl: CONTROL_V2_RPC_URLS.split(",")[0], quarantineFirst: process.argv.includes("--quarantine") })));
+    rpcUrl: CONTROL_V2_RPC_URLS.split(",")[0], quarantineFirst: process.argv.includes("--quarantine"),
+    preparedRuntime: process.env.VALIDATOR_PREPARED_BUILDER_DIGEST ? checkedPreparedConfig({ builderImageDigest: process.env.VALIDATOR_PREPARED_BUILDER_DIGEST,
+      platform: { os: "linux", architecture: process.env.VALIDATOR_PREPARED_ARCHITECTURE as "amd64" | "arm64" } }) : undefined,
+    preparedAi: process.env.VALIDATOR_ALLOW_REMOTE_AI === "true" ? { allowRemoteAi: true, provider: process.env.VALIDATOR_AI_PROVIDER as "custom" | "openai",
+      model: process.env.VALIDATOR_AI_MODEL, url: process.env.VALIDATOR_AI_URL, token: process.env.VALIDATOR_AI_TOKEN, timeoutMs: Number(process.env.VALIDATOR_AI_TIMEOUT_MS ?? 45000) } : undefined,
+    verificationReceiptsPath: process.env.VALIDATOR_VERIFICATION_RECEIPTS_PATH })));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(() => { console.error("VALIDATOR_OPERATION_FAILED"); process.exitCode = 1; });

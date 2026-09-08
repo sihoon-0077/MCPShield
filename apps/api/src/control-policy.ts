@@ -15,8 +15,13 @@ export function validPolicy(document: any): boolean {
     && Number.isInteger(document.maxQueuedScans) && document.maxQueuedScans >= 1 && document.maxQueuedScans <= 100
     && Array.isArray(document.requiredTiers) && [...document.requiredTiers].sort().join() === "sandbox,semantic,static";
 }
-export function policyVerdict(bundle: any, scanResult: any, policy: any = defaultPolicy, _preparedTrust?: Record<string, any>) {
+export function policyVerdict(bundle: any, scanResult: any, policy: any = defaultPolicy, runtimeTrust?: Record<string, any>) {
   // Prepared evidence must never fall through the legacy policy's broader completion gate.
+  if (policy.profile === preparedPolicy.profile) {
+    if (!validPolicy(policy) || !runtimeTrust) return "ABSTAIN";
+    const { binding } = checkedPreparedEvidence(bundle);
+    return assessPreparedPolicy(bundle, scanResult, binding, runtimeTrust).verdict as "PASS" | "FAIL" | "ABSTAIN";
+  }
   if (policy.profile !== undefined || bundle.files["prepared/binding.json"] !== undefined) return "ABSTAIN";
   const report = JSON.parse(bundle.files["report.json"] ?? "null"), sandbox = JSON.parse(bundle.files["sandbox/events.json"] ?? "null");
   const semantic = JSON.parse(bundle.files["semantic/model-output.json"] ?? "null"), mcp = JSON.parse(bundle.files["sandbox/mcp.json"] ?? "null");
@@ -30,3 +35,6 @@ export function policyVerdict(bundle: any, scanResult: any, policy: any = defaul
   return "ABSTAIN";
 }
 import { isDeepStrictEqual } from "node:util";
+import { checkedPreparedEvidence } from "./prepared-evidence.js";
+// @ts-expect-error Shared strict pure policy assessment is ESM JavaScript.
+import { assessPreparedPolicy } from "../../../services/scanner/src/prepared-policy.mjs";

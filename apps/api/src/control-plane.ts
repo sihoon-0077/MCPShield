@@ -31,6 +31,7 @@ export interface ControlOptions {
   preparedRuntime?: PreparedConfig;
   prepareRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
   scanPreparedRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
+  inspectPreparedRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
   scannerOptions?: { sandbox?: "docker"; allowRemoteAi: boolean; aiProvider?: "custom" | "openai"; aiModel?: string; aiUrl?: string; aiToken?: string; aiTimeoutMs?: number };
 }
 export const canonical = (value: any): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
@@ -263,7 +264,7 @@ function publicRelease({ artifactDir: _path, metadata: _metadata, preparedEviden
 function publicScan({ tenantId: _tenant, leaseOwner: _owner, request, result, ...scan }: ScanJob) {
   const baselineReleaseId = request.baselineReleaseId ?? null;
   if (!result) return { ...scan, baselineReleaseId };
-  const { evidenceKey: _key, ...safeResult } = result; return { ...scan, baselineReleaseId, result: safeResult };
+  const { evidenceKey: _key, preparedRuntimeTrust: _proof, ...safeResult } = result; return { ...scan, baselineReleaseId, result: safeResult };
 }
 export async function saveEvidence(options: ControlOptions, tenantId: string, bundle: Record<string, any>) {
   const content = Buffer.from(canonical(bundle));

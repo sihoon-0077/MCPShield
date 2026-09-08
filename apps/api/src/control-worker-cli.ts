@@ -5,6 +5,7 @@ import { controlConfig } from "./control-config.js";
 import { runChainActionOnce, reconcileV2Actions } from "./chain-outbox.js";
 import { indexV2 } from "../../indexer/src/v2-indexer.js";
 import { indexReceiptAnchors } from "../../indexer/src/receipt-indexer.js";
+import { runPreparationWorkerOnce } from "./preparation-worker.js";
 
 const options = controlConfig();
 if (!options) throw new Error("CONTROL_PLANE_ENABLED=true is required");
@@ -14,6 +15,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => 
 try {
   while (!stopped) {
     const worked = !process.argv.includes("--chain-only") && await runControlWorkerOnce(store, options);
+    const preparationWorked = !process.argv.includes("--chain-only") && options.preparedRuntime ? await runPreparationWorkerOnce(store, options) : false;
     const chainWorked = options.v2Relayer && !process.argv.includes("--scan-only") ? await runChainActionOnce(store, options.v2Relayer) : false;
     if (options.v2Relayer && !process.argv.includes("--scan-only")) {
       try {
@@ -29,6 +31,6 @@ try {
       } catch { console.error(JSON.stringify({ event: "receipt.synchronization.failed", code: "RECEIPT_CHAIN_UNAVAILABLE" })); }
     }
     if (process.argv.includes("--once")) break;
-    if (!worked) await setTimeout(1000);
+    if (!worked && !preparationWorked && !chainWorked) await setTimeout(1000);
   }
 } finally { await store.close(); options.evidenceStore?.close(); options.v2Relayer?.close(); options.receiptRelayer?.close(); if (options.chainDecision && "close" in options.chainDecision) (options.chainDecision as any).close(); }
