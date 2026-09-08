@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { buildApp } from "../../apps/api/src/app.js";
 import { ControlStore } from "../../apps/api/src/control-store.js";
 import { hash, type ControlOptions } from "../../apps/api/src/control-plane.js";
@@ -10,6 +13,8 @@ import { controlConfig } from "../../apps/api/src/control-config.js";
 import { claimPreparation, failPreparation, preparations } from "../../apps/api/src/preparation-store.js";
 import { checkedOciEvidence, checkedPreparedEvidence } from "../../apps/api/src/prepared-evidence.js";
 import { exactReleaseIdentity } from "../../packages/contracts-sdk/src/v2.js";
+import { runPreparationWorkerOnce } from "../../apps/api/src/preparation-worker.js";
+import { runControlWorkerOnce } from "../../apps/api/src/control-worker.js";
 // @ts-expect-error Shared pure OCI identity helpers; these tests never execute a container.
 import { ociExecutionPolicy, createOciReleaseBinding } from "../../services/scanner/src/oci-binding.mjs";
 // @ts-expect-error Shared fixed OCI descriptor contract.
@@ -102,7 +107,7 @@ test("OCI API reuses tenant ACL, quota/idempotency, exact source/profile and fro
   } finally { await app.close(); }
 });
 
-test("OCI encrypted bundle binds source and complete tools independently without accepting Node or foreign identities", async () => {
+async function syntheticOciEvidence() {
   const local = await ociTrust(config), { databaseDir: _directory, platform: _platform, ...anchors } = local;
   const tools = [{ name: "synthetic_tool", description: "private-synthetic-description", inputSchema: { type: "object" } }];
   const descriptor = { schemaVersion: "mcpshield.oci-runtime.v1", profile: "oci-container-v1", stage: "OBSERVED", budgetProfile: OCI_SOURCE_BUDGET_PROFILE,
@@ -113,6 +118,10 @@ test("OCI encrypted bundle binds source and complete tools independently without
   const binding = createOciReleaseBinding({ sourceReleaseId: source.releaseId, descriptor, executionPolicy: ociExecutionPolicy(anchors) });
   const documents = { "oci/binding.json": binding, "prepared/source-identity.json": sourceIdentity, "runtime/tools.json": tools,
     "runtime/oci-descriptor.json": descriptor, "runtime/execution-policy.json": binding.executionPolicy };
+  return { documents, binding, tools, descriptor, anchors };
+}
+test("OCI encrypted bundle binds source and complete tools independently without accepting Node or foreign identities", async () => {
+  const { documents, binding, tools, descriptor } = await syntheticOciEvidence();
   const bundle = createEvidenceBundle(documents), checked = checkedOciEvidence(bundle);
   assert.notEqual(checked.identity.releaseId, source.releaseId); assert.deepEqual(checked.tools, tools);
   assert.deepEqual(checkedOciEvidence(bundle, { ...checked.identity, artifactDigest: binding.artifactDigest, manifestDigest: binding.manifestDigest, toolSurfaceHash: binding.toolSurfaceHash }).binding, binding);
@@ -121,5 +130,97 @@ test("OCI encrypted bundle binds source and complete tools independently without
   for (const edit of [{ "runtime/tools.json": [] }, { "runtime/oci-descriptor.json": { ...descriptor, argv: ["/bin/evil"] } },
     { "prepared/source-identity.json": { ...sourceIdentity, toolId: `0x${"f".repeat(64)}` } }, { "prepared/binding.json": binding }]) {
     assert.throws(() => checkedOciEvidence(createEvidenceBundle({ ...documents, ...edit })), /IDENTITY_MISMATCH/);
+  }
+});
+
+test("OCI worker creates distinct encrypted identities, preserves borrowed images and never equates completion with approval", async () => {
+  const fixture = await syntheticOciEvidence(), dir = await mkdtemp(join(tmpdir(), "mcpshield-oci-worker-"));
+  const store = await ControlStore.open(); let cleanups = 0, borrowedCleanups = 0, inspections = 0;
+  const options: ControlOptions = { store, credentials: [{ tenantId: tenant, token, role: "operator" }, { tenantId: tenant, token: reader, role: "reader" }],
+    artifactPath: dir, evidencePath: dir, evidenceKey: "1".repeat(64), ociRuntime: config, scannerOptions: { sandbox: "docker", allowRemoteAi: false },
+    inspectOciRuntime: async () => { inspections++; return { anchors: fixture.anchors, platform: config.platform }; } };
+  // Explicit synthetic identity/daemon double. No actual image or AI quality claim and no PASS possible.
+  const output = (input: any, owned: boolean) => {
+    const result = { schemaVersion: "1.0.0", scanId: input.scanId, releaseId: source.legacyReleaseId, artifactDigest: fixture.binding.artifactDigest,
+      toolSurfaceHash: fixture.binding.toolSurfaceHash, scanStatus: "INCONCLUSIVE", findings: [], evidenceHash: `0x${"1".repeat(64)}`, source: "MOCK" };
+    return { result, binding: fixture.binding, analysis: { profile: ociPolicy.profile, verdict: "ABSTAIN", issues: ["SYNTHETIC_TEST_NOT_EXECUTED"] },
+      bundle: createEvidenceBundle({ ...fixture.documents, "report.json": result }), runtimeOwnership: owned ? "OWNED" : "BORROWED",
+      runtimeTag: owned ? `mcpshield-oci-${randomUUID()}:local` : null, cleanup: async () => { if (owned) cleanups++; else borrowedCleanups++; } };
+  };
+  options.prepareOciRuntime = async input => {
+    assert.deepEqual(Object.keys(input.preparation).sort(), ["platform", "root", "sourceTreeDigest"]);
+    assert.equal(input.preparation.root, source.artifactDir); assert.deepEqual(input.trust, config);
+    return output(input, false);
+  };
+  const app = await buildApp({ adminApiToken: "legacy-private-admin-token", scannerApiToken: "legacy-private-scanner-token", controlPlane: options });
+  const auth = { authorization: `Bearer ${token}` }, request = (key: string) => app.inject({ method: "POST", url: `/v1/releases/${source.releaseId}/prepare`,
+    headers: { ...auth, "idempotency-key": key }, payload: { policyHash: hash(ociPolicy) } });
+  try {
+    await store.put(tenant, "release", source.releaseId, source);
+    const jobId = (await request("borrowed")).json().preparation.preparationId;
+    await runPreparationWorkerOnce(store, options);
+    const [job] = await preparations(store, tenant, jobId);
+    assert.equal(job.status, "COMPLETED", JSON.stringify(job.lastError)); assert.equal(job.result?.verdict, "ABSTAIN");
+    const derived = await store.get(tenant, "release", job.result!.releaseId), scan = await store.scan(tenant, job.result!.scanId);
+    assert.equal(derived?.sourceType, "prepared-oci"); assert.equal(derived?.runtimeOwnership, "BORROWED"); assert.equal(derived?.runtimeTag, null);
+    assert.equal(derived?.status, "UNVERIFIED"); assert.notEqual(derived?.releaseId, source.releaseId);
+    assert.equal(scan?.result?.state, "REVIEW_REQUIRED"); assert.equal(scan?.result?.semanticEvidenceMode, "LOCAL_CONTRACT_TEST");
+    assert.equal(scan?.result?.providerQuality, "PROVIDER_QUALITY_NOT_MEASURED"); assert.equal(borrowedCleanups, 0);
+    const exported = await app.inject({ url: `/v1/releases/${derived!.releaseId}/gateway-config`, headers: auth });
+    assert.equal(exported.statusCode, 200); assert.deepEqual(exported.json().binding, fixture.binding); assert.deepEqual(exported.json().tools, fixture.tools);
+    for (const path of ["/v1/scans", "/v1/releases", "/v1/preparations"]) {
+      const response = await app.inject({ url: path, headers: { authorization: `Bearer ${reader}` } });
+      for (const secret of ["ociRuntimeTrust", "private-synthetic-description", config.databaseDir, "runtimeTag", "evidenceKey", "observerDigest"]) assert.ok(!response.body.includes(secret), `${path} ${secret}`);
+      assert.ok(response.body.includes("LOCAL_CONTRACT_TEST"));
+    }
+    options.prepareOciRuntime = async input => output(input, true);
+    await request("duplicate-owned"); await runPreparationWorkerOnce(store, options);
+    assert.equal(cleanups, 1, "the duplicate helper owns only its new UUID tag");
+    assert.equal((await store.get(tenant, "release", derived!.releaseId))?.runtimeOwnership, "BORROWED");
+    options.scanOciRuntime = async input => { assert.equal(input.expectedDescriptorDigest, fixture.binding.descriptorDigest); return output(input, false); };
+    const rescan = () => app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": randomUUID() },
+      payload: { releaseId: derived!.releaseId, policyHash: hash(ociPolicy) } });
+    const second = await rescan(); assert.equal(second.statusCode, 202);
+    await runControlWorkerOnce(store, options); assert.equal((await store.scan(tenant, second.json().scan.scanId))?.result?.verdict, "ABSTAIN");
+    assert.equal(inspections, 3, "every borrowed execution rechecks native identity");
+    options.inspectOciRuntime = async () => { throw new Error("OCI_RUNTIME_IMAGE_MISSING"); };
+    const unavailable = await rescan(); await runControlWorkerOnce(store, options);
+    assert.equal((await store.scan(tenant, unavailable.json().scan.scanId))?.status, "DEAD_LETTER");
+    assert.equal((await store.scan(tenant, unavailable.json().scan.scanId))?.lastError?.code, "OCI_RUNTIME_IMAGE_MISSING");
+    assert.deepEqual(await store.get(tenant, "release", source.releaseId), source);
+  } finally { await app.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("OCI worker fences stale leases/configuration, rejects ambiguous ownership and enforces descriptor budgets before finalization", async () => {
+  for (const mode of ["stale", "config", "ownership", "budget"]) {
+    const fixture = await syntheticOciEvidence(), dir = await mkdtemp(join(tmpdir(), "mcpshield-oci-fence-")), store = await ControlStore.open();
+    let cleaned = 0, executed = 0;
+    const options: ControlOptions = { store, credentials: [{ tenantId: tenant, token, role: "operator" }], artifactPath: dir, evidencePath: dir, evidenceKey: "1".repeat(64),
+      ociRuntime: structuredClone(config), scannerOptions: { sandbox: "docker", allowRemoteAi: false },
+      inspectOciRuntime: async () => ({ anchors: fixture.anchors, platform: config.platform }) };
+    const app = await buildApp({ adminApiToken: "legacy-private-admin-token", scannerApiToken: "legacy-private-scanner-token", controlPlane: options });
+    try {
+      await store.put(tenant, "release", source.releaseId, source);
+      const policy = mode === "budget" ? { ...ociPolicy, maxExpandedBytes: 1024 } : ociPolicy;
+      await store.put(tenant, "policy", hash(policy), { document: policy });
+      const response = await app.inject({ method: "POST", url: `/v1/releases/${source.releaseId}/prepare`, headers: { authorization: `Bearer ${token}`, "idempotency-key": mode },
+        payload: { policyHash: hash(policy) } });
+      assert.equal(response.statusCode, 202); const jobId = response.json().preparation.preparationId;
+      if (mode === "config") options.ociRuntime!.databaseDigest = `sha256:${"b".repeat(64)}`;
+      options.prepareOciRuntime = async input => {
+        executed++;
+        if (mode === "stale") await store.query("UPDATE cp_preparations SET lease_expires_at=? WHERE preparation_id=?", [new Date(Date.now() - 1).toISOString(), jobId]);
+        const result = { schemaVersion: "1.0.0", scanId: input.scanId, releaseId: source.legacyReleaseId, artifactDigest: fixture.binding.artifactDigest,
+          toolSurfaceHash: fixture.binding.toolSurfaceHash, scanStatus: "INCONCLUSIVE", findings: [], evidenceHash: `0x${"1".repeat(64)}`, source: "MOCK" };
+        return { binding: fixture.binding, result, bundle: createEvidenceBundle({ ...fixture.documents, "report.json": result }),
+          runtimeOwnership: mode === "ownership" ? "UNKNOWN" : "OWNED", runtimeTag: `mcpshield-oci-${randomUUID()}:local`, cleanup: async () => { cleaned++; } };
+      };
+      await runPreparationWorkerOnce(store, options);
+      const [job] = await preparations(store, tenant, jobId);
+      assert.equal((await store.scans(tenant)).length, 0); assert.equal((await store.list(tenant, "release")).length, 1);
+      assert.equal(executed, mode === "config" ? 0 : 1); assert.equal(cleaned, mode === "config" ? 0 : 1);
+      assert.equal(job.status, mode === "stale" ? "RUNNING" : "DEAD_LETTER");
+      if (mode !== "stale") assert.equal(job.lastError?.code, { config: "PREPARATION_CONFIG_CHANGED", ownership: "PREPARED_IMAGE_OWNERSHIP_MISSING", budget: "OCI_RUNTIME_BUDGET_EXCEEDED" }[mode]);
+    } finally { await app.close(); await rm(dir, { recursive: true, force: true }); }
   }
 });

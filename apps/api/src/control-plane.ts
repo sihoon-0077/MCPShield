@@ -33,6 +33,7 @@ export interface ControlOptions {
   ociRuntime?: OciConfig;
   prepareOciRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
   scanOciRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
+  inspectOciRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
   prepareRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
   scanPreparedRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
   inspectPreparedRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
@@ -269,7 +270,7 @@ function publicRelease({ artifactDir: _path, metadata: _metadata, preparedEviden
 function publicScan({ tenantId: _tenant, leaseOwner: _owner, request, result, ...scan }: ScanJob) {
   const baselineReleaseId = request.baselineReleaseId ?? null;
   if (!result) return { ...scan, baselineReleaseId };
-  const { evidenceKey: _key, preparedRuntimeTrust: _proof, ...safeResult } = result; return { ...scan, baselineReleaseId, result: safeResult };
+  const { evidenceKey: _key, preparedRuntimeTrust: _proof, ociRuntimeTrust: _ociProof, ...safeResult } = result; return { ...scan, baselineReleaseId, result: safeResult };
 }
 export async function saveEvidence(options: ControlOptions, tenantId: string, bundle: Record<string, any>) {
   const content = Buffer.from(canonical(bundle));

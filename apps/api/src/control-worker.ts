@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ControlStore } from "./control-store.js";
 import { saveEvidence, type ControlOptions } from "./control-plane.js";
 import { withSpan } from "../../../packages/telemetry/index.mjs";
-import { policyVerdict, preparedPolicy, validPolicy } from "./control-policy.js";
+import { policyVerdict, preparedPolicy, ociPolicy, assertRuntimeBudget, validPolicy } from "./control-policy.js";
 import { scanPreparedRelease } from "./preparation-worker.js";
 // @ts-expect-error Scanner evidence is shared ESM JavaScript.
 import { verifyEvidenceBundle } from "../../../services/scanner/src/evidence.mjs";
@@ -16,9 +16,9 @@ export async function runControlWorkerOnce(store: ControlStore, options: Control
     const policy = await store.get(scan.tenantId, "policy", scan.policyHash);
     if (!release || !policy || policy.deprecatedAt) throw new Error("INPUT_NO_LONGER_AVAILABLE");
     if (!validPolicy(policy.document)) throw new Error("UNSUPPORTED_POLICY");
-    const prepared = release.runtimeProfile === preparedPolicy.profile;
-    if (prepared !== (policy.document.profile === preparedPolicy.profile)) throw new Error("SCAN_PROFILE_MISMATCH");
-    if ((release.metadata?.expandedBytes ?? release.metadata?.sizeBytes ?? 0) > policy.document.maxArtifactBytes) throw new Error("ARTIFACT_TOO_LARGE");
+    const oci = release.runtimeProfile === ociPolicy.profile, prepared = release.runtimeProfile === preparedPolicy.profile || oci;
+    if ((release.runtimeProfile ?? null) !== (policy.document.profile ?? null)) throw new Error("SCAN_PROFILE_MISMATCH");
+    assertRuntimeBudget(release, policy.document);
     const baseline = scan.request.baselineReleaseId ? await store.get(scan.tenantId, "release", scan.request.baselineReleaseId) : undefined;
     // @ts-expect-error Scanner runtime is shared ESM JavaScript.
     const execute = options.scanArtifact ?? (await import("../../../services/scanner/src/scanner.mjs")).scanResolvedArtifact;
@@ -30,12 +30,14 @@ export async function runControlWorkerOnce(store: ControlStore, options: Control
     if (result.result?.artifactDigest !== release.artifactDigest || result.result?.toolSurfaceHash !== release.toolSurfaceHash) throw new Error("ARTIFACT_DIGEST_CHANGED");
     if (!result.bundle?.manifest?.root) throw new Error("EVIDENCE_ROOT_MISSING");
     if (!verifyEvidenceBundle(result.bundle, result.bundle.manifest.root)) throw new Error("EVIDENCE_INTEGRITY_MISMATCH");
-    const verdict = policyVerdict(result.bundle, result.result, policy.document, result.preparedRuntimeTrust);
+    if (oci) assertRuntimeBudget(release, policy.document, result.binding?.descriptor);
+    const verdict = policyVerdict(result.bundle, result.result, policy.document, oci ? result.ociRuntimeTrust : result.preparedRuntimeTrust);
     const completedAt = Date.now(), validFrom = new Date(completedAt).toISOString(), validUntil = new Date(completedAt + policy.document.validitySeconds * 1000).toISOString();
     const evidenceKey = await saveEvidence(options, scan.tenantId, result.bundle);
     const completed = await store.finish(scan, owner, { scanResult: result.result, reportRoot: result.bundle.manifest.root,
       analysis: result.analysis, policyHash: scan.policyHash, validFrom, validUntil, evidenceKey, verdict,
-      ...(prepared ? { preparedRuntimeTrust: result.preparedRuntimeTrust } : {}), state: verdict === "ABSTAIN" ? "REVIEW_REQUIRED" : "READY_FOR_VALIDATORS" });
+      ...(oci ? { ociRuntimeTrust: result.ociRuntimeTrust, semanticEvidenceMode: policy.document.semanticEvidenceMode, providerQuality: "PROVIDER_QUALITY_NOT_MEASURED" }
+        : prepared ? { preparedRuntimeTrust: result.preparedRuntimeTrust } : {}), state: verdict === "ABSTAIN" ? "REVIEW_REQUIRED" : "READY_FOR_VALIDATORS" });
     if (completed) await store.event(scan.tenantId, scan.releaseId, "scan.completed", { scanId: scan.scanId, reportRoot: result.bundle.manifest.root, status: result.result.scanStatus }, scan.traceId);
   } catch (error: any) {
     const raw = typeof error?.code === "string" ? error.code : error?.message;

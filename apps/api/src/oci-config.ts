@@ -27,3 +27,15 @@ export async function checkedOciTrust(proof: any, config?: OciConfig) {
     || proof.platform?.os !== local.platform.os || proof.platform?.architecture !== local.platform.architecture) return undefined;
   return proof;
 }
+export async function inspectOciRuntime(binding: any, config: OciConfig, inspect?: (input: Record<string, any>) => Promise<Record<string, any>>) {
+  const local = checkedOciConfig(config);
+  if (binding.platform.os !== local.platform.os || binding.platform.architecture !== local.platform.architecture) throw new Error("OCI_TRUST_ANCHOR_MISMATCH");
+  // Only operator-local configuration and native image/database reads confer this authority.
+  // The test hook is process-local, never supplied by API input or a signing validator.
+  // @ts-expect-error Shared native trust helper is ESM JavaScript.
+  const read = inspect ?? (await import("../../../services/scanner/src/oci-trust.mjs")).readTrustedOciRuntime;
+  if (typeof read !== "function") throw new Error("OCI_TRUST_INSPECTION_UNAVAILABLE");
+  const proof = await read({ descriptor: binding.descriptor, expectedDescriptorDigest: binding.descriptorDigest, trust: local });
+  if (!await checkedOciTrust(proof, local)) throw new Error("OCI_TRUST_ANCHOR_MISMATCH");
+  return proof;
+}
