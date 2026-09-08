@@ -256,11 +256,13 @@ async function actualOciScenario({ sourceTargetBytes = null, fullScan = false, p
         assert.equal(independentTrust.rootfsDigest, scanned.binding.descriptor.rootfsDigest);
         assert.equal(Object.hasOwn(independentTrust, 'databaseDir'), false);
         assert.equal(scanned.result.scanStatus, 'FAILED', safe);
-        assert.equal(scanned.analysis.verdict, 'ABSTAIN'); assert.equal(scanned.analysis.ready, false);
-        assert.ok(scanned.analysis.issues.includes('OCI_INDEPENDENT_SIGNING_POLICY'));
+        assert.equal(scanned.analysis.verdict, 'FAIL'); assert.equal(scanned.analysis.ready, false);
+        assert.equal(scanned.analysis.semanticEvidenceMode, 'LOCAL_CONTRACT_TEST');
+        assert.equal(scanned.analysis.fullBehaviorCoverage, false);
         assert.equal(scanned.analysis.checks.sourceClassificationComplete, false, 'opaque padding/native bytes are never silently approved');
-        assert.equal(scanned.analysis.checks.normalToolCallsSucceeded, true, safe);
-        assert.equal(scanned.analysis.checks.adversarialToolCallsSucceeded, true, safe);
+        const observedChecks = JSON.parse(scanned.bundle.files['oci/observation.json']).checks;
+        assert.equal(observedChecks.normalToolCallsSucceeded, true, safe);
+        assert.equal(observedChecks.adversarialToolCallsSucceeded, true, safe);
         assert.equal(verifyEvidenceBundle(scanned.bundle, scanned.bundle.manifest.root), true);
         const privateEvidence = JSON.parse(scanned.bundle.files['oci/private-image-evidence.json']);
         assert.equal(privateEvidence.access, 'ENCRYPTED_OPERATOR_EVIDENCE_ONLY');
