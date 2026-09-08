@@ -179,3 +179,18 @@ test("a failed cache invalidation retains its ownership lock instead of exposing
     assert.equal(called, false);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("an allow that expires during persistent I/O is rejected at the final return fence", async () => {
+  const { context, base } = isolated("expires-during-persistence");
+  const directory = await mkdtemp(join(tmpdir(), "mcpshield-expiring-cache-"));
+  assert.equal(dirname(directory), tmpdir());
+  const cacheFile = join(directory, "admission.json");
+  let checks = 0;
+  try {
+    await assert.rejects(getSignedAdmission({ ...context, apiBaseUrl: "http://127.0.0.1:3108", timeoutMs: 100,
+      cacheFile, now: () => checks++ === 0 ? now : now + 31_000, fetchImpl: async () => json(signed(base)) }), /expired/);
+    assert.equal(checks, 2);
+    assert.equal(await readFile(cacheFile, "utf8"), "null");
+    await assert.rejects(readFile(`${cacheFile}.lock`), { code: "ENOENT" });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
