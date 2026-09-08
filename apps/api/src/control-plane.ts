@@ -6,12 +6,14 @@ import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2.js"
 import { ControlStore, type ScanJob } from "./control-store.js";
 import { currentTraceId, traceHeaders, withSpan, recordAdmission } from "../../../packages/telemetry/index.mjs";
 import type { EvidenceObjectStore } from "../../../packages/object-storage/index.mjs";
-import { defaultPolicy, validPolicy } from "./control-policy.js";
+import { defaultPolicy, preparedPolicy, validPolicy } from "./control-policy.js";
 import { registerChainRoutes } from "./chain-control.js";
 import { enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
 import { registerReceiptRoutes } from "./receipt-control.js";
 import type { ReceiptRelayer } from "./receipt-relayer.js";
 import { registerEventStream } from "./event-stream.js";
+import { registerPreparationRoutes } from "./preparation-control.js";
+import type { PreparedConfig } from "./prepared-config.js";
 export { defaultPolicy } from "./control-policy.js";
 
 export type Credential = { token: string; tenantId: string; role: "reader" | "operator" | "admin" };
@@ -26,6 +28,7 @@ export interface ControlOptions {
   store?: ControlStore;
   v2Relayer?: V2Relayer;
   receiptRelayer?: ReceiptRelayer;
+  preparedRuntime?: PreparedConfig;
   scannerOptions?: { sandbox?: "docker"; allowRemoteAi: boolean; aiProvider?: "custom" | "openai"; aiModel?: string; aiUrl?: string; aiToken?: string; aiTimeoutMs?: number };
 }
 export const canonical = (value: any): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
@@ -49,6 +52,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
   if (options.chainDecision && "close" in options.chainDecision) app.addHook("onClose", async () => (options.chainDecision as any).close());
   for (const tenant of new Set(options.credentials.map((c) => c.tenantId))) {
     await store.put(tenant, "policy", hash(defaultPolicy), { policyHash: hash(defaultPolicy), alias: "mvp-default-v1", version: "1.0.0", document: defaultPolicy, createdAt: new Date().toISOString(), deprecatedAt: null });
+    await store.put(tenant, "policy", hash(preparedPolicy), { policyHash: hash(preparedPolicy), alias: "restricted-node-docker-v1", version: "1.0.0", document: preparedPolicy, createdAt: new Date().toISOString(), deprecatedAt: null });
   }
   const authenticate = (header: string | undefined) => {
     const supplied = header?.startsWith("Bearer ") ? header.slice(7) : "";
@@ -71,6 +75,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
     await registerChainRoutes(api, store, options, authenticate, authorize);
     await registerReceiptRoutes(api, store, options, authenticate, authorize);
     registerEventStream(api, store, authenticate);
+    registerPreparationRoutes(api, store, options, authenticate, authorize);
     api.get("/session", async (request) => {
       const { tenantId, role } = authenticate(request.headers.authorization);
       return { tenantId, role, capabilities: { read: true, scan: role !== "reader", evidence: role !== "reader", manage: role === "admin" } };
@@ -134,6 +139,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       const release = await get(user.tenantId, "release", body.releaseId);
       const policy = await get(user.tenantId, "policy", body.policyHash);
       if (policy.deprecatedAt) throw err("POLICY_DEPRECATED", 409);
+      if ((release.runtimeProfile === preparedPolicy.profile) !== (policy.document.profile === preparedPolicy.profile)) throw err("SCAN_PROFILE_MISMATCH", 409);
       if (body.requestedTiers && (!Array.isArray(body.requestedTiers) || [...body.requestedTiers].sort().join() !== [...policy.document.requiredTiers].sort().join())) throw err("REQUIRED_TIERS_MISSING");
       if (body.baselineReleaseId && (await get(user.tenantId, "release", body.baselineReleaseId)).toolId !== release.toolId) throw err("BASELINE_TOOL_MISMATCH");
       const idempotencyKey = request.headers["idempotency-key"];

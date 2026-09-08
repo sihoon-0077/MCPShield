@@ -25,7 +25,7 @@ export async function registerChainRoutes(api: FastifyInstance, store: ControlSt
     const [release, policy] = await Promise.all([store.get(tenantId, "release", scan.releaseId), store.get(tenantId, "policy", scan.policyHash)]);
     if (!release || !policy || policy.deprecatedAt) throw failure("POLICY_OR_RELEASE_UNAVAILABLE", 409);
     const bundle = await loadEvidence(options, tenantId, scan.result.evidenceKey, scan.result.reportRoot);
-    const verdict = policyVerdict(bundle, scan.result.scanResult);
+    const verdict = policyVerdict(bundle, scan.result.scanResult, policy.document);
     const context = await client.context(validator);
     const now = Math.floor(Date.now() / 1000), validFrom = Math.floor(Date.parse(scan.result.validFrom) / 1000), validUntil = Math.floor(Date.parse(scan.result.validUntil) / 1000);
     if (validUntil <= now || validFrom > now) throw failure("SCAN_VALIDITY_EXPIRED", 409);

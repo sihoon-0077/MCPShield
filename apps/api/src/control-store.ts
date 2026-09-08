@@ -39,7 +39,7 @@ export class ControlStore {
       store.sqlite.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     }
     const migration = (name: string) => readFileSync(fileURLToPath(new URL(`../../../database/migrations/${name}.sql`, import.meta.url)), "utf8");
-    const schema = [migration("002_control_plane"), migration(`003_scan_audit.${store.pool ? "pg" : "sqlite"}`), migration("004_chain_outbox"), migration("006_scan_request_keys"), migration("007_receipt_anchors"), migration(`009_scan_trace_index.${store.pool ? "pg" : "sqlite"}`)].join("\n");
+    const schema = [migration("002_control_plane"), migration(`003_scan_audit.${store.pool ? "pg" : "sqlite"}`), migration("004_chain_outbox"), migration("006_scan_request_keys"), migration("007_receipt_anchors"), migration(`009_scan_trace_index.${store.pool ? "pg" : "sqlite"}`), migration("010_runtime_preparations")].join("\n");
     const extensions = [
       { column: "registry_address", sql: migration("005_chain_action_domain") },
       { column: "submission_trace_parent", sql: migration("008_submission_trace") },
@@ -186,7 +186,11 @@ export class ControlStore {
     const counts: Record<string, number> = { QUEUED: 0, RUNNING: 0, COMPLETED: 0, DEAD_LETTER: 0 };
     for (const row of await this.query("SELECT state, COUNT(*) AS count FROM cp_scans WHERE tenant_id = ? GROUP BY state", [tenantId])) counts[row.state] = Number(row.count);
     const [daily] = await this.query("SELECT COUNT(*) AS count FROM cp_scans WHERE tenant_id = ? AND created_at >= ?", [tenantId, new Date().toISOString().slice(0, 10)]);
-    return { counts, today: Number(daily.count), queued: counts.QUEUED + counts.RUNNING };
+    // A successful preparation produces one cp_scans row. Count only preparations without that child again.
+    const resultScan = this.pool ? "result_json::jsonb->>'scanId'" : "json_extract(result_json, '$.scanId')";
+    const [preparations] = await this.query(`SELECT COUNT(*) AS count FROM cp_preparations WHERE tenant_id = ? AND created_at >= ? AND ${resultScan} IS NULL`, [tenantId, new Date().toISOString().slice(0, 10)]);
+    const [pending] = await this.query("SELECT COUNT(*) AS count FROM cp_preparations WHERE tenant_id = ? AND state IN ('QUEUED','RUNNING')", [tenantId]);
+    return { counts, today: Number(daily.count) + Number(preparations.count), queued: counts.QUEUED + counts.RUNNING + Number(pending.count) };
   }
   async scans(tenantId: string) { return (await this.query("SELECT * FROM cp_scans WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 250", [tenantId])).map(job); }
   async claim(owner: string, leaseMs = 180000) {

@@ -3,8 +3,11 @@ export const defaultPolicy = {
   failClosed: true, maxArtifactBytes: 16777216, maxDailyScans: 100, maxQueuedScans: 20,
   deterministicRevocationRequired: true,
 };
+export const preparedPolicy = { ...defaultPolicy, profile: "restricted-node-docker-v1", requireRemoteAi: true, requireCritic: true };
 export function validPolicy(document: any): boolean {
-  return document && !Array.isArray(document) && Object.keys(document).sort().join() === Object.keys(defaultPolicy).sort().join()
+  const prepared = document?.profile === preparedPolicy.profile;
+  return document && !Array.isArray(document) && Object.keys(document).sort().join() === Object.keys(prepared ? preparedPolicy : defaultPolicy).sort().join()
+    && (!prepared || document.requireRemoteAi === true && document.requireCritic === true)
     && document.version === "1.0.0" && document.failClosed === true && document.deterministicRevocationRequired === true
     && Number.isInteger(document.validitySeconds) && document.validitySeconds >= 60 && document.validitySeconds <= 2592000
     && Number.isInteger(document.maxArtifactBytes) && document.maxArtifactBytes >= 1024 && document.maxArtifactBytes <= 16777216
@@ -12,7 +15,9 @@ export function validPolicy(document: any): boolean {
     && Number.isInteger(document.maxQueuedScans) && document.maxQueuedScans >= 1 && document.maxQueuedScans <= 100
     && Array.isArray(document.requiredTiers) && [...document.requiredTiers].sort().join() === "sandbox,semantic,static";
 }
-export function policyVerdict(bundle: any, scanResult: any) {
+export function policyVerdict(bundle: any, scanResult: any, policy: any = defaultPolicy) {
+  // Prepared evidence must never fall through the legacy policy's broader completion gate.
+  if (policy.profile !== undefined || bundle.files["prepared/binding.json"] !== undefined) return "ABSTAIN";
   const report = JSON.parse(bundle.files["report.json"] ?? "null"), sandbox = JSON.parse(bundle.files["sandbox/events.json"] ?? "null");
   const semantic = JSON.parse(bundle.files["semantic/model-output.json"] ?? "null"), mcp = JSON.parse(bundle.files["sandbox/mcp.json"] ?? "null");
   if (!report || report.artifactDigest !== scanResult.artifactDigest || report.toolSurfaceHash !== scanResult.toolSurfaceHash

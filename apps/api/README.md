@@ -276,3 +276,25 @@ Gateway fresh admission checking remains unchanged.
 `tests/contracts/receipt-anchor.test.ts` measures local Ganache gas (not money prices);
 `tests/api/receipt-anchors.test.ts` exercises real EVM/API/outbox/indexer/CLI, tenant ACL,
 signature binding, AES-GCM storage, N-depth, actual snapshot/revert and raw-tx recovery.
+## Prepared npm runtime queue
+
+`POST /v1/releases/:sourceReleaseId/prepare` (operator, `Idempotency-Key`) accepts
+only `{ "policyHash": "0x..." }` for the separate `restricted-node-docker-v1`
+policy. Reader routes are `GET /v1/preparations` and `GET /v1/preparations/:id`;
+operators can retry retryable dead-letter jobs at `POST /v1/preparations/:id/retry`.
+The immutable source must be a resolved npm/tarball package. Request bodies cannot
+choose server paths, images, commands, probe plans, provider endpoints, or keys.
+
+Enable explicitly with `CONTROL_PREPARED_ENABLED=true`, `CONTROL_SANDBOX_MODE=docker`,
+`CONTROL_PREPARED_BUILDER_DIGEST=sha256:<approved-local-image-config-id>` and
+`CONTROL_PREPARED_ARCHITECTURE=amd64` (or `arm64`). Optional
+`CONTROL_PREPARED_BIN_NAME` is an operator setting, not a request field.
+Jobs freeze builder/platform and installed collector/observer hashes. A changed
+configuration cannot silently resume an older job. Preparation jobs and scans
+share tenant queue/daily quotas; a completed preparation's child scan is counted once.
+
+`COMPLETED` means the job finished, not PASS, READY, or VERIFIED. These image IDs
+are local Docker-daemon config IDs, not publicly pullable registry digests. Source
+records remain unchanged and the legacy policy never approves prepared evidence.
+This queue checkpoint does not yet dispatch preparation jobs: worker/strict-policy
+integration is the next checkpoint. No production capability is claimed by a queued job.

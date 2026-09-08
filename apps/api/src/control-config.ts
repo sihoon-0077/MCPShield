@@ -4,6 +4,7 @@ import { v2ChainReader } from "./registry-v2-client.js";
 import { V2Relayer } from "./chain-outbox.js";
 import { createS3EvidenceStore } from "../../../packages/object-storage/index.mjs";
 import { ReceiptRelayer } from "./receipt-relayer.js";
+import { checkedPreparedConfig } from "./prepared-config.js";
 
 export function controlConfig(env = process.env): ControlOptions | undefined {
   if (env.CONTROL_PLANE_ENABLED !== "true") return undefined;
@@ -12,6 +13,10 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
   if (!Array.isArray(credentials) || !credentials.length) throw new Error("CONTROL_PLANE_CREDENTIALS required");
   if (!/^[0-9a-f]{64}$/.test(env.CONTROL_EVIDENCE_KEY ?? "")) throw new Error("CONTROL_EVIDENCE_KEY must be 32-byte hex");
   const allowRemoteAi = env.CONTROL_ALLOW_REMOTE_AI === "true";
+  if (env.CONTROL_PREPARED_ENABLED === "true" && env.CONTROL_SANDBOX_MODE !== "docker") throw new Error("PREPARED_DOCKER_REQUIRED");
+  const preparedRuntime = env.CONTROL_PREPARED_ENABLED === "true" ? checkedPreparedConfig({ builderImageDigest: env.CONTROL_PREPARED_BUILDER_DIGEST ?? "",
+    platform: { os: "linux", architecture: env.CONTROL_PREPARED_ARCHITECTURE as "amd64" | "arm64" },
+    ...(env.CONTROL_PREPARED_BIN_NAME ? { binName: env.CONTROL_PREPARED_BIN_NAME } : {}) }) : undefined;
   if ([env.CONTROL_RECEIPT_RPC_URL, env.CONTROL_RECEIPT_REGISTRY_ADDRESS, env.CONTROL_RECEIPT_CHAIN_ID, env.CONTROL_RECEIPT_RELAYER_KEY].some(Boolean)
     && ![env.CONTROL_RECEIPT_RPC_URL, env.CONTROL_RECEIPT_REGISTRY_ADDRESS, env.CONTROL_RECEIPT_CHAIN_ID, env.CONTROL_RECEIPT_RELAYER_KEY].every(Boolean)) throw new Error("INCOMPLETE_RECEIPT_CHAIN_CONFIG");
   const aiProvider = env.CONTROL_AI_PROVIDER ?? "custom", aiTimeoutMs = Number(env.CONTROL_AI_TIMEOUT_MS ?? 45000);
@@ -25,6 +30,7 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
   }
   return {
     credentials,
+    preparedRuntime,
     databaseUrl: env.CONTROL_DATABASE_URL ?? resolve("data/control-plane.sqlite"),
     artifactPath: env.CONTROL_ARTIFACT_PATH ?? resolve("data/control-artifacts"),
     evidencePath: env.CONTROL_EVIDENCE_PATH ?? resolve("data/control-evidence"),

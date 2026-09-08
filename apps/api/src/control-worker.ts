@@ -26,7 +26,7 @@ export async function runControlWorkerOnce(store: ControlStore, options: Control
     if (result.result?.artifactDigest !== release.artifactDigest || result.result?.toolSurfaceHash !== release.toolSurfaceHash) throw new Error("ARTIFACT_DIGEST_CHANGED");
     if (!result.bundle?.manifest?.root) throw new Error("EVIDENCE_ROOT_MISSING");
     if (!verifyEvidenceBundle(result.bundle, result.bundle.manifest.root)) throw new Error("EVIDENCE_INTEGRITY_MISMATCH");
-    const verdict = policyVerdict(result.bundle, result.result);
+    const verdict = policyVerdict(result.bundle, result.result, policy.document);
     const completedAt = Date.now(), validFrom = new Date(completedAt).toISOString(), validUntil = new Date(completedAt + policy.document.validitySeconds * 1000).toISOString();
     const evidenceKey = await saveEvidence(options, scan.tenantId, result.bundle);
     const completed = await store.finish(scan, owner, { scanResult: result.result, reportRoot: result.bundle.manifest.root,

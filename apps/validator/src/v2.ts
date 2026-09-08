@@ -21,7 +21,7 @@ export function checkedValidatorPayload(template: any, context: ValidatorContext
     || Object.keys(template.payload).sort().join() !== Object.values(types)[0].map((field) => field.name).sort().join()) fail();
   if (!validPolicy(policy) || hash(policy) !== context.policyHash || scan.status !== "COMPLETED" || scan.policyHash !== context.policyHash
     || !scan.result || scan.result.reportRoot !== evidence.reportRoot || !verifyEvidenceBundle(evidence.bundle, evidence.reportRoot)) fail();
-  const report = JSON.parse(evidence.bundle.files["report.json"]), verdict = policyVerdict(evidence.bundle, scan.result.scanResult);
+  const report = JSON.parse(evidence.bundle.files["report.json"]), verdict = policyVerdict(evidence.bundle, scan.result.scanResult, policy);
   if (!identity.exists || identity.artifactDigest !== bytes32(report.artifactDigest) || identity.toolSurfaceDigest !== bytes32(report.toolSurfaceHash)
     || exactReleaseIdentity({ toolId: identity.toolId, artifactDigest: identity.artifactDigest, manifestDigest: identity.manifestDigest, toolSurfaceHash: identity.toolSurfaceDigest }).releaseId !== scan.releaseId) fail();
   const q = template.payload;
