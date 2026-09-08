@@ -5,6 +5,11 @@ on:
     branches: [main, mcp/main, master/main, feature/frontend-gateway-devops]
   pull_request:
   workflow_dispatch:
+    inputs:
+      repeat_demo:
+        description: Run ten clean Docker-to-EVM-to-Gateway incident demos
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -129,6 +134,30 @@ jobs:
           docker exec "$PG_CONTAINER" createdb -U mcpshield mcpshield_restore_drill
           docker exec "$PG_CONTAINER" pg_restore -U mcpshield --exit-on-error --single-transaction -d mcpshield_restore_drill /tmp/mcpshield-ci.dump
           test "$(docker exec "$PG_CONTAINER" psql -U mcpshield -d mcpshield_restore_drill -tAc "SELECT count(*) FROM cp_records WHERE tenant_id='restore-test' AND id='backup-check'")" = "1"
+
+  repeat-demo:
+    if: github.event_name == 'workflow_dispatch' && inputs.repeat_demo
+    needs: [verify, postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: docker pull node:22-alpine
+      - name: Repeat actual isolated scan and incident flow ten times
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: |
+          for iteration in $(seq 1 10); do
+            printf 'Isolated real Docker/EVM demo %s of 10\n' "$iteration"
+            node --import tsx --test --test-name-pattern='V2 real Docker scan' tests/api/v2-fullcycle.test.ts
+          done
 
   signed-image:
     # Explicit workflow dispatch only: do not accumulate large images on every push.
