@@ -240,8 +240,15 @@ Outbox migration 008 persists `submission_trace_parent` for `chain.submit`; V2 a
 receipt indexers follow the actual transaction's scoped parent and reuse its trace ID
 in audit events. Shared telemetry's fixed attribute allowlist still excludes bodies,
 signatures, tokens, private keys, baggage and raw exceptions. The real V2 regression
-checks these durable trace IDs with exports disabled; collector verification of the
-combined exported scan-to-admission trace is a separate integration gate.
+checks these durable trace IDs with exports disabled. `admission.decision` follows
+the completed scan only when tenant/release/policy and the fresh chain report root
+match an indexed `LIMIT 1` lookup. The outer `admission.check` retains the caller's
+request trace; correlation failure never changes the admission decision or adds RPC.
+`tests/integration/fullcycle-telemetry.test.ts` runs the actual local EVM regression
+in a separate process with official HTTP JSON OTLP exports and final shutdown flush.
+It checks exact exported parent relationships and rejects raw tool/credential/baggage
+fields. Its bounded loopback receiver is a protocol-contract collector, not a live
+production collector or query backend; the scan report fixture is not Docker proof.
 
 `tests/contracts/receipt-anchor.test.ts` measures local Ganache gas (not money prices);
 `tests/api/receipt-anchors.test.ts` exercises real EVM/API/outbox/indexer/CLI, tenant ACL,

@@ -99,6 +99,35 @@ test("durable queue claims fence workers and retryable failures reach DLQ", asyn
   } finally { await f.close(); }
 });
 
+test("admission trace correlation is exact, indexed, caller-independent and never changes chain decisions", async () => {
+  const f = await setup(), callerTrace = "f".repeat(32);
+  try {
+    const submitted = (await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "trace" }, payload: { releaseId: release.releaseId, policyHash: hash(defaultPolicy) } })).json().scan;
+    await runControlWorkerOnce(f.store, f.options);
+    const scan = (await f.store.scan(tenant, submitted.scanId))!;
+    const originalRead = f.options.chainDecision!; let rpcReads = 0;
+    f.options.chainDecision = async (...args) => { rpcReads++; return { ...await originalRead(...args), reportRoot: root }; };
+    const admit = async () => (await f.app.inject({ method: "POST", url: "/v1/admission/check", headers: { ...auth, traceparent: `00-${callerTrace}-${"e".repeat(16)}-01`, baggage: "private=synthetic-trace-poison" },
+      payload: { releaseId: release.releaseId, policyHash: hash(defaultPolicy), artifactDigest: digest, toolSurfaceHash: surface, mode: "strict", operationClass: "READ_PRIVATE" } })).json();
+    const correlated = await admit();
+    assert.equal(correlated.decision, "ALLOW"); assert.equal(correlated.traceId, scan.traceId); assert.equal(rpcReads, 1);
+    for (const [t, r, p, rootHash] of [["other", release.releaseId, hash(defaultPolicy), root], [tenant, `0x${"d".repeat(64)}`, hash(defaultPolicy), root],
+      [tenant, release.releaseId, `0x${"e".repeat(64)}`, root], [tenant, release.releaseId, hash(defaultPolicy), `0x${"f".repeat(64)}`]]) {
+      assert.equal(await f.store.scanTraceContext(t, r, p, rootHash), undefined);
+    }
+    const plan = await f.store.query("EXPLAIN QUERY PLAN SELECT scan_id FROM cp_scans WHERE tenant_id = ? AND release_id = ? AND policy_hash = ? AND state = 'COMPLETED' AND json_extract(result_json, '$.reportRoot') = ? ORDER BY updated_at DESC,scan_id LIMIT 1", [tenant, release.releaseId, hash(defaultPolicy), root]);
+    assert.match(JSON.stringify(plan), /cp_scan_report_trace/);
+    const originalLookup = f.store.scanTraceContext.bind(f.store);
+    f.store.scanTraceContext = async () => { throw new Error("synthetic-storage-error-private-value"); };
+    const unavailable = await admit(); assert.equal(unavailable.decision, "ALLOW"); assert.equal(unavailable.traceId, callerTrace); assert.equal(rpcReads, 2);
+    f.store.scanTraceContext = originalLookup;
+    f.options.chainDecision = async (...args) => ({ ...await originalRead(...args), reportRoot: `0x${"c".repeat(64)}` });
+    const mismatch = await admit(); assert.equal(mismatch.decision, "ALLOW"); assert.equal(mismatch.traceId, callerTrace);
+    await f.store.query("UPDATE cp_scans SET state = 'RUNNING' WHERE scan_id = ?", [scan.scanId]);
+    assert.equal(await f.store.scanTraceContext(tenant, release.releaseId, hash(defaultPolicy), root), undefined);
+  } finally { await f.close(); }
+});
+
 test("policy guards stage coverage and idempotent retry survives an exhausted quota", async () => {
   const f = await setup();
   try {

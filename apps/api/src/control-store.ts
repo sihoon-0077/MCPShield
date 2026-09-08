@@ -39,7 +39,7 @@ export class ControlStore {
       store.sqlite.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     }
     const migration = (name: string) => readFileSync(fileURLToPath(new URL(`../../../database/migrations/${name}.sql`, import.meta.url)), "utf8");
-    const schema = [migration("002_control_plane"), migration(`003_scan_audit.${store.pool ? "pg" : "sqlite"}`), migration("004_chain_outbox"), migration("006_scan_request_keys"), migration("007_receipt_anchors")].join("\n");
+    const schema = [migration("002_control_plane"), migration(`003_scan_audit.${store.pool ? "pg" : "sqlite"}`), migration("004_chain_outbox"), migration("006_scan_request_keys"), migration("007_receipt_anchors"), migration(`009_scan_trace_index.${store.pool ? "pg" : "sqlite"}`)].join("\n");
     const extensions = [
       { column: "registry_address", sql: migration("005_chain_action_domain") },
       { column: "submission_trace_parent", sql: migration("008_submission_trace") },
@@ -132,6 +132,15 @@ export class ControlStore {
   async scan(tenantId: string, scanId: string) {
     const [row] = await this.query("SELECT * FROM cp_scans WHERE tenant_id = ? AND scan_id = ?", [tenantId, scanId]);
     return row ? job(row) : undefined;
+  }
+  async scanTraceContext(tenantId: string, releaseId: string, policyHash: string, reportRoot: string) {
+    const field = this.pool ? "result_json::jsonb->>'reportRoot'" : "json_extract(result_json, '$.reportRoot')";
+    const [row] = await this.query(`SELECT scan_id,trace_id,request_json FROM cp_scans WHERE tenant_id = ? AND release_id = ? AND policy_hash = ?
+      AND state = 'COMPLETED' AND ${field} = ? ORDER BY updated_at DESC,scan_id LIMIT 1`, [tenantId, releaseId, policyHash, reportRoot]);
+    if (!row) return undefined;
+    const traceparent = JSON.parse(row.request_json).traceparent;
+    if (typeof traceparent !== "string" || !/^00-(?!0{32})[0-9a-f]{32}-(?!0{16})[0-9a-f]{16}-0[01]$/.test(traceparent) || traceparent.split("-")[1] !== row.trace_id) return undefined;
+    return { scanId: row.scan_id as string, traceparent };
   }
   async idempotentScan(tenantId: string, key: string, requestHash: string) {
     const [alias] = await this.query("SELECT scan_id,request_hash FROM cp_scan_request_keys WHERE tenant_id = ? AND idempotency_key = ?", [tenantId, key]);

@@ -203,7 +203,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
         || !bytes32.test(body.toolSurfaceHash) || !["strict", "balanced"].includes(body.mode)
         || !["READ_PUBLIC", "READ_PRIVATE", "WRITE_EXTERNAL", "DESTRUCTIVE", "FINANCIAL"].includes(body.operationClass)) throw err("INVALID_ADMISSION_REQUEST");
       const release = await get(user.tenantId, "release", body.releaseId), policy = await get(user.tenantId, "policy", body.policyHash);
-      const checkedAt = new Date().toISOString(), traceId = currentTraceId() ?? randomUUID(), start = performance.now();
+      const checkedAt = new Date().toISOString(), start = performance.now();
       let state: any = { status: "UNVERIFIED", source: "LOCAL_DEMO" };
       try { if (options.chainDecision) state = await options.chainDecision(release, policy); } catch { state = { status: "UNVERIFIED", source: "EVM", unavailable: true }; }
       let reasonCode = state.unavailable ? "STATUS_UNAVAILABLE" : `RELEASE_${state.status}`;
@@ -211,6 +211,17 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       else if (policy.deprecatedAt || state.policyHash && state.policyHash !== body.policyHash) reasonCode = "POLICY_MISMATCH";
       else if (state.status === "VERIFIED" && (!state.validUntil || Date.parse(state.validUntil) <= Date.now())) reasonCode = "ATTESTATION_EXPIRED";
       const decision = state.status === "VERIFIED" && reasonCode === "RELEASE_VERIFIED" && state.source === "EVM" ? "ALLOW" : "BLOCK";
+      let scanContext;
+      if (state.source === "EVM" && !state.unavailable && bytes32.test(state.reportRoot) && state.policyHash === body.policyHash
+        && body.artifactDigest === release.artifactDigest && body.toolSurfaceHash === release.toolSurfaceHash) {
+        try { scanContext = await store.scanTraceContext(user.tenantId, body.releaseId, body.policyHash, state.reportRoot); }
+        catch { /* Correlation is optional; its storage failure cannot change a fresh chain decision. */ }
+      }
+      // Keep the request-latency span on the caller trace, but attach the evidence-based decision to
+      // its authoritative stored scan. No caller trace/baggage is imported into that scan's history.
+      return withSpan("admission.decision", { "mcpshield.release_id": body.releaseId, "mcpshield.gateway_decision": decision,
+        ...(scanContext ? { "mcpshield.scan_id": scanContext.scanId } : {}) }, async () => {
+      const traceId = currentTraceId() ?? randomUUID();
       const response: any = { decision, status: state.status, reasonCode, releaseId: body.releaseId, policyHash: body.policyHash, traceId, checkedAt, source: state.source };
       if (signingKey && state.source === "EVM" && !state.unavailable && Number.isSafeInteger(state.observedBlock) && state.observedBlock > 0
         && bytes32.test(state.blockHash) && state.blockHash !== `0x${"0".repeat(64)}` && Number.isSafeInteger(state.chainId) && state.chainId > 0
@@ -227,6 +238,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       await store.event(user.tenantId, body.releaseId, "admission.decided", { decision, reasonCode, policyHash: body.policyHash, operationClass: body.operationClass }, traceId);
       recordAdmission({ decision, riskTier: body.operationClass, source: state.source, durationSeconds: (performance.now() - start) / 1000 });
       return response;
+      }, { traceparent: scanContext?.traceparent });
     }, { traceparent: typeof request.headers.traceparent === "string" ? request.headers.traceparent : undefined }));
     api.get("/operations", async (request) => {
       const user = authenticate(request.headers.authorization), usage = await store.scanUsage(user.tenantId);

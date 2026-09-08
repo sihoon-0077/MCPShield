@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,6 +19,7 @@ import { v2ChainReader } from "../../apps/api/src/registry-v2-client.js";
 import { indexV2 } from "../../apps/indexer/src/v2-indexer.js";
 import { runValidatorFanout } from "../../apps/validator/src/v2.js";
 import { defaultPolicy, hash, type ControlOptions } from "../../apps/api/src/control-plane.js";
+import { shutdownTelemetry } from "../../packages/telemetry/index.mjs";
 // @ts-expect-error Shared scanner/Gateway are ESM JavaScript.
 import { createEvidenceBundle } from "../../services/scanner/src/evidence.mjs";
 // @ts-expect-error Shared scanner/Gateway are ESM JavaScript.
@@ -135,6 +136,10 @@ async function fullCycle(realDocker: boolean) {
     }
     const indexedVotes = (await store.events("test-team", safe.release.releaseId)).filter((event) => event.eventName.startsWith("chain.") && tracedActions.some((action) => action.tx_hash === event.payload.txHash));
     assert.ok(indexedVotes.length >= 2); assert.ok(indexedVotes.every((event) => event.traceId === scanTrace));
+    const tracedAdmission = await post("/v1/admission/check", { releaseId: safe.release.releaseId, artifactDigest: safe.release.artifactDigest,
+      toolSurfaceHash: safe.release.toolSurfaceHash, policyHash: hash(defaultPolicy), mode: "strict", operationClass: "READ_PRIVATE" },
+    { traceparent: `00-${"f".repeat(32)}-${"e".repeat(16)}-01`, baggage: "private=synthetic-trace-poison" });
+    assert.equal(tracedAdmission.decision, "ALLOW"); assert.equal(tracedAdmission.traceId, scanTrace);
     const snapshot = await chain.provider.request({ method: "evm_snapshot", params: [] });
     const bad = await prepareRelease("1.0.1");
     await vote(bad.scan.scanId, validators[0], true);
@@ -190,3 +195,5 @@ async function fullCycle(realDocker: boolean) {
 }
 test("V2 genuine EVM outbox/quorum/quarantine and two signed Gateway decisions (report fixture)", { timeout: 120000 }, () => fullCycle(false));
 test("V2 real Docker scan to EVM quorum and two-Gateway blocking", { timeout: 180000, skip: process.env.MCPSHIELD_DOCKER_TESTS !== "1" }, () => fullCycle(true));
+// The subprocess OTLP contract test must flush the final batch after all real API/EVM work.
+if (process.env.MCPSHIELD_FULLCYCLE_OTLP_TEST === "1") after(() => shutdownTelemetry());
