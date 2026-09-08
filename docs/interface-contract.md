@@ -34,6 +34,12 @@ read-only, bounded and not cached as an ALLOW proof. Its persistent local
 revocation marker is unsigned negative state, not a portable chain certificate.
 See `apps/gateway/README.md` for operator-only configuration and limits.
 
+The shared V2 reader distinguishes `TRANSPORT_UNAVAILABLE` from `TRUST_REJECTED`.
+Only positively observed transport failures of every configured RPC endpoint
+qualify as an all-provider outage; each endpoint shares one total deadline.
+Invalid identity, malformed RPC, partial negative decisions, stale/expired proofs,
+reorganization and operator cancellation must not be converted to outage authority.
+
 ### OCI prepared identity (consumer contract; full execution integration pending)
 
 `services/scanner/src/oci-binding.mjs` is the shared pure validator for profile
@@ -55,6 +61,22 @@ does not grant arbitrary native binary or filesystem safety certification.
 Inventory/Trivy phase `COMPLETE`, an OBSERVED descriptor and a valid binding are
 **not PASS, READY or execution authorization**. Missing full semantic coverage,
 independent replay or consumer enforcement remains an explicit incomplete requirement.
+
+The next OCI versioned control policy explicitly binds
+`semanticEvidenceMode: LOCAL_CONTRACT_TEST` to its policy hash. Its original-source
+limit is `maxSourceBytes: 104857600`; `maxExpandedBytes` is a distinct bounded
+expansion/export limit (at most 536870912), never an enlarged source allowance.
+This is the approved in-progress cross-part contract, not evidence of completed
+API/validator/Gateway integration. Analysis and summaries must preserve
+`PROVIDER_QUALITY_NOT_MEASURED`; a local synthetic PASS is not a production model
+quality endorsement. The privacy-scoped real-provider mode requires an explicit
+new mode/version, not reinterpreting the local test policy.
+
+Whole-source semantic review currently accepts only an explicit trusted
+`disclosurePolicy: LOCAL_CONTRACT_TEST`, custom provider and numeric-loopback
+endpoint for both analyzer and critic. `allowRemoteAi` alone grants no exception.
+API callers cannot supply this setting. Raw source and environment stay in the
+private encrypted evidence/local declared test boundary, never a remote provider.
 
 ### Explicit local emergency execution
 
