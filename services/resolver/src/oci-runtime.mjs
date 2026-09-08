@@ -7,7 +7,7 @@ import * as tar from 'tar';
 import { inspectOciImage } from './oci.mjs';
 import { runRuntimeDocker } from './npm-closure.mjs';
 import { artifactDigest } from '../../scanner/src/scanner.mjs';
-import { copyFixtureSnapshot, removeFixtureSnapshot } from '../../scanner/src/snapshot.mjs';
+import { copyFixtureSnapshot, removeFixtureSnapshot, OCI_SOURCE_BUDGET_PROFILE } from '../../scanner/src/snapshot.mjs';
 import { canonicalJson } from '../../scanner/src/evidence.mjs';
 import { checkedOciConfig, hashOciRuntimeDescriptor, inspectOciFilesystem, resolveOciEntrypoint,
   ociHash, OCI_OBSERVATION_POLICY, OCI_RUNTIME_LIMITS } from './oci-runtime-descriptor.mjs';
@@ -19,6 +19,7 @@ const hashPattern = /^sha256:[a-f0-9]{64}$/;
 export function inspectOciLayerBudget(layers, config) {
   if (config.rootfs?.type !== 'layers' || !Array.isArray(config.rootfs.diff_ids) || config.rootfs.diff_ids.length !== layers.length) throw Error('OCI_DIFF_ID_INVALID');
   let expanded = 0;
+  let entries = 0;
   for (const [index, layer] of layers.entries()) {
     let bytes;
     if (['application/vnd.oci.image.layer.v1.tar+gzip', 'application/vnd.docker.image.rootfs.diff.tar.gzip'].includes(layer.mediaType)) {
@@ -29,9 +30,10 @@ export function inspectOciLayerBudget(layers, config) {
     expanded += bytes.length;
     if (expanded > OCI_RUNTIME_LIMITS.archiveBytes || ociHash(bytes) !== config.rootfs.diff_ids[index]) throw Error('OCI_LAYER_DIFF_ID_OR_BUDGET_INVALID');
     // This is tar structure/size inspection only, not a merged filesystem.
-    inspectOciFilesystem(bytes);
+    entries += inspectOciFilesystem(bytes).entries.length;
+    if (entries > OCI_RUNTIME_LIMITS.files) throw Error('OCI_LAYER_ENTRY_BUDGET_INVALID');
   }
-  return { expandedArchiveBytes: expanded, layerCount: layers.length, diffIdsVerified: true, appliedBy: 'NATIVE_DOCKER_ONLY' };
+  return { expandedArchiveBytes: expanded, entries, layerCount: layers.length, diffIdsVerified: true, appliedBy: 'NATIVE_DOCKER_ONLY' };
 }
 
 export async function inspectImportedOciRuntime({ descriptor, expectedDescriptorDigest }) {
@@ -40,7 +42,7 @@ export async function inspectImportedOciRuntime({ descriptor, expectedDescriptor
   return inspectImage(descriptor.finalImageDigest, descriptor.platform, descriptor);
 }
 
-async function inspectImage(imageDigest, platform, expected) {
+async function inspectImage(imageDigest, platform, expected, layerArchiveBytes = expected?.layerArchiveBytes ?? 0) {
   const container = `mcpshield-oci-inspect-${randomUUID()}`;
   try {
     const image = JSON.parse(await runRuntimeDocker(['image', 'inspect', imageDigest, '--format', '{{json .}}'], 5000));
@@ -48,12 +50,13 @@ async function inspectImage(imageDigest, platform, expected) {
     const runtime = checkedOciConfig({ config: image.Config });
     await runRuntimeDocker(['create', '--pull=never', '--name', container, '--network=none', '--read-only', '--user=1000:1000',
       '--cap-drop=ALL', '--security-opt=no-new-privileges', '--no-healthcheck', '--entrypoint', runtime.argv[0], imageDigest, ...runtime.argv.slice(1)], 5000);
-    const filesystem = inspectOciFilesystem(await runRuntimeDocker(['export', container], 30_000, OCI_RUNTIME_LIMITS.archiveBytes));
+    const archive = await runRuntimeDocker(['export', container], 30_000, OCI_RUNTIME_LIMITS.archiveBytes - layerArchiveBytes);
+    const filesystem = inspectOciFilesystem(archive);
     const entrypoint = resolveOciEntrypoint(filesystem, runtime.argv[0]);
     if (expected && (expected.rootfsDigest !== filesystem.digest || canonicalJson(expected.entrypoint) !== canonicalJson(entrypoint) ||
       canonicalJson(expected.argv) !== canonicalJson(runtime.argv) || expected.workingDirectory !== runtime.workingDirectory ||
-      expected.environmentDigest !== runtime.environmentDigest)) throw Error('OCI_IMPORTED_FILESYSTEM_IDENTITY_MISMATCH');
-    return { image, filesystem, entrypoint, ...runtime, candidateExecutionPerformed: false };
+      expected.environmentDigest !== runtime.environmentDigest || expected.exportArchiveBytes !== archive.length)) throw Error('OCI_IMPORTED_FILESYSTEM_IDENTITY_MISMATCH');
+    return { image, filesystem, entrypoint, ...runtime, exportArchiveBytes: archive.length, candidateExecutionPerformed: false };
   } finally { try { await runRuntimeDocker(['rm', '-f', container], 5000); } catch { /* exact never-started container */ } }
 }
 
@@ -65,12 +68,14 @@ export async function importOciRuntime({ root, sourceTreeDigest, platform }) {
   const runtimeTag = `mcpshield-oci-${randomUUID()}:local`;
   let ownsImage = false, success = false, stage = 'SOURCE';
   try {
-    await copyFixtureSnapshot(root, snapshot);
-    if (await artifactDigest(snapshot) !== sourceTreeDigest) throw Error('OCI_SOURCE_DIGEST_MISMATCH');
+    const sourceSnapshot = await copyFixtureSnapshot(root, snapshot, { profile: OCI_SOURCE_BUDGET_PROFILE });
+    if (await artifactDigest(snapshot, { profile: OCI_SOURCE_BUDGET_PROFILE }) !== sourceTreeDigest) throw Error('OCI_SOURCE_DIGEST_MISMATCH');
     const layout = join(snapshot, 'oci'), indexBytes = await readFile(join(layout, 'index.json'));
-    if (JSON.parse(await readFile(join(layout, 'oci-layout'))).imageLayoutVersion !== '1.0.0') throw Error('OCI_LAYOUT_UNSUPPORTED');
+    const layoutBytes = await readFile(join(layout, 'oci-layout'));
+    if (indexBytes.length > 1024 * 1024 || layoutBytes.length > 1024 * 1024) throw Error('OCI_JSON_SIZE_LIMIT');
+    if (JSON.parse(layoutBytes).imageLayoutVersion !== '1.0.0') throw Error('OCI_LAYOUT_UNSUPPORTED');
     const index = JSON.parse(indexBytes), blobs = new Map();
-    const inspected = await inspectOciImage({ index, platform, readBlob: async (entry) => {
+    const inspected = await inspectOciImage({ index, platform, budgetProfile: OCI_SOURCE_BUDGET_PROFILE, readBlob: async (entry) => {
       const bytes = await readFile(join(layout, 'blobs', 'sha256', entry.digest.slice(7))); blobs.set(entry.digest, bytes); return bytes;
     } });
     const manifestBytes = index.manifests ? blobs.get(inspected.imageDigest) : indexBytes;
@@ -107,11 +112,13 @@ export async function importOciRuntime({ root, sourceTreeDigest, platform }) {
       ownsImage = true;
     }
     stage = 'FINAL_FILESYSTEM';
-    const proof = await inspectImage(configDigest, inspected.platform);
+    const proof = await inspectImage(configDigest, inspected.platform, undefined, expansion.expandedArchiveBytes);
     if (canonicalJson(proof.image.RootFS?.Layers) !== canonicalJson(inspected.config.rootfs.diff_ids) ||
       canonicalJson(proof.argv) !== canonicalJson(runtime.argv) || proof.environmentDigest !== runtime.environmentDigest ||
       proof.workingDirectory !== runtime.workingDirectory) throw Error('OCI_LOADED_CONFIG_MISMATCH');
     const descriptor = { schemaVersion: 'mcpshield.oci-runtime.v1', profile: 'oci-container-v1', stage: 'IMPORTED',
+      budgetProfile: OCI_SOURCE_BUDGET_PROFILE, sourceBytes: sourceSnapshot.bytes,
+      layerArchiveBytes: expansion.expandedArchiveBytes, exportArchiveBytes: proof.exportArchiveBytes,
       sourceTreeDigest, sourceIndexDigest: ociHash(indexBytes), manifestDigest, configDigest,
       platform: inspected.platform, finalImageDigest: configDigest, imageDigestKind: 'DOCKER_IMAGE_CONFIG_ID',
       rootfsDigest: proof.filesystem.digest, entrypoint: proof.entrypoint, ...runtime, toolSurfaceHash: null, policy: OCI_OBSERVATION_POLICY };

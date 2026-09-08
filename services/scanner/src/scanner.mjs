@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { lstat, mkdtemp, open, readFile, readdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { assertFinding, assertScanResult } from './schema.mjs';
 import { assertCanonicalScanResult } from './protocol-schema.mjs';
 import { runSandbox } from './sandbox.mjs';
-import { copyFixtureSnapshot, removeFixtureSnapshot } from './snapshot.mjs';
+import { copyFixtureSnapshot, removeFixtureSnapshot, snapshotLimits } from './snapshot.mjs';
 import { importPolicyIssues, runtimeEgressIssues } from '../../../packages/artifact-policy/import-policy.mjs';
 import { canonicalJson, createEvidenceBundle } from './evidence.mjs';
 import { analyzePackage, metadataSignals } from './analysis.mjs';
@@ -17,19 +18,18 @@ import { redactEvidenceDocument, redactPromptText, sanitizeUntrustedEvidence } f
 export { redactEvidenceDocument, redactPromptText } from './redaction.mjs';
 
 const TEXT_EXTENSIONS = new Set(['.js', '.cjs', '.mjs', '.ts', '.json', '.py']);
-const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
-const MAX_ARTIFACT_FILES = 1_024;
 const RELEASE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
-async function listFiles(root, current = root) {
+async function listFiles(root, current = root, state = { entries: 0, limits: snapshotLimits() }) {
   const files = [];
   for (const entry of await readdir(current, { withFileTypes: true })) {
     if (entry.name === 'node_modules' || entry.name === '.git') continue;
+    if (++state.entries > state.limits.files) throw Error('fixture exceeds its entry budget');
     const path = resolve(current, entry.name);
     const stat = await lstat(path);
     if (stat.isSymbolicLink()) throw new Error(`fixture symlinks are not allowed: ${relative(root, path)}`);
-    if (stat.isDirectory()) files.push(...await listFiles(root, path));
+    if (stat.isDirectory()) files.push(...await listFiles(root, path, state));
     else if (stat.isFile()) files.push(path);
   }
   return files.sort((a, b) => {
@@ -39,16 +39,32 @@ async function listFiles(root, current = root) {
   });
 }
 
-export async function artifactDigest(root) {
+export async function artifactDigest(root, { profile = 'fixture-v1' } = {}) {
   const hash = createHash('sha256');
-  const files = await listFiles(root);
-  if (files.length > MAX_ARTIFACT_FILES) throw new Error(`fixture exceeds ${MAX_ARTIFACT_FILES} files`);
+  const limits = snapshotLimits(profile);
+  const files = await listFiles(root, root, { entries: 0, limits });
   let totalBytes = 0;
+  const buffer = Buffer.alloc(64 * 1024);
   for (const path of files) {
-    const content = await readFile(path);
-    totalBytes += content.byteLength;
-    if (totalBytes > MAX_ARTIFACT_BYTES) throw new Error(`fixture exceeds ${MAX_ARTIFACT_BYTES} bytes`);
-    hash.update(relative(root, path).split(sep).join('/')).update('\0').update(content).update('\0');
+    const before = await lstat(path), handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const during = await handle.stat();
+      if (!during.isFile() || before.isSymbolicLink() || before.dev !== during.dev || before.ino !== during.ino ||
+        totalBytes + during.size > limits.bytes) throw Error('fixture changed or exceeded its byte budget');
+      hash.update(relative(root, path).split(sep).join('/')).update('\0');
+      let read = 0;
+      while (true) {
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        if (!bytesRead) break;
+        read += bytesRead; totalBytes += bytesRead;
+        if (read > during.size || totalBytes > limits.bytes) throw Error('fixture changed or exceeded its byte budget');
+        hash.update(buffer.subarray(0, bytesRead));
+      }
+      const after = await handle.stat(), afterPath = await lstat(path);
+      if (read !== during.size || afterPath.isSymbolicLink() || [before, after, afterPath].some((stat) =>
+        ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].some((field) => stat[field] !== during[field]))) throw Error('fixture changed while hashing');
+      hash.update('\0');
+    } finally { await handle.close(); }
   }
   return `sha256:${hash.digest('hex')}`;
 }

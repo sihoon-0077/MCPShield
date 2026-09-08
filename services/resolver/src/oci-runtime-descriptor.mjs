@@ -3,8 +3,10 @@ import { posix } from 'node:path';
 import * as tar from 'tar';
 import { canonicalJson } from '../../scanner/src/evidence.mjs';
 import { validateRuntimePlatform } from './runtime-descriptor.mjs';
+import { OCI_SOURCE_BUDGET_PROFILE, snapshotLimits } from '../../scanner/src/snapshot.mjs';
 
-export const OCI_RUNTIME_LIMITS = Object.freeze({ files: 20_000, expandedBytes: 128 * 1024 * 1024, archiveBytes: 160 * 1024 * 1024 });
+export const OCI_RUNTIME_LIMITS = Object.freeze({ files: 50_000, expandedBytes: 512 * 1024 * 1024, archiveBytes: 512 * 1024 * 1024 });
+export { OCI_SOURCE_BUDGET_PROFILE } from '../../scanner/src/snapshot.mjs';
 export const ociHash = (value) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
 const sha = /^sha256:[a-f0-9]{64}$/;
 const exact = (value, fields) => value && !Array.isArray(value) && Object.keys(value).sort().join() === [...fields].sort().join();
@@ -104,9 +106,15 @@ export function resolveOciEntrypoint(filesystem, requestedPath) {
 
 export function hashOciRuntimeDescriptor(value) {
   const fields = ['schemaVersion', 'profile', 'stage', 'sourceTreeDigest', 'sourceIndexDigest', 'manifestDigest', 'configDigest',
-    'platform', 'finalImageDigest', 'imageDigestKind', 'rootfsDigest', 'entrypoint', 'argv', 'workingDirectory', 'environmentDigest', 'toolSurfaceHash', 'policy'];
+    'platform', 'finalImageDigest', 'imageDigestKind', 'rootfsDigest', 'entrypoint', 'argv', 'workingDirectory', 'environmentDigest', 'toolSurfaceHash', 'policy',
+    'budgetProfile', 'sourceBytes', 'layerArchiveBytes', 'exportArchiveBytes'];
   if (!exact(value, fields) || value.schemaVersion !== 'mcpshield.oci-runtime.v1' || value.profile !== 'oci-container-v1' ||
     !['IMPORTED', 'OBSERVED'].includes(value.stage) || value.imageDigestKind !== 'DOCKER_IMAGE_CONFIG_ID') fail('OCI_RUNTIME_DESCRIPTOR_INVALID');
+  if (value.budgetProfile !== OCI_SOURCE_BUDGET_PROFILE || !Number.isSafeInteger(value.sourceBytes) || value.sourceBytes < 1 ||
+    value.sourceBytes > snapshotLimits(OCI_SOURCE_BUDGET_PROFILE).bytes ||
+    !Number.isSafeInteger(value.layerArchiveBytes) || value.layerArchiveBytes < 0 ||
+    !Number.isSafeInteger(value.exportArchiveBytes) || value.exportArchiveBytes < 1024 ||
+    value.layerArchiveBytes + value.exportArchiveBytes > OCI_RUNTIME_LIMITS.archiveBytes) fail('OCI_RUNTIME_BUDGET_INVALID');
   for (const field of ['sourceTreeDigest', 'sourceIndexDigest', 'manifestDigest', 'configDigest', 'finalImageDigest', 'rootfsDigest', 'environmentDigest']) if (!sha.test(value[field])) fail('OCI_RUNTIME_DIGEST_INVALID');
   validateRuntimePlatform(value.platform);
   if (value.configDigest !== value.finalImageDigest || !exact(value.entrypoint, ['requestedPath', 'resolvedPath', 'contentDigest', 'linkChainDigest']) ||
