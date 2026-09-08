@@ -119,7 +119,23 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
     await failPreparation(store, job, owner, code, /TIMEOUT|UNAVAILABLE|WORKER_LOST|RATE_LIMIT|ECONN|ENOTFOUND|TRANSIENT/.test(code));
   } finally {
     // Cleanup only the closure helper's own random tag. A committed new row owns it thereafter.
-    if (!transferred && cleanupSafe) try { await output?.cleanup?.(); } catch { /* no raw Docker errors or private metadata in logs */ }
+    if (!transferred) {
+      let attention = cleanupSafe ? undefined : "PREPARATION_CLEANUP_COMMIT_UNCERTAIN";
+      if (cleanupSafe) try { await output?.cleanup?.(); } catch { attention = "PREPARATION_CLEANUP_FAILED"; }
+      if (attention) {
+        // Keep a private exact target for operator recovery; do not add an automatic GC
+        // that could race a committed owner. Public events contain no Docker text or tag.
+        const tag = typeof output?.runtimeTag === "string" && /^mcpshield-(?:oci|runtime)-[a-f0-9-]{36}:local$/.test(output.runtimeTag) ? output.runtimeTag : null;
+        const cleanupId = hash({ preparationId: job.preparationId, tag, code: attention });
+        try {
+          await store.forTenant(job.tenantId, async tx => {
+            await tx.put(job.tenantId, "runtimeCleanup", cleanupId, { cleanupId, preparationId: job.preparationId, runtimeTag: tag,
+              status: cleanupSafe ? "OPERATOR_RETRY_REQUIRED" : "COMMIT_OWNERSHIP_RECHECK_REQUIRED", code: attention, createdAt: new Date().toISOString() });
+            await tx.event(job.tenantId, job.sourceReleaseId, "preparation.cleanup.attention", { cleanupId, preparationId: job.preparationId, code: attention }, job.traceId);
+          });
+        } catch { console.error(JSON.stringify({ event: "preparation.cleanup.attention", preparationId: job.preparationId, cleanupId, code: "PREPARATION_CLEANUP_RECORD_UNAVAILABLE" })); }
+      }
+    }
   }
   return true;
 }

@@ -177,12 +177,22 @@ test("OCI worker creates distinct encrypted identities, preserves borrowed image
     await request("duplicate-owned"); await runPreparationWorkerOnce(store, options);
     assert.equal(cleanups, 1, "the duplicate helper owns only its new UUID tag");
     assert.equal((await store.get(tenant, "release", derived!.releaseId))?.runtimeOwnership, "BORROWED");
+    options.prepareOciRuntime = async input => ({ ...output(input, true), cleanup: async () => { throw new Error("private Docker error must never escape"); } });
+    const cleanupJob = (await request("duplicate-cleanup-failed")).json().preparation.preparationId;
+    await runPreparationWorkerOnce(store, options);
+    assert.equal((await preparations(store, tenant, cleanupJob))[0].status, "COMPLETED");
+    const [pendingCleanup] = await store.list(tenant, "runtimeCleanup");
+    assert.equal(pendingCleanup.code, "PREPARATION_CLEANUP_FAILED"); assert.match(pendingCleanup.runtimeTag, /^mcpshield-oci-/);
+    assert.equal(pendingCleanup.status, "OPERATOR_RETRY_REQUIRED");
+    const publicEvents = await app.inject({ url: "/v1/events", headers: { authorization: `Bearer ${reader}` } });
+    assert.ok(publicEvents.body.includes("PREPARATION_CLEANUP_FAILED"));
+    assert.doesNotMatch(publicEvents.body, /mcpshield-oci-|private Docker error|runtimeTag/);
     options.scanOciRuntime = async input => { assert.equal(input.expectedDescriptorDigest, fixture.binding.descriptorDigest); return output(input, false); };
     const rescan = () => app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": randomUUID() },
       payload: { releaseId: derived!.releaseId, policyHash: hash(ociPolicy) } });
     const second = await rescan(); assert.equal(second.statusCode, 202);
     await runControlWorkerOnce(store, options); assert.equal((await store.scan(tenant, second.json().scan.scanId))?.result?.verdict, "ABSTAIN");
-    assert.equal(inspections, 3, "every borrowed execution rechecks native identity");
+    assert.equal(inspections, 4, "every borrowed execution rechecks native identity");
     options.inspectOciRuntime = async () => { throw new Error("OCI_RUNTIME_IMAGE_MISSING"); };
     const unavailable = await rescan(); await runControlWorkerOnce(store, options);
     assert.equal((await store.scan(tenant, unavailable.json().scan.scanId))?.status, "DEAD_LETTER");
