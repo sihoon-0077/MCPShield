@@ -90,6 +90,28 @@ node --import tsx --test tests/integration/telemetry.test.ts
 
 ## PostgreSQL 백업·복원
 
+### 비공개 S3 증거 저장소
+
+기본 저장소는 로컬 암호화 파일이다. 소유한 비공개 bucket을 준비한 경우에만
+`CONTROL_S3_BUCKET`, `CONTROL_S3_REGION`을 설정한다. AWS SDK의 표준 서버 역할/IAM
+또는 비공개 AWS 자격증명을 사용하며 브라우저에 전달하지 않는다. S3 호환 endpoint는
+`CONTROL_S3_ENDPOINT=https://...`로 명시한다. 기본 SSE-S3 AES256이며,
+KMS 사용 시 `CONTROL_S3_KMS_KEY_ID`를 추가한다. 애플리케이션의 tenant-bound AES-GCM도 유지한다.
+
+bucket은 public access block·versioning·backup 정책을 운영자가 설정하고 검증해야 한다.
+API/worker 역할에는 해당 evidence prefix의 GetObject/PutObject만 부여하고, DeleteObject와
+bucket 관리 권한을 주지 않는다. 조건부 생성은 기존 bytes를 덮어쓰지 않으며, 충돌 시
+기존 암호문을 다시 검증한다. 다운로드는 역할 검사 후 API를 통해서만 제공한다.
+자동 삭제·보존 기간 변경·public presigned URL 발급은 하지 않는다.
+
+`tests/integration/object-storage.test.ts`는 실제 AWS SDK의 서명된 HTTP 요청·SSE/조건부 생성
+헤더·본문 크기와 시간 제한·tenant 암호화·변조를 확인한다. 로컬 계약 서버를 사용하므로
+실제 cloud bucket의 ACL/내구성/복원 또는 KMS를 검증한 결과는 아니다.
+원문에 제시된 MinIO Community 저장소는 2026년에 archive되었으므로 과거 이미지를
+운영 기본값으로 자동 설치하지 않는다. S3 API 호환 경계를 유지한다.
+근거: [조건부 생성](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html),
+[MinIO 공식 저장소](https://github.com/minio/minio).
+
 운영 플랫폼의 암호화 백업/PITR을 우선 사용한다. 접속 비밀번호를 CLI 인자·로그에 넣지 않는다.
 `PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE`, `PGPASSFILE`을 비공개 실행 환경에 설정한다.
 

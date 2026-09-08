@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import type { ControlOptions } from "./control-plane.js";
 import { v2ChainReader } from "./registry-v2-client.js";
 import { V2Relayer } from "./chain-outbox.js";
+import { createS3EvidenceStore } from "../../../packages/object-storage/index.mjs";
 
 export function controlConfig(env = process.env): ControlOptions | undefined {
   if (env.CONTROL_PLANE_ENABLED !== "true") return undefined;
@@ -25,6 +26,9 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
     artifactPath: env.CONTROL_ARTIFACT_PATH ?? resolve("data/control-artifacts"),
     evidencePath: env.CONTROL_EVIDENCE_PATH ?? resolve("data/control-evidence"),
     evidenceKey: env.CONTROL_EVIDENCE_KEY!,
+    evidenceStore: env.CONTROL_S3_BUCKET ? createS3EvidenceStore({ bucket: env.CONTROL_S3_BUCKET,
+      region: env.CONTROL_S3_REGION ?? "", endpoint: env.CONTROL_S3_ENDPOINT,
+      kmsKeyId: env.CONTROL_S3_KMS_KEY_ID, allowLoopbackHttp: env.CONTROL_S3_ALLOW_LOOPBACK_HTTP === "true" }) : undefined,
     signingKey: env.CONTROL_SIGNING_KEY?.replace(/\\n/g, "\n"), signingKeyId: env.CONTROL_SIGNING_KEY_ID,
     scannerOptions: { sandbox: env.CONTROL_SANDBOX_MODE === "docker" ? "docker" : undefined, allowRemoteAi,
       ...(allowRemoteAi ? { aiProvider: aiProvider as "custom" | "openai", aiModel: env.CONTROL_AI_MODEL, aiUrl: env.CONTROL_AI_URL, aiToken, aiTimeoutMs } : {}) },

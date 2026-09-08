@@ -5,6 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2.js";
 import { ControlStore, type ScanJob } from "./control-store.js";
 import { currentTraceId, traceHeaders, withSpan, recordAdmission } from "../../../packages/telemetry/index.mjs";
+import type { EvidenceObjectStore } from "../../../packages/object-storage/index.mjs";
 import { defaultPolicy, validPolicy } from "./control-policy.js";
 import { registerChainRoutes } from "./chain-control.js";
 import { enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
@@ -13,6 +14,7 @@ export { defaultPolicy } from "./control-policy.js";
 export type Credential = { token: string; tenantId: string; role: "reader" | "operator" | "admin" };
 export interface ControlOptions {
   databaseUrl?: string; credentials: Credential[]; artifactPath: string; evidencePath: string; evidenceKey: string;
+  evidenceStore?: EvidenceObjectStore;
   signingKey?: string; signingKeyId?: string;
   resolveArtifact?: (input: Record<string, any>) => Promise<Record<string, any>>;
   scanArtifact?: (input: Record<string, any>) => Promise<Record<string, any>>;
@@ -37,6 +39,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
   const signingKey = options.signingKey ? createPrivateKey(options.signingKey) : undefined;
   if (signingKey && (signingKey.asymmetricKeyType !== "ed25519" || !options.signingKeyId)) throw new Error("Ed25519 signing key and key ID required");
   app.addHook("onClose", () => store.close());
+  if (options.evidenceStore) app.addHook("onClose", async () => options.evidenceStore!.close());
   if (options.v2Relayer) app.addHook("onClose", async () => options.v2Relayer!.close());
   if (options.chainDecision && "close" in options.chainDecision) app.addHook("onClose", async () => (options.chainDecision as any).close());
   for (const tenant of new Set(options.credentials.map((c) => c.tenantId))) {
@@ -230,19 +233,27 @@ function publicScan({ tenantId: _tenant, leaseOwner: _owner, request: _request, 
 }
 export async function saveEvidence(options: ControlOptions, tenantId: string, bundle: Record<string, any>) {
   const content = Buffer.from(canonical(bundle));
+  if (content.length > 32 * 1024 * 1024 - 28) throw err("EVIDENCE_SIZE_LIMIT", 413);
   const key = createHash("sha256").update(tenantId).update(content).digest("hex");
   const nonce = randomBytes(12), cipher = createCipheriv("aes-256-gcm", Buffer.from(options.evidenceKey, "hex"), nonce);
   cipher.setAAD(Buffer.from(`${tenantId}:${key}`));
   const ciphertext = Buffer.concat([cipher.update(content), cipher.final()]);
-  await mkdir(options.evidencePath, { recursive: true });
-  try { await writeFile(resolve(options.evidencePath, `${key}.bin`), Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]), { flag: "wx", mode: 0o600 }); }
-  catch (error: any) { if (error.code !== "EEXIST") throw error; }
+  const bytes = Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]);
+  let created;
+  if (options.evidenceStore) created = await options.evidenceStore.put(key, bytes);
+  else {
+    await mkdir(options.evidencePath, { recursive: true });
+    try { await writeFile(resolve(options.evidencePath, `${key}.bin`), bytes, { flag: "wx", mode: 0o600 }); created = true; }
+    catch (error: any) { if (error.code !== "EEXIST") throw error; created = false; }
+  }
+  // An existing object is not proof of success: verify it before a retry becomes READY.
+  if (!created) await loadEvidence(options, tenantId, key, bundle.manifest?.root);
   return key;
 }
 export async function loadEvidence(options: ControlOptions, tenantId: string, key: string, expectedRoot?: string) {
   if (!/^[0-9a-f]{64}$/.test(key)) throw err("INVALID_EVIDENCE_KEY");
   try {
-    const bytes = await readFile(resolve(options.evidencePath, `${key}.bin`));
+    const bytes = options.evidenceStore ? await options.evidenceStore.get(key) : await readFile(resolve(options.evidencePath, `${key}.bin`));
     const decipher = createDecipheriv("aes-256-gcm", Buffer.from(options.evidenceKey, "hex"), bytes.subarray(0, 12));
     decipher.setAuthTag(bytes.subarray(12, 28)); decipher.setAAD(Buffer.from(`${tenantId}:${key}`));
     const content = Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]);
@@ -254,5 +265,8 @@ export async function loadEvidence(options: ControlOptions, tenantId: string, ke
       if (!verify(bundle, expectedRoot)) throw err("EVIDENCE_INTEGRITY_MISMATCH");
     }
     return bundle;
-  } catch { throw err("EVIDENCE_INTEGRITY_MISMATCH", 409); }
+  } catch (error: any) {
+    if (["S3_EVIDENCE_UNAVAILABLE", "S3_EVIDENCE_TIMEOUT"].includes(error?.message)) throw err(error.message, 503);
+    throw err("EVIDENCE_INTEGRITY_MISMATCH", 409);
+  }
 }

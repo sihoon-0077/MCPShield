@@ -46,6 +46,7 @@
     "stack:scan": "docker compose --profile scan run --rm scanner"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1127.0",
     "@fastify/cors": "^11.1.0",
     "@fastify/rate-limit": "^10.3.0",
     "@modelcontextprotocol/node": "2.0.0",

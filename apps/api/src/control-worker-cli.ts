@@ -23,4 +23,4 @@ try {
     if (process.argv.includes("--once")) break;
     if (!worked) await setTimeout(1000);
   }
-} finally { await store.close(); options.v2Relayer?.close(); if (options.chainDecision && "close" in options.chainDecision) (options.chainDecision as any).close(); }
+} finally { await store.close(); options.evidenceStore?.close(); options.v2Relayer?.close(); if (options.chainDecision && "close" in options.chainDecision) (options.chainDecision as any).close(); }
