@@ -8,7 +8,11 @@ export async function indexReceiptAnchors(store: ControlStore, client: ReceiptRe
   const observe = async (tenantId: string, id: string, document: Record<string, any>, ledger = false) => {
     const [action] = await store.query("SELECT submission_trace_parent,trace_parent FROM cp_chain_actions WHERE action_id = ? AND tenant_id = ? AND chain_id = ? AND registry_address = ?",
       [document.actionId ?? "", tenantId, client.chainId, client.registryAddress.toLowerCase()]);
-    return withSpan("indexer.receipt", { "mcpshield.chain_id": client.chainId }, () => refreshReceipt(store, client, tenantId, id, ledger),
+    return withSpan("indexer.receipt", { "mcpshield.chain_id": client.chainId }, async () => {
+      const current = await refreshReceipt(store, client, tenantId, id, ledger);
+      if (current.assurance === "ORPHANED") await client.rewindOrphaned(store, tenantId, current);
+      return current;
+    },
       { traceparent: action?.submission_trace_parent ?? action?.trace_parent ?? undefined });
   };
   // ponytail: O(n) canonical-receipt audit, pages bound memory. Add indexed log ranges if history polling becomes costly.

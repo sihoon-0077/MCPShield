@@ -216,6 +216,10 @@ broadcast/mined but not yet N-deep, `CONFIRMED` requires a fresh canonical recei
 exact calldata and expected event. `ORPHANED` preserves an observed reorg in audit
 history; recovery rebroadcasts identical raw bytes. RPC failure returns 503, never
 stale `CONFIRMED`. `queueStatus` is separate: outbox `COMPLETED` means mined, not final.
+The receipt indexer can rewind a verified orphan even outside the generic recent-100
+reconciliation window. It compares the exact tenant/domain/action/hash/raw bytes/nonce
+and decoded payload, rechecks canonical absence, then conditionally updates only an
+unleased `COMPLETED` action. Failed or replaced payloads and active leases are untouched.
 Same root cannot be reassigned to another tenant, ledger or contract domain. Evidence
 uses the existing tenant-bound AES-GCM disk/S3 helper; readers cannot fetch plaintext.
 

@@ -11,7 +11,7 @@ import { receiptAnchorDomain, receiptBatchTypes } from "../../packages/contracts
 import { ReceiptRelayer } from "../../apps/api/src/receipt-relayer.js";
 import { ControlStore } from "../../apps/api/src/control-store.js";
 import { buildApp } from "../../apps/api/src/app.js";
-import { runChainActionOnce, reconcileV2Actions } from "../../apps/api/src/chain-outbox.js";
+import { runChainActionOnce } from "../../apps/api/src/chain-outbox.js";
 import { indexReceiptAnchors } from "../../apps/indexer/src/receipt-indexer.js";
 import { anchorLocalReceipts } from "../../apps/validator/src/receipt-writer.js";
 // @ts-expect-error Gateway receipt implementation is shared ESM JavaScript.
@@ -99,11 +99,39 @@ test("real receipt API/outbox/indexer: tenant ACL, signed checkpoint, N confirma
     assert.equal((await post(`${path}/anchor`, { payload: template.payload, signature })).action.actionId, action.actionId);
     const [raw] = await store.query("SELECT raw_tx,nonce FROM cp_chain_actions WHERE action_id = ?", [action.actionId]);
     assert.ok(raw.raw_tx); assert.equal((await relayer.provider.getTransaction(confirmedTx.txHash))!.data.includes(Buffer.from("synthetic_write_tool").toString("hex")), false);
+    // Explicit SQL history fixtures put this real transaction beyond the generic recent-100 cutoff.
+    // The transaction being orphaned and recovered below still executes on the actual local EVM.
+    for (let i = 0; i < 101; i++) await store.query(`INSERT INTO cp_chain_actions(action_id,tenant_id,kind,payload,state,chain_id,relayer_address,registry_address,tx_hash,created_at,updated_at)
+      VALUES(?,?,'ANCHOR_RECEIPTS','{}','COMPLETED',?,?,?,?,?,?)`, [id(`synthetic-history-${i}`), "tenant-a", 1337, relayer.signer.address.toLowerCase(), deployment.registryAddress.toLowerCase(), id(`synthetic-history-tx-${i}`), "2030-01-01T00:00:00.000Z", "2030-01-01T00:00:00.000Z"]);
+    const cutoff = await store.query("SELECT action_id FROM cp_chain_actions WHERE chain_id = ? AND registry_address = ? AND state = 'COMPLETED' ORDER BY updated_at DESC LIMIT 100", [1337, deployment.registryAddress.toLowerCase()]);
+    assert.equal(cutoff.some((entry) => entry.action_id === action.actionId), false);
     await chain.provider.request({ method: "evm_revert", params: [snapshot] });
+    await store.query("UPDATE cp_chain_actions SET lease_owner = 'synthetic-active-worker',lease_expires_at = ? WHERE action_id = ?", [new Date(Date.now() + 60000).toISOString(), action.actionId]);
     await indexReceiptAnchors(store, relayer);
-    assert.equal((await request("GET", path)).json().batch.assurance, "ORPHANED");
+    const orphaned = (await request("GET", path)).json().batch;
+    assert.equal(orphaned.assurance, "ORPHANED");
     assert.ok((await store.events("tenant-a")).some((event) => event.eventName === "receipt.batch.orphaned"));
-    assert.equal(await reconcileV2Actions(store, relayer), 1);
+    assert.equal((await store.query("SELECT state FROM cp_chain_actions WHERE action_id = ?", [action.actionId]))[0].state, "COMPLETED", "active lease must not be rewound");
+    await store.query("UPDATE cp_chain_actions SET lease_owner = NULL,lease_expires_at = NULL WHERE action_id = ?", [action.actionId]);
+    assert.equal(await relayer.rewindOrphaned(store, "tenant-b", orphaned), false);
+    assert.equal(await relayer.rewindOrphaned(store, "tenant-a", { ...orphaned, registryAddress: other.address.toLowerCase() }), false);
+    assert.equal(await relayer.rewindOrphaned(store, "tenant-a", { ...orphaned, root: id("wrong-root") }), false);
+    assert.equal(await relayer.rewindOrphaned(store, "tenant-a", { ...orphaned, txHash: id("wrong-tx") }), false);
+    const [originalAction] = await store.query("SELECT payload FROM cp_chain_actions WHERE action_id = ?", [action.actionId]);
+    await store.query("UPDATE cp_chain_actions SET payload = '{}' WHERE action_id = ?", [action.actionId]);
+    assert.equal(await relayer.rewindOrphaned(store, "tenant-a", orphaned), false);
+    await store.query("UPDATE cp_chain_actions SET payload = ?,raw_tx = '0x00' WHERE action_id = ?", [originalAction.payload, action.actionId]);
+    assert.equal(await relayer.rewindOrphaned(store, "tenant-a", orphaned), false);
+    await store.query("UPDATE cp_chain_actions SET raw_tx = ?,state = 'FAILED' WHERE action_id = ?", [raw.raw_tx, action.actionId]);
+    assert.equal(await relayer.rewindOrphaned(store, "tenant-a", orphaned), false);
+    await store.query("UPDATE cp_chain_actions SET state = 'NEW' WHERE action_id = ?", [action.actionId]);
+    assert.equal(await relayer.rewindOrphaned(store, "tenant-a", orphaned), false);
+    await store.query("UPDATE cp_chain_actions SET state = 'COMPLETED',nonce = ? WHERE action_id = ?", [raw.nonce + 1000, action.actionId]);
+    assert.equal(await relayer.rewindOrphaned(store, "tenant-a", orphaned), false);
+    await store.query("UPDATE cp_chain_actions SET nonce = ? WHERE action_id = ?", [raw.nonce, action.actionId]);
+    await indexReceiptAnchors(store, relayer);
+    assert.equal((await store.query("SELECT state FROM cp_chain_actions WHERE action_id = ?", [action.actionId]))[0].state, "PREPARED");
+    assert.equal(await relayer.rewindOrphaned(store, "tenant-a", orphaned), false, "targeted rewind is idempotent");
     await chain.provider.request({ method: "evm_increaseTime", params: [2] });
     await settle(action.actionId); await mine(); await indexReceiptAnchors(store, relayer);
     const recovered = (await request("GET", path)).json().batch;
