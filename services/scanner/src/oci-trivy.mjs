@@ -50,9 +50,11 @@ export async function readTrivyDatabaseIdentity({ databaseDir, snapshotDir, sign
 }
 
 export function assessTrivyDocuments(report, sbom, imageDigest) {
+  // Native Trivy 0.74 emits 1.7; the consumed component name/group/version
+  // fields retain their types: https://cyclonedx.org/schema/bom-1.7.schema.json
   if (report?.SchemaVersion !== 2 || report.ArtifactType !== 'container_image' || report.Metadata?.ImageID !== imageDigest ||
     !Array.isArray(report.Results) || report.Results.length > 1024 || sbom?.bomFormat !== 'CycloneDX' ||
-    !['1.4', '1.5', '1.6'].includes(sbom.specVersion) || !Array.isArray(sbom.components) || sbom.components.length > 50_000) throw Error('OCI_TRIVY_REPORT_IDENTITY_INVALID');
+    !['1.4', '1.5', '1.6', '1.7'].includes(sbom.specVersion) || !Array.isArray(sbom.components) || sbom.components.length > 50_000) throw Error('OCI_TRIVY_REPORT_IDENTITY_INVALID');
   if (report.Results.some((result) => !result || typeof result !== 'object' ||
     result.Packages !== undefined && !Array.isArray(result.Packages) || result.Vulnerabilities !== undefined && !Array.isArray(result.Vulnerabilities)) ||
     sbom.components.some((item) => !item || typeof item.name !== 'string' || item.version !== undefined && typeof item.version !== 'string' ||

@@ -112,6 +112,24 @@ test('Trivy reports require exact image and complete detected-package CycloneDX 
   assert.throws(() => assessTrivyDocuments(invalid, sbom(), imageDigest), /REPORT_INVALID/);
 });
 
+test('CycloneDX 1.4 through native Trivy 1.7 retain exact component coverage; unknown versions and malformed fields fail closed', () => {
+  for (const specVersion of ['1.4', '1.5', '1.6', '1.7']) {
+    assert.equal(assessTrivyDocuments(packageReport(), { ...sbom(), specVersion }, imageDigest).status, 'COMPLETE');
+  }
+  for (const specVersion of ['1.3', '1.8', '2.0', '', 1.7, null]) {
+    assert.throws(() => assessTrivyDocuments(packageReport(), { ...sbom(), specVersion }, imageDigest), /IDENTITY_INVALID/);
+  }
+  for (const invalid of [{ name: 1 }, { group: [] }, { version: 1 }]) {
+    const bom = { ...sbom(), specVersion: '1.7' };
+    Object.assign(bom.components[0], invalid);
+    assert.throws(() => assessTrivyDocuments(packageReport(), bom, imageDigest), /REPORT_INVALID/);
+  }
+  const bom = { ...sbom(), specVersion: '1.7' };
+  delete bom.components[0].version;
+  bom.components[0].versionRange = 'vers:generic/>=1.0.0';
+  assert.equal(assessTrivyDocuments(packageReport(), bom, imageDigest).packageListComplete, false);
+});
+
 test('OCI review failure never becomes READY or reuses npm approval', async () => {
   const result = await reviewOciImage({ descriptor: {}, expectedDescriptorDigest: imageDigest, trust: {} });
   assert.equal(result.status, 'INCONCLUSIVE'); assert.equal(result.approvalVerdict, 'ABSTAIN');
