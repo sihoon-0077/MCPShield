@@ -37,6 +37,49 @@ Compose 콘솔 주소는 `http://127.0.0.1:3000/console`이다. 로컬 전용 HT
 `CONTROL_SANDBOX_MODE=docker`와 동일 DB·비공개 artifact/evidence 저장소를 설정한다.
 테스트넷과 외부 AI는 이 명령으로 생성되지 않는다.
 
+## 준비된 npm 이미지의 비공개 전달
+
+`/v1/releases/:sourceReleaseId/prepare`는 원본을 수정하지 않고 실행 환경이 포함된
+별도 릴리스를 만든다. `DERIVED_RELEASE_CREATED`는 설치·식별 완료이며 승인이 아니다.
+`/v1/releases/:derivedReleaseId/gateway-config`는 operator 전용 비공개 설정이다.
+브라우저·로그에 서명 키를 넣지 않는다. 이 설정에는 도구 원문이 있을 수 있으므로 공개 첨부하지 않는다.
+
+현재 실행 프로필은 Linux Docker의 **로컬 image config ID**를 고정한다. registry manifest digest와
+다른 식별자이므로 `sha256:...`만 원격 registry 주소처럼 사용하지 않는다. 동일한 Docker daemon에서
+worker와 Gateway를 실행하거나, 검증자·Gateway의 사설 호스트로 정확한 이미지를 전달한다.
+표준 `docker image save/load`를 사용하며 별도 이미지 전송 프로토콜은 만들지 않는다.
+
+아래 `<FINAL_IMAGE_CONFIG_ID>`는 신뢰된 operator 설정의 `binding.finalImageDigest`와 일치해야 한다.
+먼저 충분한 디스크 여유를 확인하고 권한이 제한된 **새 파일 경로**를 사용한다. 기존 파일에 덮어쓰지 않는다.
+
+```sh
+docker image inspect <FINAL_IMAGE_CONFIG_ID> --format '{{.Id}} {{.Os}} {{.Architecture}}'
+docker image save --output /private/new-release-runtime.tar <FINAL_IMAGE_CONFIG_ID>
+sha256sum /private/new-release-runtime.tar
+```
+
+이미지 archive·checksum·Gateway 설정은 인증된 비공개 전달 수단으로 별도 검증자/Gateway 호스트에
+전달한다. checksum은 전송 무결성 확인이며 보낸 사람의 신원이나 안전성 증명이 아니다.
+후보 소스·의존성·라이선스가 포함되므로 CI 공개 artifact나 공개 registry로 자동 게시하지 않는다.
+
+```sh
+sha256sum /private/new-release-runtime.tar
+docker image load --input /private/new-release-runtime.tar
+docker image inspect <FINAL_IMAGE_CONFIG_ID> --format '{{.Id}} {{.Os}} {{.Architecture}}'
+node apps/gateway/src/index.mjs stdio --prepared-identity /private/gateway.json
+```
+
+받는 쪽은 archive checksum과 고정 CID·OS·architecture를 독립 확인한다. `load` 자체는 후보를
+실행하지 않는다. 검증자는 자신의 Docker에서 실제 파일을 읽어 closure·entrypoint를 다시 확인하며,
+행동·AI의 독립성은 별도 재실행 서명 게이트가 필요하다. 단순히 API가 준 `PASS`를 서명하지 않는다.
+Gateway는 정확한 release/binding/tool hash를 확인하고, 실행 전과 각 도구 호출 전 서명된 상태를 조회한다.
+잘못된 CID·구성·서명·폐기 상태면 실행하지 않는다. 이미지가 없을 때 자동 pull하지 않는다.
+
+실행 프로필은 network-none·read-only·nonroot·128MiB/0.5CPU다. 인터넷 메일/CRM 접속이나
+임의 native addon/child process 지원을 의미하지 않는다. 그런 기능은 별도의 제한된 실행 정책,
+증거·재검증·정확한 새 릴리스가 필요하다. 이미지 정리는 참조하는 릴리스와 실행 중 컨테이너를
+확인한 후 operator가 개별 태그로 수행한다. 저장소 전체/전체 Docker 이미지 prune은 사용하지 않는다.
+
 ## 추적과 알림
 
 기본값은 외부 telemetry 전송 없음이다. 추적 ID는 항상 생성·전파한다.
