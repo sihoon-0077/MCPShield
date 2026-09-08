@@ -133,9 +133,18 @@
   폐기 이미지 create/start 0건 및 남은 컨테이너 없음까지 검사한다. 256건 이상인 관측 창은
   누락 가능성 때문에 실패한다. portable 2개 통과·Docker 1개 skip; 실제 Linux 증거는 아직 없다.
 - [Linux CI 34268881754](https://github.com/sihoon-0077/MCPShield/actions/runs/34268881754)는
-  `db5469a` 통합본(100MiB OCI·fallback·prepared 입력 수정)을 실행 중이다.
-  PostgreSQL 및 Node 24는 성공, Node 22 실제 runtime 검사는 진행 중이다.
-  위 `cdeebb7`·`f7bfc46`은 이 실행에 포함되지 않는다. 기존 실행을 취소해 재시작하지 않는다.
+  `db5469a` 통합본에서 PostgreSQL·Node 24·Node 22 일반 회귀/빌드 및 실제 runtime 검사가 성공했다.
+  **100MiB OCI 실제 import/MCP 관측**, prepared worker+별도 검증자 4회 재스캔+V2 정족수,
+  legacy 원본 독립 검증자 Docker 재실행 및 실제 scan→V2→Gateway가 통과했다.
+  AI는 여전히 loopback 계약 stub이고 검증자는 같은 개발 기관이다. OCI는 관측 단계 ABSTAIN이다.
+  전체 실행은 이후 Compose의 dashboard image 빌드에서 실패했다. BFF가 새로 import한 공유
+  identity/binding/surface 모듈이 해당 Dockerfile COPY 목록에 없었다. `278b92c`·`14c6df3`·
+  `7e18f0d`에서 root lock의 의존성, 실제 import 전체 파일과 타입 선언을 포함하고 기존 runtime의
+  OpenSSL 보완을 유지했다. 실제 Docker 빌드 재검증이 필요하며 signed-image/10회 반복은 skipped다.
+  위 `cdeebb7`·`f7bfc46`은 이 실행에 포함되지 않는다.
+- 기존 Railway `/try`와 HTML 요청의 `/mcp`는 각각 HTTP 200을 확인했다.
+  JSON/기본 Accept의 GET `/mcp`는 405이며 서버 코드의 MCP transport/HTML 분기와 일치한다.
+  이는 기존 공개 경로의 HTTP 확인이며 새 master 배포나 MCP 도구 호출 성공 증거는 아니다.
 
 명시적으로 남은 구현/검증은 범용 OCI 전체 검사·독립 서명·Gateway 연결, legacy 독립 재실행의
 실제 Linux 검증, 새 fallback의 최신 전체 회귀 및 서명된 break-glass 감사, 전체 부하·평가 행렬이다.
