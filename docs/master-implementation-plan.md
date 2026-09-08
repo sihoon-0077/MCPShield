@@ -122,6 +122,20 @@
   명시 skip이며 위 Linux 증거와 구분한다. `801e504`는 prepared fullcycle 입력 누락을 수정했고
   portable guard 회귀 1개 통과·Docker 1개 skip이다. 실제 Linux 재실행 전에는 실패 해소로 확정하지 않는다.
   원본 `mcp/main`은 여전히 `6aa370285154f683989f2bf9b219bd2c052e6cee`다.
+- `cdeebb7`: 온전한 VERIFIED view를 조회하는 동안 블록 높이만 상승하고 확정 블록 hash가
+  유지된 경우에만, 원래 RPC deadline 안에서 전체 조회를 한 번 다시 수행한다.
+  두 번째 view도 전체 identity·정책·확정성·시간·블록 hash를 검증한다. 재조직/폐기/반복 이동은
+  오래된 ALLOW나 다른 provider 재시도로 회피하지 않는다. Main 새 Gateway/RPC 회귀 14개 통과,
+  실제 V2 및 benchmark 분류 회귀 8개 통과·Docker 1개 skip, 타입 검사 성공.
+- `f7bfc46`: prepared fullcycle의 Gateway-A/B는 서로 다른 OS 프로세스로 실행한다.
+  private stdin으로 설정을 전달하고 각각의 signed REVOKED 응답을 검사한다.
+  Docker lifecycle 관측은 정상 실행의 create/start를 positive control로 요구하고
+  폐기 이미지 create/start 0건 및 남은 컨테이너 없음까지 검사한다. 256건 이상인 관측 창은
+  누락 가능성 때문에 실패한다. portable 2개 통과·Docker 1개 skip; 실제 Linux 증거는 아직 없다.
+- [Linux CI 34268881754](https://github.com/sihoon-0077/MCPShield/actions/runs/34268881754)는
+  `db5469a` 통합본(100MiB OCI·fallback·prepared 입력 수정)을 실행 중이다.
+  PostgreSQL 및 Node 24는 성공, Node 22 실제 runtime 검사는 진행 중이다.
+  위 `cdeebb7`·`f7bfc46`은 이 실행에 포함되지 않는다. 기존 실행을 취소해 재시작하지 않는다.
 
 명시적으로 남은 구현/검증은 범용 OCI 전체 검사·독립 서명·Gateway 연결, legacy 독립 재실행의
 실제 Linux 검증, 새 fallback의 최신 전체 회귀 및 서명된 break-glass 감사, 전체 부하·평가 행렬이다.
@@ -145,8 +159,8 @@
 |---|---|---|
 | Main | MCPShield-master-main / master/main | 요구사항·인터페이스, 운영·CI, 병합·교차 리뷰·E2E |
 | Security·AI | MCPShield-master-security-ai / master/security-ai | 안전한 수집, 정적·AI·격리 분석, Merkle 증거, 평가 |
-| Blockchain·Backend | MCPShield-master-blockchain-backend / master/backend-prepared | 내구성 작업·권한·정책 API, Trust Plane V2, 재처리 |
-| Frontend·Gateway | MCPShield-master-frontend-gateway / master/frontend-preparation | 서명 캐시·폐기 전파·정책 집행, 운영 UI |
+| Blockchain·Backend | MCPShield-master-blockchain-backend / master/backend-benchmark | 내구성 작업·권한·정책 API, Trust Plane V2, 재처리·실측 |
+| Frontend·Gateway | MCPShield-master-frontend-gateway / master/frontend-admission-fallback | 서명 캐시·폐기 전파·장애 대응·정책 집행, 운영 UI |
 
 1. 기존 시연 회귀 확인, 공통 계약 승인, 요구사항 동결.
 2. 수집·분석 → 영속 저장·정책·검증 → Gateway·운영 UI 연결.
