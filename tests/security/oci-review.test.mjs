@@ -44,6 +44,18 @@ test('OCI base catalogue binds path, ownership, permission and link structure, n
   }
   assert.equal(coverage([...entries, { path: 'app', type: 'Directory' }]).coverage.unsupportedEntries, 1);
   assert.equal(coverage(entries.map((entry) => entry.path === 'bin/runtime' ? { ...entry, mode: 0o4555 } : entry)).coverage.unsupportedEntries, 1);
+  const changedMode = coverage(entries.map((entry) => entry.path === 'bin/runtime' ? { ...entry, mode: 0o4555 } : entry));
+  assert.deepEqual(changedMode.diagnostics, { unsupportedGroups: [{ type: 'File', mode: 0o4555, baseMatch: false, reason: 'SET_ID_BITS', count: 1 }], otherUnsupportedEntries: 0 });
+  const sameSetId = entries.map((entry) => entry.path === 'bin/runtime' ? { ...entry, mode: 0o4555 } : entry);
+  const setIdCatalogue = createOciRuntimeCatalogue({ baseImageDigest: imageDigest, platform, filesystem: inspectOciFilesystem(archive(sameSetId)) });
+  const matchedSetId = inspectOciCoverage(inspectOciFilesystem(archive(sameSetId)), setIdCatalogue);
+  assert.equal(matchedSetId.coverage.sourceClassificationComplete, false);
+  assert.deepEqual(matchedSetId.diagnostics.unsupportedGroups[0], { type: 'File', mode: 0o4555, baseMatch: true, reason: 'SET_ID_BITS', count: 1 });
+  assert.equal(JSON.stringify(changedMode.diagnostics).includes('bin/runtime'), false);
+  const many = coverage([...entries, ...Array.from({ length: 70 }, (_, index) => ({ path: `PRIVATE_PATH_${index}`, type: 'Directory', mode: index }))]);
+  assert.equal(many.diagnostics.unsupportedGroups.length, 64);
+  assert.equal(many.diagnostics.otherUnsupportedEntries, 6);
+  assert.equal(JSON.stringify(many.diagnostics).includes('PRIVATE_PATH'), false);
   const duplicate = [...catalogue.entries, catalogue.entries[0]];
   assert.throws(() => createOciRuntimeCatalogue({ baseImageDigest: imageDigest, platform,
     filesystem: { entries: duplicate, digest: ociHash(canonicalJson(duplicate)) } }), /INVENTORY_INVALID/);

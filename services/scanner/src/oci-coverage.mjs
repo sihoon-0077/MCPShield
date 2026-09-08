@@ -44,11 +44,19 @@ export function inspectOciCoverage(filesystem, catalogue) {
   const sources = new Map((filesystem.reviewSources ?? []).map((source) => [source.path, source]));
   if (sources.size !== (filesystem.reviewSources ?? []).length) throw Error('OCI_REVIEW_SOURCE_DUPLICATE');
   const files = [], classifications = [], issues = new Set();
+  const unsupportedGroups = new Map();
+  let otherUnsupportedEntries = 0;
   let trustedRuntimeFiles = 0, unknownBinaryFiles = 0, unsupportedEntries = 0, omittedSourceFiles = 0;
   for (const entry of filesystem.entries) {
     const baseMatch = base.get(entry.path) === exact(entry);
     if (!['File', 'Directory', 'SymbolicLink', 'Link'].includes(entry.type) || entry.mode & 0o6000 || entry.type !== 'File' && !baseMatch) {
       unsupportedEntries++; issues.add('OCI_UNSUPPORTED_FILESYSTEM_ENTRY');
+      const group = { type: entry.type, mode: entry.mode, baseMatch, reason: !['File', 'Directory', 'SymbolicLink', 'Link'].includes(entry.type)
+        ? 'SPECIAL_ENTRY' : entry.mode & 0o6000 ? 'SET_ID_BITS' : 'BASE_STRUCTURE_CHANGED' };
+      const key = canonicalJson(group), current = unsupportedGroups.get(key);
+      if (current) current.count++;
+      else if (unsupportedGroups.size < 64) unsupportedGroups.set(key, { ...group, count: 1 });
+      else otherUnsupportedEntries++;
       classifications.push({ path: entry.path, kind: 'UNREVIEWED_FILESYSTEM_STRUCTURE_OR_PRIVILEGE', type: entry.type });
     }
     if (entry.type !== 'File') continue;
@@ -75,5 +83,7 @@ export function inspectOciCoverage(filesystem, catalogue) {
   return { coverage: { inventoryComplete: true, trustedRuntimeFiles, reviewableTextFiles: files.length,
     unknownBinaryFiles, unsupportedEntries, omittedSourceFiles, sourceClassificationComplete: !unknownBinaryFiles && !unsupportedEntries && !omittedSourceFiles,
     filesystemObservation: 'STATIC_IMAGE_INVENTORY_NOT_SYSCALL_TRACE', binaryReview: 'EXACT_APPROVED_BASE_PROVENANCE_ONLY', semanticReview: 'NOT_RUN' },
+    // Fixed enum/type/mode/count groups only: never include paths or source in diagnostics.
+    diagnostics: { unsupportedGroups: [...unsupportedGroups.values()], otherUnsupportedEntries },
     issues: [...issues], files, classifications };
 }

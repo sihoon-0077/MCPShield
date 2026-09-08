@@ -101,7 +101,7 @@ export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform,
   const run = (args, size = jsonLimit) => runRuntimeDocker(args, remaining(), size);
   const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-trivy-review-')), input = join(workspace, 'input'), db = join(workspace, 'db');
   const containers = [];
-  let stage = 'DATABASE', contract = null, toolVersion = null;
+  let stage = 'DATABASE', contract = null, toolVersion = null, targetRole = null;
   try {
     const database = await readTrivyDatabaseIdentity({ databaseDir: trust.databaseDir, snapshotDir: db, signal });
     if (database.databaseDigest !== trust.databaseDigest) throw Error('OCI_TRIVY_DATABASE_IDENTITY_MISMATCH');
@@ -128,6 +128,7 @@ export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform,
     toolVersion = /^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/.test(version.Version) ? version.Version : 'OTHER';
     const images = [], documents = [];
     for (const target of [...new Set([baseImageDigest, imageDigest])]) {
+      targetRole = target === baseImageDigest ? 'BASE' : 'CANDIDATE'; contract = null;
       stage = 'IMAGE_SAVE';
       const info = JSON.parse(await run(['image', 'inspect', target, '--format', '{{json .}}'], 128 * 1024));
       if (info.Id !== target || info.Os !== platform.os || info.Architecture !== platform.architecture) throw Error('OCI_TRIVY_IMAGE_IDENTITY_MISMATCH');
@@ -162,7 +163,7 @@ export async function scanOciWithTrivy({ imageDigest, baseImageDigest, platform,
       privateEvidence: { access: 'ENCRYPTED_OPERATOR_EVIDENCE_ONLY', documents } };
   } catch (error) {
     return { status: 'INCONCLUSIVE', issues: [signal.aborted ? 'OCI_TRIVY_TOTAL_TIMEOUT' : /^OCI_[A-Z_]+$/.test(error.message) ? error.message : 'OCI_TRIVY_REVIEW_FAILED'],
-      diagnostics: { stage, ...(contract ? { contract } : {}), ...(toolVersion ? { toolVersion } : {}) }, privateEvidence: null };
+      diagnostics: { stage, targetRole, ...(contract ? { contract } : {}), ...(toolVersion ? { toolVersion } : {}) }, privateEvidence: null };
   } finally {
     for (const container of containers) { try { await runRuntimeDocker(['rm', '-f', container], 5000); } catch { /* exact owned tool container */ } }
     await removeFixtureSnapshot(workspace);

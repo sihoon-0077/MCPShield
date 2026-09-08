@@ -63,7 +63,12 @@ test('actual Linux approved-base OCI safe PASS and canary FAIL are independently
         const sourceReleaseId = '0x' + (variant === 'safe' ? 'a' : 'b').repeat(64), releaseId = 'authored-oci-profile@' + (variant === 'safe' ? '1.0.0' : '1.0.1');
         original = await prepareAndScanOciRuntime({ preparation: { root: fixture.root, sourceTreeDigest: fixture.sourceTreeDigest, platform: fixture.platform },
           sourceReleaseId, releaseId, trust, ai, probePlan: OCI_PROFILE_PROBE_PLAN });
-        const safeDiagnostic = () => JSON.stringify({ variant, analysis: original.analysis, status: original.result?.scanStatus });
+        const safeDiagnostic = () => {
+          const review = JSON.parse(original.bundle?.files?.['oci/image-review.json'] ?? 'null');
+          return JSON.stringify({ variant, analysis: original.analysis, status: original.result?.scanStatus,
+            inventoryDiagnostics: review?.diagnostics,
+            vulnerability: { status: review?.vulnerability?.status, issues: review?.vulnerability?.issues, diagnostics: review?.vulnerability?.diagnostics } });
+        };
         assert.ok(original.binding, safeDiagnostic());
         assert.ok(original.binding.descriptor.layerArchiveBytes + original.binding.descriptor.exportArchiveBytes <= 512 * 1024 * 1024);
         assert.equal(original.result.scanStatus, variant === 'safe' ? 'PASSED' : 'FAILED', safeDiagnostic());
