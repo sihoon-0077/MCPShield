@@ -140,8 +140,9 @@ node --import tsx --test tests/integration/fullcycle-telemetry.test.ts
 5. 잘못된 허용이 관찰되면 캐시를 임의 삭제해 재허용하지 말고 해당 Gateway 사용을 중단한다.
 
 메모리 캐시는 동시 요청의 최신 차단·잘못된 응답 이후 도착한 과거 ALLOW를 폐기한다.
-한 번 서명으로 확인한 `REVOKED`는 tenant·chain·registry·policy·정확한 release에 대해 terminal이다.
-API 주소·토큰·operation·validator-set을 바꿔 받은 과거/새 ALLOW도 이를 되돌리지 못한다.
+한 번 서명으로 확인한 `REVOKED`는 chain·registry·정확한 release에 대해 terminal이다.
+이는 컨트랙트의 전역 `revoked[releaseId]`와 동일한 범위다. 정책·tenant·API 주소·토큰·operation·
+validator-set을 바꿔 받은 과거/새 ALLOW도 이를 되돌리지 못한다.
 메모리는 4,096개 terminal identity를 보존하며 포화 시 폐기를 지우지 않고 추가 허용을 차단한다.
 재시작 후에도 보존하려면 wrapper별 파일 캐시를 사용한다. `.revoked` 비공개 sidecar에는 최초
 서명된 폐기 증거를 별도로 저장하며 ALLOW의 짧은 TTL 이후에도 유지한다. 이 기록을 TTL cleanup이나

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,7 +21,10 @@ const base = { schemaVersion: "1.0.0", keyId: context.keyId, ...context.identity
   observedBlock: 123, blockHash: `0x${"e".repeat(64)}`, issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 30_000).toISOString() };
 const signed = (snapshot) => ({ snapshot, signature: sign(null, Buffer.from(JSON.stringify(Object.fromEntries(Object.keys(snapshot).sort().map((key) => [key, snapshot[key]])))), keys.privateKey).toString("base64url") });
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
-const isolated = (suffix) => ({ context: { ...context, tenantId: `test-${suffix}` }, base: { ...base, tenantId: `test-${suffix}` } });
+const isolated = (suffix) => {
+  const releaseId = `0x${createHash("sha256").update(suffix).digest("hex")}`;
+  return { context: { ...context, identity: { ...context.identity, releaseId } }, base: { ...base, releaseId, reportUrl: `/v1/releases/${releaseId}` } };
+};
 
 test("admission timeout covers a stalled response body and bounds response size", async () => {
   await assert.rejects(admissionFetch("http://127.0.0.1", {}, async () => new Response(new ReadableStream({ start() {} })), 20), /timed out/);
@@ -137,25 +140,29 @@ test("persistent cache has one owner, never reclaims an unknown lock and respect
     await assert.rejects(getSignedAdmission({ ...options, fetchImpl: async () => json(signed(base)) }), /previously revoked/);
     const later = now + 60_000, future = { ...base, issuedAt: new Date(later).toISOString(), expiresAt: new Date(later + 30_000).toISOString() };
     await assert.rejects(getSignedAdmission({ ...options, now: () => later, fetchImpl: async () => json(signed(future)) }), /previously revoked/);
+    const changedScope = { policyHash: `0x${"f".repeat(64)}`, tenantId: "rotated-test-tenant" };
+    await assert.rejects(getSignedAdmission({ ...options, ...changedScope, fetchImpl: async () => json(signed({ ...base, ...changedScope })) }), /previously revoked/);
     const orphan = await open(`${cacheFile}.lock`, "wx", 0o600); await orphan.close();
     await assert.rejects(getSignedAdmission({ ...options, fetchImpl: offline }), /cache is locked/);
     assert.equal(await readFile(`${cacheFile}.lock`, "utf8"), "", "A lock of unknown ownership must remain untouched");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("terminal revocation rejects later re-signed allows across operation, credential and validator rotation", async () => {
+test("terminal revocation rejects later re-signed allows across policy, tenant, operation, credential and validator rotation", async () => {
   const { context, base } = isolated("terminal");
   const options = { ...context, apiBaseUrl: "http://127.0.0.1:3105", timeoutMs: 100, now: () => now, cacheFile: null };
   await getSignedAdmission({ ...options, fetchImpl: async () => json(signed(base)) });
   const denial = signed({ ...base, decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED" });
   assert.equal((await getSignedAdmission({ ...options, fetchImpl: async () => json(denial) })).decision, "BLOCK");
-  for (const changed of [{}, { operationClass: "FINANCIAL" }, { apiToken: "rotated-test-credential" }, { validatorSetVersion: 2 }, { apiBaseUrl: "http://127.0.0.1:3106" }]) {
-    const snapshot = { ...base, operationClass: changed.operationClass ?? base.operationClass, validatorSetVersion: changed.validatorSetVersion ?? base.validatorSetVersion };
+  for (const changed of [{}, { operationClass: "FINANCIAL" }, { apiToken: "rotated-test-credential" }, { validatorSetVersion: 2 }, { apiBaseUrl: "http://127.0.0.1:3106" },
+    { policyHash: `0x${"f".repeat(64)}` }, { tenantId: "rotated-test-tenant" }]) {
+    const snapshot = { ...base, operationClass: changed.operationClass ?? base.operationClass, validatorSetVersion: changed.validatorSetVersion ?? base.validatorSetVersion,
+      policyHash: changed.policyHash ?? base.policyHash, tenantId: changed.tenantId ?? base.tenantId };
     await assert.rejects(getSignedAdmission({ ...options, ...changed, fetchImpl: async () => json(signed(snapshot)) }), /previously revoked/);
   }
-  // A different immutable policy is a different on-chain decision scope.
-  const policyHash = `0x${"f".repeat(64)}`;
-  assert.equal((await getSignedAdmission({ ...options, policyHash, fetchImpl: async () => json(signed({ ...base, policyHash })) })).decision, "ALLOW");
+  // Another explicitly trusted registry is a genuinely different revocation scope.
+  const registryContract = `0x${"f".repeat(40)}`;
+  assert.equal((await getSignedAdmission({ ...options, registryContract, fetchImpl: async () => json(signed({ ...base, registryContract })) })).decision, "ALLOW");
 });
 
 test("a failed cache invalidation retains its ownership lock instead of exposing the old allow", async () => {

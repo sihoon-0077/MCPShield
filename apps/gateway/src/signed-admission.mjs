@@ -9,7 +9,8 @@ const pending = new Map();
 const revoked = new Set();
 let revocationCapacityExceeded = false;
 const canonical = (value) => JSON.stringify(Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]])));
-const revocationKey = (value) => canonical(Object.fromEntries(["tenantId", "releaseId", "artifactDigest", "toolSurfaceHash", "policyHash", "chainId", "registryContract"].map(key => [key, typeof value[key] === "string" && key !== "tenantId" ? value[key].toLowerCase() : value[key]])));
+// ReleaseRegistryV2.revoked[releaseId] is global across policies and tenants.
+const revocationKey = (value) => canonical(Object.fromEntries(["releaseId", "artifactDigest", "toolSurfaceHash", "chainId", "registryContract"].map(key => [key, typeof value[key] === "string" ? value[key].toLowerCase() : value[key]])));
 
 async function readCacheJson(path, optional = false) {
   let file;
@@ -123,7 +124,7 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
       if (storedRevocation?.schemaVersion !== "mcpshield.revocation.v1" || revocationKey(value ?? {}) !== terminalKey || value.decision !== "BLOCK" || value.status !== "REVOKED") throw new Error("Signed revocation journal does not match this wrapper");
       // Terminal chain revocation outlives the short ALLOW TTL and validator-set
       // rotation. Authenticate the old proof at issuance; never reuse it to allow.
-      verifyAdmissionSnapshot(storedRevocation.envelope, { ...context, operationClass: value.operationClass,
+      verifyAdmissionSnapshot(storedRevocation.envelope, { ...context, tenantId: value.tenantId, policyHash: value.policyHash, operationClass: value.operationClass,
         validatorSetVersion: value.validatorSetVersion, now: Date.parse(value.issuedAt) + 1 });
     }
   }
