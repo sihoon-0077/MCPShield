@@ -145,6 +145,11 @@ test("revoked admission, Docker policy drift and start/create failure clean cont
   const asyncDocker = fakeDocker({ startError: "async" }), asyncSnapshot = await createPreparedSnapshot(file, asyncDocker);
   await assert.rejects(asyncSnapshot.spawn(async () => {}), /^Error: PREPARED_DOCKER_START_FAILED$/);
   assert.equal(asyncDocker.commands.filter(args => args[0] === "rm").length, 1);
+  const expiredDocker = fakeDocker(), expiredSnapshot = await createPreparedSnapshot(file, expiredDocker);
+  let admissionAudited = false;
+  await assert.rejects(expiredSnapshot.spawn(async () => { admissionAudited = true; }, () => { throw Error("BREAK_GLASS_EXPIRED"); }), /BREAK_GLASS_EXPIRED/);
+  assert.equal(admissionAudited, true); assert.equal(expiredDocker.starts.length, 0);
+  assert.equal(expiredDocker.commands.filter(args => args[0] === "rm").length, 1);
 }));
 
 test("cleanup refuses a foreign label and cancellation waits for pending create then removes the owned container", async () => withIdentity(async file => {

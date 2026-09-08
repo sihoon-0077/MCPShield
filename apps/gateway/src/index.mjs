@@ -10,7 +10,7 @@ import * as z from "zod/v4";
 import { createArtifactSnapshot } from "./artifact.mjs";
 import { runtimeSurfaceGuards } from "./protocol-guard.mjs";
 export { runtimeSurfaceGuards, ToolSurfaceDriftError } from "./protocol-guard.mjs";
-import { admissionFetch, getSignedAdmission } from "./signed-admission.mjs";
+import { admissionFetch, getSignedAdmission, AdmissionTransportUnavailableError } from "./signed-admission.mjs";
 import { currentTraceId, recordAdmission, withSpan } from "../../../packages/telemetry/index.mjs";
 
 const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED"]);
@@ -19,6 +19,7 @@ const REASONS = new Set(["RELEASE_VERIFIED", "RELEASE_UNVERIFIED", "RELEASE_QUAR
 const DECISION_KEYS = new Set(["schemaVersion", "releaseId", "decision", "releaseStatus", "reasonCode", "checkedAt", "source"]);
 const RUNTIME_GUARD = fileURLToPath(new URL("./runtime-guard.cjs", import.meta.url));
 const MCP_LANDING_PAGE = readFileSync(new URL("./mcp-landing.html", import.meta.url));
+const emergencySessions = new WeakMap();
 
 export class AdmissionBlockedError extends Error {
   constructor(decision) {
@@ -106,8 +107,13 @@ function childEnvironment() {
 }
 
 async function spawnSnapshot(snapshot, options) {
-  if (snapshot.prepared) return snapshot.spawn(() => admitSnapshot(snapshot, options));
+  const emergency = emergencySessions.get(snapshot);
+  if (snapshot.prepared) return snapshot.spawn(async () => {
+    const decision = await admitSnapshot(snapshot, options);
+    emergency?.claim(decision);
+  }, () => emergency?.assertCurrent());
   if (!process.allowedNodeEnvironmentFlags.has("--permission")) throw new Error("Node permission model is required");
+  if (emergency) emergency.claim(await admitSnapshot(snapshot, options));
   const child = spawn(process.execPath, ["--permission", `--allow-fs-read=${snapshot.root}`,
     `--allow-fs-read=${RUNTIME_GUARD}`, "--disallow-code-generation-from-strings",
     "--require", RUNTIME_GUARD, snapshot.entrypoint],
@@ -127,8 +133,21 @@ function terminateChild(child) {
 
 function childSurfaceGuards(child, snapshot, options) {
   return runtimeSurfaceGuards(snapshot.toolSurfaceHash, snapshot.tools, recheckSession(snapshot, options), {
+    beforeRequest: message => emergencySessions.get(snapshot)?.inspectRequest(message),
+    beforeForward: () => emergencySessions.get(snapshot)?.assertCurrent(),
     sendInternal: (message) => new Promise((resolve, reject) => child.stdin.write(`${JSON.stringify(message)}\n`, (error) => error ? reject(error) : resolve())),
   });
+}
+
+function emergencyExpiry(child, snapshot) {
+  const session = emergencySessions.get(snapshot);
+  if (!session) return;
+  const timer = setTimeout(() => {
+    terminateChild(child);
+    // Killing `docker start` alone does not stop its container.
+    void snapshot.cleanup().catch(() => log("prepared_cleanup_failed", { code: "PREPARED_CONTAINER_CLEANUP_FAILED" }));
+  }, Math.max(1, Math.ceil(session.remainingMs())));
+  timer.unref(); child.once("close", () => clearTimeout(timer));
 }
 
 function stderrSummary(chunk) {
@@ -148,20 +167,54 @@ async function admittedSnapshot(artifactDir, options) {
   try {
     const configuredId = options.controlReleaseId ?? process.env.MCPSHIELD_CONTROL_RELEASE_ID;
     if (snapshot.prepared && configuredId && configuredId !== snapshot.releaseId) throw new Error("PREPARED_CONTROL_RELEASE_MISMATCH");
+    if (options.breakGlass) {
+      if ((options.mode ?? process.env.MCPSHIELD_MODE ?? "live") !== "live" || !(options.policyHash ?? process.env.MCPSHIELD_POLICY_HASH)) throw new Error("BREAK_GLASS_SIGNED_LIVE_REQUIRED");
+      if (snapshot.runtimePolicyIssues.length) throw new Error("BREAK_GLASS_RUNTIME_POLICY_REJECTED");
+      const { openBreakGlassSession } = await import("./break-glass.mjs");
+      emergencySessions.set(snapshot, openBreakGlassSession(options.breakGlass, {
+        releaseId: configuredId ?? snapshot.releaseId, artifactDigest: snapshot.artifactDigest, manifestDigest: snapshot.manifestDigest,
+        toolSurfaceHash: snapshot.toolSurfaceHash, policyHash: options.policyHash ?? process.env.MCPSHIELD_POLICY_HASH,
+        chainId: options.chainId ?? Number(process.env.MCPSHIELD_CHAIN_ID), registryContract: (options.registryContract ?? process.env.MCPSHIELD_REGISTRY_CONTRACT)?.toLowerCase(),
+        tenantId: options.tenantId ?? process.env.MCPSHIELD_TENANT_ID,
+      }, snapshot.tools));
+    }
     const decision = await admitSnapshot(snapshot, options);
     return { snapshot, decision };
   } catch (error) {
+    emergencySessions.get(snapshot)?.close();
     await snapshot.cleanup();
     throw error;
   }
 }
 
 async function admitSnapshot(snapshot, options) {
-  const decision = await checkedDecision(snapshot, options, "__admission__", "ADMISSION", operationClass(snapshot.tools));
+  const decision = await executionDecision(snapshot, options, "__admission__", "ADMISSION", operationClass(snapshot.tools));
   log("admission", { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash, decision: decision.decision, status: decision.releaseStatus, source: decision.source, cacheHit: decision.cacheHit, expiresAt: decision.expiresAt });
-  if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") throw new AdmissionBlockedError(decision);
+  requireExecutionDecision(snapshot, decision);
   if (snapshot.runtimePolicyIssues.length) throw new Error(`Gateway runtime policy rejected ${snapshot.runtimePolicyIssues[0].path}: ${snapshot.runtimePolicyIssues[0].reason}`);
   return decision;
+}
+
+async function executionDecision(snapshot, options, toolName, phase, actionClass) {
+  const emergency = emergencySessions.get(snapshot);
+  try { return await checkedDecision(snapshot, options, toolName, phase, emergency?.operationClass ?? actionClass); }
+  catch (error) {
+    if (!emergency || !(error instanceof AdmissionTransportUnavailableError)) throw error;
+    return { schemaVersion: "1.0.0", releaseId: options.controlReleaseId ?? process.env.MCPSHIELD_CONTROL_RELEASE_ID ?? snapshot.releaseId,
+      decision: "BLOCK", releaseStatus: "UNVERIFIED", reasonCode: "STATUS_UNAVAILABLE", source: "LIVE", decisionSource: "TRANSPORT_UNAVAILABLE", checkedAt: new Date().toISOString() };
+  }
+}
+
+function requireExecutionDecision(snapshot, decision) {
+  const emergency = emergencySessions.get(snapshot);
+  emergency?.assertCurrent();
+  if (decision.decision === "ALLOW" && decision.releaseStatus === "VERIFIED") return;
+  const eligible = decision.decision === "BLOCK" && (decision.decisionSource === "TRANSPORT_UNAVAILABLE" ||
+    ["API", "ORG_INDEXER"].includes(decision.decisionSource) && ["UNVERIFIED", "QUARANTINED", "REVOKED", "EXPIRED"].includes(decision.releaseStatus)
+      && decision.reasonCode === `RELEASE_${decision.releaseStatus}`);
+  if (!emergency || !eligible) throw new AdmissionBlockedError(decision);
+  log("emergency_execution_requested", { authorization: "BREAK_GLASS_OVERRIDE", grantId: emergency.grantId,
+    normalDecision: decision.decision, normalStatus: decision.releaseStatus, normalReason: decision.reasonCode });
 }
 
 export async function inspectArtifact({ artifactDir, rollout = "observe", ...options }) {
@@ -206,10 +259,9 @@ async function checkedDecision(snapshot, options, toolName, phase, actionClass) 
 
 function recheckSession(snapshot, options) {
   return async (message) => {
-    const decision = await checkedDecision(snapshot, options, message.params.name, "CALL", operationClass(snapshot.tools.filter((tool) => tool.name === message.params.name)));
-    if (decision.decision !== "ALLOW" || decision.releaseStatus !== "VERIFIED") {
-      throw new AdmissionBlockedError(decision);
-    }
+    const decision = await executionDecision(snapshot, options, message.params.name, "CALL", operationClass(snapshot.tools.filter((tool) => tool.name === message.params.name)));
+    requireExecutionDecision(snapshot, decision);
+    emergencySessions.get(snapshot)?.call(message, decision);
   };
 }
 
@@ -219,10 +271,12 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
     throw new TypeError("Child input must be a string no larger than 1048576 bytes");
   }
   if (options.preparedIdentityPath && input === undefined) throw new Error("PREPARED_MCP_INPUT_REQUIRED");
+  if (options.breakGlass && input === undefined) throw new Error("BREAK_GLASS_MCP_INPUT_REQUIRED");
   const { snapshot, decision } = await admittedSnapshot(artifactDir, options);
   let guarded;
   try {
     const child = await spawnSnapshot(snapshot, options);
+    emergencyExpiry(child, snapshot);
     let stdout = "";
     let stderr = "";
     let outputBytes = 0;
@@ -258,15 +312,15 @@ export async function runArtifact({ artifactDir, capture = false, executionTimeo
       child.once("error", (error) => finish(() => reject(error)));
       child.once("close", (code, signal) => finish(() => outputError ? reject(outputError) : timeoutError ? reject(timeoutError) : signal ? reject(new Error(`Child terminated by ${signal}`)) : resolve({ code: code ?? 1, stdout, stderr })));
     });
-    return { decision, identity: { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash }, ...result };
-  } finally { guarded?.close(); await snapshot.cleanup(); }
+    return { decision, ...(options.breakGlass ? { executionAuthorization: "BREAK_GLASS_OVERRIDE" } : {}), identity: { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash }, ...result };
+  } finally { guarded?.close(); emergencySessions.get(snapshot)?.close(); await snapshot.cleanup(); }
 }
 
 export async function proxyArtifactStdio({ artifactDir, ...options }) {
   const { snapshot } = await admittedSnapshot(artifactDir, options);
   let child;
-  try { child = await spawnSnapshot(snapshot, options); }
-  catch (error) { await snapshot.cleanup(); throw error; }
+  try { child = await spawnSnapshot(snapshot, options); emergencyExpiry(child, snapshot); }
+  catch (error) { emergencySessions.get(snapshot)?.close(); await snapshot.cleanup(); throw error; }
   const guards = childSurfaceGuards(child, snapshot, options);
   const { requests, responses } = guards;
   let terminalError;
@@ -310,6 +364,7 @@ export async function proxyArtifactStdio({ artifactDir, ...options }) {
   } finally {
     cleanup();
     for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+    emergencySessions.get(snapshot)?.close();
     await snapshot.cleanup();
   }
 }
@@ -330,6 +385,7 @@ async function callListMessages(options) {
 }
 
 export function createRemoteMcpServer(options = {}) {
+  if (options.breakGlass) throw new Error("BREAK_GLASS_LOCAL_STDIO_ONLY");
   const server = new McpServer(
     { name: "mcpshield-mail", version: "1.0.0" },
     { instructions: "Use list_messages to read synthetic demo mail through MCPShield's verified execution gateway." },
@@ -351,6 +407,7 @@ export function createRemoteMcpServer(options = {}) {
 }
 
 export function createGatewayHttpServer(options = {}) {
+  if (options.breakGlass) throw new Error("BREAK_GLASS_LOCAL_STDIO_ONLY");
   const handler = createMcpHandler(() => createRemoteMcpServer(options), {
     onerror: (error) => log("remote_mcp_error", { message: error.message }),
   });
@@ -389,11 +446,18 @@ export function createGatewayHttpServer(options = {}) {
 }
 
 async function stdio(args) {
-  if (args.length && (args.length !== 2 || args[0] !== "--prepared-identity" || !args[1])) throw new Error("Unsupported stdio argument");
-  const preparedIdentityPath = args[1] ?? process.env.MCPSHIELD_PREPARED_IDENTITY;
+  const parsed = {};
+  for (let index = 0; index < args.length; index += 2) {
+    if (!["--prepared-identity", "--break-glass-config", "--break-glass-grant"].includes(args[index]) || !args[index + 1] || parsed[args[index]]) throw new Error("Unsupported stdio argument");
+    parsed[args[index]] = args[index + 1];
+  }
+  if (Boolean(parsed["--break-glass-config"]) !== Boolean(parsed["--break-glass-grant"])) throw new Error("BREAK_GLASS_CONFIG_AND_GRANT_REQUIRED");
+  const preparedIdentityPath = parsed["--prepared-identity"] ?? process.env.MCPSHIELD_PREPARED_IDENTITY;
   const artifactDir = process.env.MCPSHIELD_ARTIFACT_DIR;
   if (!artifactDir && !preparedIdentityPath) throw new Error("MCPSHIELD_ARTIFACT_DIR or a local prepared identity is required");
-  process.exitCode = await proxyArtifactStdio({ artifactDir, preparedIdentityPath });
+  process.exitCode = await proxyArtifactStdio({ artifactDir, preparedIdentityPath, ...(parsed["--break-glass-config"] ? {
+    breakGlass: { configPath: parsed["--break-glass-config"], grantPath: parsed["--break-glass-grant"] },
+  } : {}) });
 }
 
 function serve() {

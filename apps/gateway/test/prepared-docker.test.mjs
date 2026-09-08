@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile, spawn } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,6 +16,7 @@ import { observePreparedRuntime } from "../../../services/scanner/src/prepared-r
 import { createPreparedReleaseBinding } from "../../../services/scanner/src/prepared-binding.mjs";
 import { removeFixtureSnapshot } from "../../../services/scanner/src/snapshot.mjs";
 import { AdmissionBlockedError, runArtifact } from "../src/index.mjs";
+import { breakGlassDigest, signBreakGlassGrant, verifyBreakGlassAudit } from "../src/break-glass.mjs";
 
 const exec = promisify(execFile), repo = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const tools = ["first", "second"].map(name => ({ name, inputSchema: { type: "object", properties: { linger: { type: "boolean" } }, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false } }));
@@ -113,6 +114,28 @@ test("prepared npm image → observed identity → signed Gateway: full tools, i
       await assert.rejects(runArtifact({ ...freshOptions(), input: wire(call("first")) }), error => error instanceof AdmissionBlockedError && error.decision.releaseStatus === "REVOKED");
       assert.equal(requests, when); assert.deepEqual(await ownedContainers(), before);
     }
+    // Emergency execution remains a BLOCK in admission, one exact call and the
+    // same immutable Docker isolation. Synthetic operator key; no real authority.
+    const emergencyOptions = freshOptions(); revokeAt = 1;
+    const operator = generateKeyPairSync("ed25519"), issuedAt = Date.now();
+    const grant = { schemaVersion: "mcpshield.break-glass-grant.v1", keyId: "synthetic-emergency", grantId: randomUUID(), actorId: "synthetic-local-operator",
+      reasonText: "Synthetic isolation regression only", issuedAt, expiresAt: issuedAt + 60_000, releaseId: identity.releaseId,
+      artifactDigest: binding.artifactDigest, manifestDigest: binding.manifestDigest, toolSurfaceHash: binding.toolSurfaceHash,
+      policyHash: context.policyHash, chainId: context.chainId, registryContract: emergencyOptions.registryContract, tenantId: context.tenantId,
+      toolName: "second", operationClass: "READ_PRIVATE", argumentsDigest: breakGlassDigest({}) };
+    const breakGlass = { configPath: join(workspace, "emergency-config.json"), grantPath: join(workspace, "emergency-grant.json") };
+    const auditKeyFile = join(workspace, "emergency.key"); await writeFile(auditKeyFile, randomBytes(32).toString("hex"), { mode: 0o600 });
+    await writeFile(breakGlass.configPath, JSON.stringify({ schemaVersion: "mcpshield.break-glass-config.v1", keyId: grant.keyId,
+      clientInfo: { name: "prepared-gateway-test", version: "1" },
+      publicKey: operator.publicKey.export({ type: "spki", format: "pem" }), auditFile: join(workspace, "emergency.sqlite"), auditKeyFile,
+      allowedCalls: [{ releaseId: identity.releaseId, toolName: "second", operationClass: "READ_PRIVATE" }] }), { mode: 0o600 });
+    await writeFile(breakGlass.grantPath, JSON.stringify(signBreakGlassGrant(grant, operator.privateKey.export({ type: "pkcs8", format: "pem" }))), { mode: 0o600 });
+    const emergency = await runArtifact({ ...emergencyOptions, breakGlass, input: wire(call("second")) });
+    assert.equal(emergency.executionAuthorization, "BREAK_GLASS_OVERRIDE"); assert.equal(emergency.decision.decision, "BLOCK");
+    assert.equal(emergency.decision.releaseStatus, "REVOKED"); assert.match(emergency.stdout, /SYNTHETIC_ISOLATION_OK:second/);
+    assert.equal(verifyBreakGlassAudit(breakGlass.configPath).count, 2);
+    await assert.rejects(runArtifact({ ...emergencyOptions, breakGlass, input: wire(call("second")) }), /AUDIT_OR_REPLAY_REJECTED/);
+    assert.deepEqual(await ownedContainers(), before);
     requests = 0; revokeAt = Infinity; unsigned = true;
     await assert.rejects(runArtifact({ ...freshOptions(), input }), /invalid proof metadata/);
     assert.equal(requests, 1); assert.deepEqual(await ownedContainers(), before); unsigned = false;

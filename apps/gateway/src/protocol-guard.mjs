@@ -16,7 +16,7 @@ const MODERN = "2026-07-28";
 const CLIENT_METHODS = new Set(["initialize", "notifications/initialized", "ping", "server/discover", "tools/list", "tools/call", "notifications/cancelled", "notifications/progress"]);
 const SERVER_NOTIFICATIONS = new Set(["notifications/tools/list_changed", "notifications/progress"]);
 
-function frameTransform(inspect) {
+function frameTransform(inspect, beforeForward) {
   let pending = Buffer.alloc(0);
   async function frame(line, output) {
     if (!line.toString("utf8").trim()) return;
@@ -31,7 +31,7 @@ function frameTransform(inspect) {
       visible.push(await inspect(message) !== false);
     }
     if (visible.some(Boolean) && !visible.every(Boolean)) throw new Error("Mixed private and client response batch");
-    if (visible.every(Boolean)) output.push(line);
+    if (visible.every(Boolean)) { beforeForward?.(); output.push(line); }
   }
   return new Transform({
     transform(chunk, _encoding, callback) {
@@ -53,7 +53,7 @@ function frameTransform(inspect) {
 
 // The SDK validates envelopes. These guards add artifact-bound admission and hide
 // private pagination probes; external JSON-RPC frames remain byte-for-byte intact.
-export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall, { sendInternal, timeoutMs = 3_000 } = {}) {
+export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall, { sendInternal, timeoutMs = 3_000, beforeForward, beforeRequest } = {}) {
   const allowedTools = new Set(tools.map(({ name }) => name));
   const requestsById = new Map(), privateCalls = new Map(), completed = new Set();
   const privatePrefix = `mcpshield.${randomUUID()}.`;
@@ -105,6 +105,7 @@ export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall, { sen
     throw new ToolSurfaceDriftError(expectedHash, "TOO_MANY_TOOLS_PAGES");
   };
   const requests = frameTransform(async (message) => {
+    beforeRequest?.(message);
     if (typeof message.id === "string" && message.id.startsWith(privatePrefix)) throw new Error("Reserved Gateway request ID");
     if (typeof message.method !== "string") {
       throw new Error("Gateway tools-only profile does not accept client responses");
@@ -141,7 +142,7 @@ export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall, { sen
       completed.delete(key);
       requestsById.set(key, { method: message.method, cursor: message.params?.cursor ?? "" });
     }
-  });
+  }, beforeForward);
   const responses = frameTransform((message) => {
     if (typeof message.method === "string" && (Object.hasOwn(message, "id") || !SERVER_NOTIFICATIONS.has(message.method))) throw new Error("Unsupported server method in Gateway tools-only profile");
     if (message.method === "notifications/tools/list_changed") { surfaceChanged = true; revision++; return; }

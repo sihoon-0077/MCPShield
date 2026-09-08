@@ -9,6 +9,10 @@ const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED", "E
 const memory = new Map();
 const pending = new Map();
 const revoked = new Map();
+const requestDeadlines = new WeakSet();
+export class AdmissionTransportUnavailableError extends Error {
+  constructor(message) { super(message); this.name = "AdmissionTransportUnavailableError"; }
+}
 let revocationCapacityExceeded = false;
 const canonical = (value) => JSON.stringify(Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]])));
 // ReleaseRegistryV2.revoked[releaseId] is global across policies and tenants.
@@ -40,10 +44,10 @@ export async function admissionFetch(url, options, fetchImpl, timeoutMs) {
   let reader;
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => { const error = new DOMException("Admission request timed out", "TimeoutError"); controller.abort(error); reject(error); }, timeoutMs);
+    timer = setTimeout(() => { const error = new DOMException("Admission request timed out", "TimeoutError"); requestDeadlines.add(error); controller.abort(error); reject(error); }, timeoutMs);
   });
   const receive = async () => {
-    const response = await fetchImpl(url, { ...options, headers: { ...options.headers, ...traceHeaders() }, signal: controller.signal, redirect: "error" });
+    const response = await fetchImpl(url, { ...options, headers: { ...options.headers, ...traceHeaders() }, signal: controller.signal, redirect: "manual" });
     // The status already decides non-2xx handling. A broken/stalled 4xx body
     // must not disguise an explicit denial as an offline-cache opportunity.
     if (!response.ok) {
@@ -157,6 +161,7 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
   const epoch = state.epoch;
   try {
   let envelope, snapshot, rpcState, expiredCache;
+  let definiteTransportOutage = true;
   let issuer = "API", decisionSource = "API";
   let cacheHit = false;
   const forget = async (invalidatePending = false) => {
@@ -178,7 +183,11 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
       method: "POST", headers: { "content-type": "application/json", accept: "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ releaseId: identity.releaseId, artifactDigest: identity.artifactDigest, toolSurfaceHash: identity.toolSurfaceHash, policyHash, mode: admissionMode, operationClass }),
     }, fetchImpl, timeoutMs); }
-    catch (error) { if (!error || !["TypeError", "TimeoutError", "AbortError"].includes(error.name)) { await forget(true); throw error; } }
+    catch (error) {
+      if (!error || !["TypeError", "TimeoutError", "AbortError"].includes(error.name)) { await forget(true); throw error; }
+      // An arbitrary AbortError/TypeError is not emergency authorization evidence.
+      definiteTransportOutage &&= requestDeadlines.has(error) || ["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"].includes(error.cause?.code);
+    }
     if (!response || response.status >= 500) return undefined;
     if (!response.ok) { await forget(true); throw new Error(`Admission API returned ${response.status}`); }
     await forget();
@@ -219,7 +228,7 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
       // Publish a validated RPC revocation to the shared fence before any disk await.
       if (snapshot.decision === "ALLOW") await forget();
     }
-    if (!envelope && !rpcState) throw expiredCache ?? new Error(admissionMode !== "balanced" || !["READ_PUBLIC", "READ_PRIVATE"].includes(operationClass)
+    if (!envelope && !rpcState) throw expiredCache ?? new (definiteTransportOutage ? AdmissionTransportUnavailableError : Error)(admissionMode !== "balanced" || !["READ_PUBLIC", "READ_PRIVATE"].includes(operationClass)
       ? "Admission unavailable; strict or non-read-only calls fail closed" : "Admission unavailable and no matching signed cache exists");
   }
   try { if (!snapshot) snapshot = verifyAdmissionSnapshot(envelope, { ...issuerContext(issuer), now: now() }); }

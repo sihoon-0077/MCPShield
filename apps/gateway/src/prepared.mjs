@@ -92,7 +92,7 @@ export async function createPreparedSnapshot(filename, { command = dockerCommand
   return { releaseId: value.releaseId, artifactDigest: value.binding.artifactDigest, manifestDigest: value.binding.manifestDigest,
     toolSurfaceHash: value.binding.toolSurfaceHash, tools: value.tools, runtimePolicyIssues: [], prepared: true,
     cleanup,
-    async spawn(beforeStart) {
+    async spawn(beforeStart, beforeExecute) {
       if (started || cleaning) fail("PREPARED_RUNTIME_ALREADY_USED");
       if (typeof beforeStart !== "function") fail("PREPARED_ADMISSION_CHECK_REQUIRED");
       started = true;
@@ -108,6 +108,7 @@ export async function createPreparedSnapshot(filename, { command = dockerCommand
         // Creating is not executing: recheck signed admission immediately before the actual start.
         await beforeStart();
         if (cancelled || cleaning) fail("PREPARED_RUNTIME_CANCELLED");
+        beforeExecute?.();
         const child = start("docker", ["start", "--attach", "--interactive", cid], { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
         try { await once(child, "spawn"); } catch { fail("PREPARED_DOCKER_START_FAILED"); }
         return child;

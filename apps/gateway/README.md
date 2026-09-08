@@ -53,7 +53,45 @@ RPC allowance is limited to locally classified `READ_PUBLIC` and `READ_PRIVATE`.
 
 Observed REVOKED is terminal for the exact release/registry across tenants, policies and key rotation. With `MCPSHIELD_ADMISSION_CACHE_FILE`, a private `.revoked` sidecar retains either the historical signed issuer proof or an explicitly **unsigned local RPC denial marker**. That marker can only deny. Corrupt/mismatched journals fail closed; the final concurrency fence rejects late ALLOW after a newer revocation. Protect the directory/ACL. A cache file has exclusive `.lock` ownership, failed persistence retains the lock, and unknown crash locks require operator investigation rather than automatic reclamation. Do not share one cache file between independent wrappers or delete a revocation journal to restore availability. Cache-format changes need a fresh primary/organization response.
 
-Unset organization/RPC variables to disable these tiers without changing the public demo. Break-glass is not part of this fallback and is not a bypass flag. Tests cover synthetic failures/races plus real ephemeral Ganache contracts, two validator signatures and global revocation—not independent institutions or production performance.
+Unset organization/RPC variables to disable these tiers without changing the public demo. Break-glass is a separate explicit emergency path below, never an automatic fallback. Tests cover synthetic failures/races plus real ephemeral Ganache contracts, two validator signatures and global revocation—not independent institutions or production performance.
+
+## Private one-call emergency authorization (development checkpoint)
+
+An administrator can deliberately authorize **one exact read-only tool call in one process session** for at most 60 seconds. This acknowledges risk; it is not a new safety verdict. Normal admission remains `BLOCK`/`REVOKED`, terminal revocation journals are untouched, and execution is separately labeled `BREAK_GLASS_OVERRIDE`. No public HTTP handler accepts this option, no environment variable silently enables it, and `run` without MCP framing cannot use it. Remove the two explicit stdio flags to disable it.
+
+The operator keeps an Ed25519 signing key offline from Gateway. Gateway receives only the separately pinned public key, grant file, and a private AES-256 audit key. The grant signs `keyId`, random `grantId`, bounded `actorId`/`reasonText` (512 UTF-8 bytes), issue/expiry milliseconds, exact release/artifact/manifest/raw-tools digests, chain/registry/policy/tenant, tool name, read operation class, and a SHA-256 digest of canonical tool arguments. Plain arguments are neither in the grant nor audit. Omitted arguments mean `{}`; otherwise final parsed arguments are hashed unchanged. A separate operator-local exact release/tool/read-class allowlist is mandatory: the candidate's read-only annotation alone never grants authority.
+
+Provision private regular files (POSIX mode 0600, real owner-only parent directory 0700; equivalent Windows ACL restricted to the operator). No ancestor may be controlled by another user; the application does not protect against privileged filesystem replacement between path checks and SQLite open. Do not use shared/network SQLite storage, upload these files, commit them, or place signing keys/reasons in process arguments. The operator config has this exact shape; paths are relative to the config directory or absolute:
+
+```json
+{
+  "schemaVersion": "mcpshield.break-glass-config.v1",
+  "keyId": "operator-1",
+  "publicKey": "<Ed25519 SPKI PEM public key>",
+  "clientInfo": { "name": "your-exact-mcp-client", "version": "1" },
+  "auditFile": "emergency.sqlite",
+  "auditKeyFile": "audit.key",
+  "allowedCalls": [{ "releaseId": "<exact 0x release ID>", "toolName": "list_messages", "operationClass": "READ_PRIVATE" }]
+}
+```
+
+`clientInfo` is an operator-pinned exact name/version: legacy initialization and modern request metadata must match it, with empty capabilities. All messages have method-specific parameter allowlists: initialized has none, ping/discover only fixed metadata, tools/list adds its verified cursor, tools/call adds name/arguments. Custom params, progress/cancellation notifications and legacy `_meta` are rejected in emergency mode; disconnect or stop the wrapper to cancel. Modern `_meta` permits only the fixed protocol revision, pinned client identity and empty capabilities; tenant/context extensions cannot change a grant's meaning. Normal, non-emergency MCP metadata compatibility is unchanged.
+
+`audit.key` contains exactly 64 lowercase hexadecimal characters from 32 cryptographically random bytes. The private issuance template contains `keyId`, `actorId`, `reasonText`, `ttlMs` (1–60000), `releaseId`, `artifactDigest`, `manifestDigest`, `toolSurfaceHash`, `chainId`, lowercase `registryContract`, `policyHash`, `tenantId`, `toolName`, and `operationClass` (`READ_PUBLIC` or `READ_PRIVATE`). Obtain identities from the exact locally verified snapshot/prepared envelope, not an untrusted tool response. A separate private arguments JSON file holds the one intended argument object. The issuance CLI fills the schema, UUID, timestamps and argument digest; output is exclusive-create and never overwrites a grant:
+
+```sh
+node apps/gateway/src/break-glass.mjs --template /private/template.json --arguments /private/arguments.json --key /private/operator.pem --out /private/grant.json
+# Use the existing signed /v1 trust variables and host artifact setting, or add --prepared-identity for Linux Docker.
+node apps/gateway/src/index.mjs stdio --break-glass-config /private/config.json --break-glass-grant /private/grant.json
+```
+
+Immediately before spawn (after actual prepared Docker configuration checks), SQLite `BEGIN IMMEDIATE` + `synchronous=FULL` records a unique grant/session ADMISSION claim. Before the one call is sent, a second unique CALL attempt is committed for that session. Concurrent processes, restarts and repeated calls cannot reuse the claim. Grant mode always limits the process to one call even if normal admission happened to be ALLOW. A failed spawn, malformed batch, transport failure or ambiguous response burns the relevant attempt; never automatically retry or reimburse it. Wall-clock and monotonic expiry are checked after audit I/O and synchronously before process start/frame forwarding. Expiry terminates the process and removes its owned prepared container. Clock synchronization remains an operator prerequisite across process restarts.
+
+The separate encrypted audit stores the **operator-signed grant plus Gateway-recorded use attempts**, including the original normal decision. AES-256-GCM authenticates/encrypts events and a SHA-256 chain links order. Use time/normal decision are **not separately signed by the operator**, and an authorized attempt does not prove execution succeeded. It is `LOCAL_ENCRYPTED_UNANCHORED`, not a chain receipt or FR407 schema change. `verifyBreakGlassAudit(configPath)` returns count/tip only. SQL updates/deletes, malformed ciphertext and hash-chain corruption fail closed; verification is bounded to 10,000 events/32 KiB ciphertext per row. Keep one durable audit file per signing-key policy across wrappers. Whole-log rollback/deletion or a compromised local administrator is not prevented without an external checkpoint; archive/rotate with a new trust key rather than erase active-key claims.
+
+This checkpoint permits valid fresh signed release-status BLOCK and **definite** API/indexer transport outage (own deadline, known connection failure or HTTP 5xx). Generic RPC errors remain blocked until transport-only versus trust-rejection classification is implemented; it does not yet cover total multi-RPC outage. HTTP 3xx/4xx, invalid signature/identity, malformed JSON, expired proof, unknown cancellation, cache/audit errors, isolation failures and protocol failures cannot be overridden. It never enables remote sampling/elicitation/roots, undeclared tools, unlimited arguments, network access, writes/payments or weaker sandbox settings. Production emergency governance, external audit retention and high-risk human approvals are separate unfinished work.
+
+`node --test apps/gateway/test/break-glass.test.mjs` covers issuance and actual stdio execution with synthetic local keys, two OS-process claims, restart replay, private encrypted audit, exact arguments, terminal-status preservation and final expiry fences. The optional Linux prepared-image test also exercises emergency execution with unchanged Docker isolation and exact-owner cleanup; a skipped Docker test is not deployment evidence.
 
 ## Private high-risk action receipts
 

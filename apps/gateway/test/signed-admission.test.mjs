@@ -35,7 +35,7 @@ test("signed credentials cannot be sent to public HTTP or redirected endpoints",
   let called = false;
   await assert.rejects(getSignedAdmission({ ...context, apiBaseUrl: "http://public.example", timeoutMs: 100, fetchImpl: async () => { called = true; return json(signed(base)); } }), /requires HTTPS/);
   assert.equal(called, false);
-  await admissionFetch("http://127.0.0.1", {}, async (_url, options) => { assert.equal(options.redirect, "error"); return json({}); }, 100);
+  await admissionFetch("http://127.0.0.1", {}, async (_url, options) => { assert.equal(options.redirect, "manual"); return json({}); }, 100);
 });
 
 test("signed admission binds every trust coordinate and rejects stale, tampered, unsigned proof", () => {
