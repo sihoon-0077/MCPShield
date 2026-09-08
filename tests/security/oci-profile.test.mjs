@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { createOciProfileFixture, ociProfileScript, OCI_PROFILE_PROBE_PLAN } from './oci-profile-fixture.mjs';
+import { createOciProfileFixture, checkedAuthoredOciScript, ociProfileScript, OCI_PROFILE_PROBE_PLAN } from './oci-profile-fixture.mjs';
 import { prepareAndScanOciRuntime, scanOciRuntime } from '../../services/scanner/src/oci-scan.mjs';
 import { readTrivyDatabaseIdentity } from '../../services/scanner/src/oci-trivy.mjs';
 import { readTrustedOciRuntime } from '../../services/scanner/src/oci-trust.mjs';
@@ -26,6 +26,10 @@ test('approved-base OCI fixture variants are authored inert source with the same
   }
   assert.throws(() => ociProfileScript(original, 'unknown'), /VARIANT_INVALID/);
   assert.throws(() => ociProfileScript('unmatched template', 'malicious'), /TEMPLATE_INVALID/);
+  assert.equal(checkedAuthoredOciScript('#!/bin/sh\r\n# authored inert source\r\n'), '#!/bin/sh\n# authored inert source\n');
+  for (const invalid of [null, Buffer.from('#!/bin/sh\n'), '', 'echo not a script', '#!/bin/sh\n\0', '#!/bin/sh\n\ud800',
+    '#!/bin/sh\n' + 'x'.repeat(64 * 1024)]) assert.throws(() => checkedAuthoredOciScript(invalid), /AUTHORED_SCRIPT_INVALID/);
+  await assert.rejects(() => createOciProfileFixture({ authoredScript: '#!/bin/sh\n', variant: 'malicious' }), /VARIANT_INVALID/);
 });
 
 test('actual Linux approved-base OCI safe PASS and canary FAIL are independently replayed with native package/SBOM coverage', {
