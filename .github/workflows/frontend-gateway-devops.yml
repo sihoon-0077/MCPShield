@@ -38,7 +38,22 @@ jobs:
         run: npm run build
       - name: Validate compose
         if: matrix.node == 22
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f compose.observability.yml config --quiet
+      - name: Exercise actual Linux sandbox isolation
+        if: matrix.node == 22
+        timeout-minutes: 5
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: |
+          docker pull node:22-alpine
+          node --test tests/security/docker-sandbox.test.mjs
+      - name: Validate actual collector and alert configuration
+        if: matrix.node == 22
+        run: |
+          docker run --rm -v "$PWD/deploy/observability/collector.yaml:/etc/otelcol/config.yaml:ro" otel/opentelemetry-collector-contrib:0.160.0 validate --config=/etc/otelcol/config.yaml
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/deploy/observability:/etc/prometheus:ro" prom/prometheus:v3.14.0 check rules /etc/prometheus/alerts.yaml
       - name: Run Docker Compose end-to-end
         if: matrix.node == 22
         timeout-minutes: 10
