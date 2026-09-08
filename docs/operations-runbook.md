@@ -72,13 +72,16 @@ collector→Prometheus 전달을 검증한다. 의도적으로 `MOCK` 지표만 
 실제 알림 수신자를 연결하려면 운영 Alertmanager를 설정한다. 수신자가 없는 상태를
 “사람에게 알림이 전달됨”으로 표현하지 않는다.
 
-`traceparent`를 scan 작업에 보존하고 worker·chain outbox·Gateway→admission에 전달한다.
-validator·indexer까지의 전체 분산 trace 연결은 추가 통합 작업 중이다.
+`traceparent`를 scan 작업에 보존하고 worker·validator·chain outbox·indexer에 전달한다.
+최신 chain reportRoot와 동일 tenant/release/policy/COMPLETED scan만 찾아 `admission.decision`을 연결한다.
+호출자의 별도 request latency span은 유지하며, 외부 caller trace/baggage를 scan의 부모로 가져오지 않는다.
+추적 조회 실패가 허용·차단을 바꾸지는 않으며 추가 RPC를 만들지 않는다.
 단계명·판정·상태만 metric label로 사용한다. 릴리스·스캔 식별자는 trace attribute다.
 원문 도구 호출·메일·DB query·예외 메시지·환경변수는 자동 수집하지 않는다.
 
 ```sh
 node --import tsx --test tests/integration/telemetry.test.ts
+node --import tsx --test tests/integration/fullcycle-telemetry.test.ts
 ```
 
 이 테스트는 실제 공식 OTLP exporter가 보낸 trace/metric을 로컬 수집 서버로 받아서

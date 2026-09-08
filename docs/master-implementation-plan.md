@@ -40,13 +40,13 @@
 
 | ID | 내용 | 담당 | 현재 Main 구현 / 남은 증거 |
 |---|---|---|---|
-| FR-001–003 | npm/tarball/OCI 수집, 불변 버전, 출처 | Security / Backend | bounded npm/tar·OCI blob 검증과 공개 OCI API 입력 구현. OCI 실행·범용 dependency 설치 미지원 |
+| FR-001–003 | npm/tarball/OCI 수집, 불변 버전, 출처 | Security / Backend | bounded npm/tar·OCI blob 검증·공개 OCI API 입력. supplied-lock npm closure의 digest-pinned offline 설치 구현, Linux 실제 검증 진행. 실행 관측·Gateway 연결과 lock 없는 npm·범용 OCI 실행은 진행 중 |
 | FR-004–006 | artifact·manifest·전체 tool surface hash | Security / Gateway | JCS·Unicode/변조 벡터, Docker 내부 전체 MCP pagination 수집, Gateway private 전체 pagination·중복/cursor/drift 거부·실제 2페이지 stdio 통과 |
-| FR-007–008 | 스캔 중복 방지·자동 기준선 | Backend / Security | 다른 key 유효 결과 재사용·이전 VERIFIED 자동 기준선·명시적 비교 버전·원자적 tenant quota 로컬 통과. PostgreSQL 최신 회귀 진행 |
+| FR-007–008 | 스캔 중복 방지·자동 기준선 | Backend / Security | 다른 key 유효 결과 재사용·이전 VERIFIED 자동 기준선·명시적 비교 버전·원자적 tenant quota 구현. 실제 PostgreSQL·Linux 회귀 `5cabc48` 통과 |
 | FR-101–104 | 메타데이터·코드·변경점·SBOM | Security | schema/annotation/dependency/install diff, SBOM·metadata 규칙 구현. 외부 MCPTox 485 poisoned-tool records의 static review recall 실측 126/485=25.98%; 목표 미달 |
 | FR-105–106 | 안전한 AI JSON·근거·권장 테스트 | Security | 공식 Responses·strict JSON·host 계산 citation·독립 Critic·provenance 구현. 계약 서버 테스트 통과; 실제 provider 호출 미실행 |
 | FR-107–109 | 일회성 격리·리소스 제한·egress 정책 | Security / Main | 실제 Linux Docker readonly/capability/cgroup/외부연결 차단·통제 proxy 통과. kernel escape 방어의 완전한 증명은 아님 |
-| FR-110–112 | canary 유형·생성 테스트·통합 trace | Security / Main | 8종 합성 canary·실제 유출 항목 hash 연결·MCP request/response trace·AI 생성 probe Docker 회귀 통과. 동일 정상 과제 paired-agent 실험 추가분 Linux 회귀 대기 |
+| FR-110–112 | canary 유형·생성 테스트·통합 trace | Security / Main | 8종 합성 canary·유출 hash 연결·MCP trace·AI 생성 probe 및 동일 정상 과제 paired-agent 계약 실험 Linux Docker 6개 통과. 실제 외부 모델 호출은 미실행 |
 | FR-113 | AI 단독 영구 폐기 금지 | Security / Backend | 결정론적 근거 없는 FAIL 금지, incomplete/Critic 미완료 ABSTAIN 정책 테스트 통과 |
 | FR-201–204 | versioned policy·reportRoot·validity·EIP-712 | Backend | V2 typed-data binding·다른 chain/contract/nonce/set replay 거부, validator 로컬 domain/types 재구성·독립 RPC identity·정확한 calldata 확인 로컬 EVM 통과 |
 | FR-205–206 | 중복 투표 방지·2-of-3 | Backend | 실제 EVM 정족수·중복 거부·반대 투표 순서 독립성 통과. 검증자는 독립 기관이 아닌 개발용 지갑 |
@@ -54,11 +54,11 @@
 | FR-301–304 | MCP wrapper·실행 전 차단·surface pinning | Gateway / Security | 실제 SDK stdio·두 Gateway pre-spawn 거부. 초기화 전 호출/비정상 envelope/resources/prompts/서버 sampling·elicitation 우회 차단 로컬 통과 |
 | FR-305–306 | 정책·유효기간·freshness·signed cache | Gateway / Backend | Ed25519 서명·tenant/chain/policy/operation binding, strict/balanced 읽기 전용 장애 캐시·폐기 후 재허용 금지 테스트 통과 |
 | FR-307–310 | 실행 중 폐기 전파·안내·framing·호환성 | Gateway | 후속 호출 재검사·목록 변경 중단, legacy/stateless matrix·stderr 원문 제거·EOF 강제 종료 통과. 다음 호출 없는 지속 실행의 즉시 중단 SLA는 별도 경계 |
-| FR-401 | scan→validator→chain→admission trace | Main / 모든 파트 | 공식 OTel trace·metric exporter와 비전송 상태에서도 유효한 trace ID 검증. 전체 실제 분산 경로의 단일 trace 증거는 추가 필요 |
-| FR-402–403 | 운영 검색·증거 권한·감사 기록 | Frontend / Backend | 실제 `/console`→API→worker→암호화 evidence→appeal 및 reader403 통과. 새 V2 vote/tx 상세 UI 연결은 추가 필요 |
+| FR-401 | scan→validator→chain→admission trace | Main / 모든 파트 | 실제 로컬 EVM+공식 OTLP HTTP에서 scan→validator→chain→indexer→evidence-bound admission 27개 연결 span 확인. 전체88 spans·3회export·53,741 bytes. 루프백 계약 수집 서버이며 운영 collector/외부기관 분산배포는 아님 |
+| FR-402–403 | 운영 검색·증거 권한·감사 기록 | Frontend / Backend | `/console`→API→worker→암호화 evidence→appeal·reader403, V2 제출/확정·현 상태/역사 상태·admission 구분 UI7개 회귀 통과. receipt UI 추가 통합 진행 |
 | FR-404–405 | retry·DLQ·scan/chain idempotency | Backend | 영속 SQL queue·lease·DLQ·atomic 감사 기록·signed raw-tx outbox·재전송/재편성·registry domain 분리 통과. DLQ retry도 tenant queue 한도 검사 |
 | FR-406 | 이의제기·재검증·history | Frontend / Backend | 이의제기 생성·release history 연결, retry UI/API 구현. 정책 변경 후 재검증/오탐 해소 전체 flow 추가 검증 필요 |
-| FR-407 | 선택적 고위험 action receipt root | Gateway / Backend | opt-in SQLite append-only hash chain·127개 Merkle batch·동시 append·변조/외부 checkpoint 검증 통과. 별도 immutable anchor contract/API 구현 중; 현재 LOCAL_UNANCHORED |
+| FR-407 | 선택적 고위험 action receipt root | Gateway / Backend | opt-in SQLite hash chain·127개 Merkle batch·별도 immutable EIP-712 anchor·tenant API·암호화 evidence·durable outbox·writer CLI 구현. 실제 EVM에서 N-confirmation·reorg ORPHANED·같은 raw tx 복구 통과. 외부 앵커 배포는 미실행 |
 
 ## 기능표 밖의 마스터 문서 항목
 
@@ -82,16 +82,33 @@
 
 ## 현재 검증 증거
 
+- [CI run 34250549056](https://github.com/sihoon-0077/MCPShield/actions/runs/34250549056),
+  커밋 `5cabc4896a77ff56216b035805c44faa95c4a105`: Node 22·24·PostgreSQL·Linux 실제 Docker/Compose 통과.
+  실제 release image `sha256:bd732dd52cd058dac91533a470e69508af4c39a5c66e97ff26ed7af428d3ea7e`에서
+  readonly/nonroot 웹·legacy/modern HTTP MCP·합성 메일·종료 테스트 성공.
+  OS+실제 앱 의존성 237개 coverage·HIGH/CRITICAL 0·CycloneDX 검증 통과.
+  archive SHA-256 `7e13c1d4cc79021b3c5f495d31ba94de2b2303da3c599ea656fd0ffe5d67a16d`의
+  [provenance](https://github.com/sihoon-0077/MCPShield/attestations/46020998)와
+  [SBOM](https://github.com/sihoon-0077/MCPShield/attestations/46021010) 서명·저장소 신원 검증 성공.
+  이는 서명된 CI 산출물이며 새 Railway 운영 배포·라이선스 승인 또는 무취약성 보증은 아니다.
+- 앞선 `65a0858` run `34247767028`의 앱 통합 검증은 성공했으나 image gate에서
+  OpenSSL·기본 이미지의 사용하지 않는 전역 npm dependency HIGH/CRITICAL 13건이 발견됐다.
+  실행 이미지에서 필요 없는 npm·Yarn 제거, OpenSSL upgrade, 불변 입력 read-only scan으로 수정해
+  위 `5cabc48`에서 실제 재검증했다. 검사 실패를 ignore하거나 심각도를 내려서 통과시키지 않았다.
+- `7890fa9` Main 전체 `npm test`와 `npm run build` 성공. 이후 추가된 prepared closure·Grafana·
+  fullcycle trace는 `66dd503` Linux CI에서 별도 검증 중이다. Windows에서는 Docker 회귀를 명시 skip한다.
 - [CI run 34246201330](https://github.com/sihoon-0077/MCPShield/actions/runs/34246201330),
   커밋 `af361b0`: Node 22·24·PostgreSQL·실제 Docker scan→V2→Gateway·Compose 검증 성공.
   별도 signed-image 단계는 Trivy DB 압축 해제 중 `/tmp` 128MiB 한도로 실패했다.
-  `65a0858`에서 비공개 CI 임시 작업 공간으로 수정했으며, 실제 서명 성공 여부는 재실행 대기다.
+  `65a0858`에서 비공개 CI 임시 작업 공간으로 수정했다. 후속 실제 서명 성공 증거는 위 `5cabc48`이다.
 - `65a0858` Main 로컬 `npm test`·`npm run build` 모두 성공. Gateway 52/52,
   Security 55 통과·6 Docker 명시 skip, dashboard 4/4. 실제 PostgreSQL/Docker는 CI 증거를 별도로 사용한다.
 - `scripts/ops/evaluate-admission.ts`: 실제 로컬 EVM·SQLite WAL·HTTP·서명 검사 및 gas 측정.
-  20회/동시4 요청의 초기 dirty-worktree smoke에서 strict hot p95 167.105ms, uniform 147.239ms,
-  폐기 receipt 후 다음 check 차단 54.377ms. 운영 QPS/SLO 또는 테스트넷 측정이 아니다.
-  API/RPC 장애는 명시적 주입이며 실제 네트워크 timeout과 구분한다. clean commit CI 재측정 진행 중.
+  별도 clean checkpoint `f6b701b`의 40회/동시4/identity4 측정에서 strict hot p95 83.628ms,
+  uniform 66.341ms, 실제 signed REVOKED BLOCK 40회·p95 52.469ms. 캐시 허용40회/기존 폐기캐시 재사용0회.
+  예상 API/RPC 장애는 각각 FAIL_CLOSED_ERROR로 구분하며 오류를 실제 REVOKED BLOCK으로 세지 않는다.
+  source/HEAD/dirty snapshot이 시작·종료에 다르면 NOT_COMPARABLE로 실패한다. 작은 로컬 Windows/Ganache
+  실험이며 실제 네트워크 timeout·1만 key 부하·운영 QPS/SLO·테스트넷 성능 또는 일반 탐지율이 아니다.
 - `benchmarks/results/mcptox-static-2026-09-09.json`: 고정 upstream 파일 hash 기반 원문 미포함 집계.
   static review recall 25.98%, FPR·agent ASR 미측정. upstream에 명시적 라이선스가 없어 원문을 재배포하지 않는다.
 - `node --import tsx scripts/ops/evaluate-reference-metadata.ts`: 공식 reference 서버의 고정 커밋
@@ -108,17 +125,21 @@
   HttpOnly/Origin·CSRF, reader 권한 거부, streaming body 상한/timeout.
 - `c39a68f`: 공식 AWS SDK를 사용한 S3 계약 테스트 2/2; signed HTTP·SSE·조건부 생성·bounded body,
   tenant AES-GCM·기존 객체 변조 시 재시도 거부 검증. 실제 cloud S3 연결은 미실행.
-- `ff35626`: 수동 실행 전용 signed-image CI 구성 추가. 실제 image vulnerability/license scan,
-  CycloneDX·provenance/SBOM 서명·GitHub 신원 검증을 수행하도록 구성했으나 아직 실행 증거 없음.
+- `28e8773`: supplied-lock npm closure를 입력 snapshot·registry SRI·전체 dependency path/type/mode/content hash로
+  고정하는 Docker 구현. 단계는 CLOSURE_PREPARED/INCONCLUSIVE이며 실제 tools/list와 Gateway로 연결하기 전에는
+  READY/PASS가 아니다. `ba01af2`에서 builder 자체의 실제 이미지 취약점 검사와 Linux 준비/실행 회귀 게이트 추가.
+- `cd74bc9`: 비공개 Grafana 13.2.1 파일 프로비저닝·6개 실제 metric query·No data 경계·익명 차단 구성.
+  직접 만든 비밀번호는 출력/재설정하지 않는다. 실제 collector→Prometheus→Grafana CI 검증은 진행 중.
 
 ## 아직 완료로 표시할 수 없는 영역
 
-1. 최신 validator/RPC·FR007/008·Gateway receipt·캐시 수정의 PostgreSQL/Linux 통합 회귀.
-2. paired-agent 실험 및 실제 Docker scan→V2 chain→Gateway 전체 Linux 최신 코드 회귀.
-3. 범용 npm dependency의 격리 설치·OCI runtime 실행, 고위험 receipt 앵커, 모든 운영 UI 세부 항목.
+1. 최신 prepared npm closure·Grafana·전체 exporter trace의 Linux/PostgreSQL 통합 회귀.
+2. npm prepared image의 실제 관측·최종 release identity·validator·Gateway까지의 통합,
+   lock 없는 package의 격리 lock 생성, OCI runtime 실행.
+3. 고위험 receipt UI와 오래된 앵커 reorg 복구, 모든 운영 UI 세부 항목.
 4. 실제 외부 LLM·Base Sepolia·비공개 S3/KMS/보존 정책·독립 validator 운영 검증.
 5. hot/uniform·cache/RPC 장애 smoke 측정의 큰 표본 반복/운영 환경 검증, 다중 크기 scan 처리량·10회 전체 데모,
    외부 라이선스 확인 데이터셋·독립 라벨·전체 ablation/실제 모델 agent ASR.
-6. 공개 새 버전 배포, signed release 산출물·보안/라이선스 정책·배포/복원 증빙 최종 점검.
+6. 공개 새 버전 배포, 최종 HEAD signed release 산출물·보안/라이선스 정책·배포/복원 증빙 점검.
 
 이 목록은 작업 범위를 줄이는 제외 목록이 아니라 남은 작업/외부 검증 목록이다.
