@@ -90,7 +90,7 @@ export async function getSignedAdmission({ identity, apiBaseUrl, timeoutMs, fetc
       body: JSON.stringify({ releaseId: identity.releaseId, artifactDigest: identity.artifactDigest, toolSurfaceHash: identity.toolSurfaceHash, policyHash, mode: admissionMode, operationClass }),
     }, fetchImpl, timeoutMs);
   } catch (error) {
-    if (!error || !["TypeError", "TimeoutError", "AbortError"].includes(error.name)) throw error;
+    if (!error || !["TypeError", "TimeoutError", "AbortError"].includes(error.name)) { await forget(); throw error; }
   }
   if (!response || response.status >= 500) {
     if (admissionMode !== "balanced" || !["READ_PUBLIC", "READ_PRIVATE"].includes(operationClass)) throw new Error("Admission unavailable; strict or non-read-only calls fail closed");

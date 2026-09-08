@@ -58,7 +58,7 @@ test("balanced fallback is read-only, short-lived, and cannot resurrect allow af
   await assert.rejects(getSignedAdmission({ ...options, admissionMode: "strict", fetchImpl: offline }), /fail closed/);
   await assert.rejects(getSignedAdmission({ ...options, operationClass: "FINANCIAL", fetchImpl: offline }), /fail closed/);
   await assert.rejects(getSignedAdmission({ ...options, now: () => now + 31_000, fetchImpl: offline }), /expired/);
-  for (const response of [json({}, 403), json({}), json(signed({ ...base, decision: "BLOCK", status: "REVOKED" }))]) {
+  for (const response of [json({}, 403), json({}), new Response("x".repeat(65_537)), json(signed({ ...base, decision: "BLOCK", status: "REVOKED" }))]) {
     await fresh();
     await getSignedAdmission({ ...options, fetchImpl: async () => response }).catch(() => {});
     await assert.rejects(getSignedAdmission({ ...options, fetchImpl: offline }), /no matching signed cache/);
