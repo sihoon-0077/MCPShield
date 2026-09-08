@@ -532,6 +532,18 @@ Independent adverse sink/proxy effects may support FAIL even if semantic review
 is incomplete; missing evidence cannot support PASS. Source-identity and new V2
 release-ID verification remain the API/validator contract owner's responsibility.
 
+Trust boundary: pure policy verification alone authenticates neither collector
+events nor provider executions. Even a self-consistent Merkle bundle can be
+rewritten by a compromised scanner/API. Without validator-local rerunning, this
+is **trusted-scanner evidence validation**, not independent behavioral
+observation. The independent-validator signing path must rerun the prepared scan
+with its own operator-controlled provider/probe configuration and compare the
+restricted scope, verdict and deterministic finding categories before signing.
+Random canaries make the independent report root different; a validator-local
+receipt must link that root to the submitted root. Missing execution/provider
+configuration must withhold prepared-profile signatures rather than relabel
+bundle-only validation as an independent scan.
+
 `src/prepared-binding.mjs` and `services/resolver/src/runtime-descriptor.mjs`
 contain shared side-effect-free identity/policy helpers. The manifest hashes
 exactly `schemaVersion`, `profile`, `sourceReleaseId`, `sourceArtifactDigest`,
