@@ -100,6 +100,11 @@ prompt hashes, token usage, elapsed time and template version. Failed remote wor
 is labeled `LOCAL_FALLBACK`, not a successful model invocation. `store:false`
 is an application-state setting, not a claim of zero provider-side retention.
 All schema/span checks still run locally and AI findings remain non-deterministic.
+The `semantic-v3-citations` template supplies precomputed field/sentence citations
+with source offsets and SHA-256 hashes. The model copies a supplied citation;
+it is never asked to calculate a digest. Host validation rejects invented spans
+even when a hash happens to match. An unavailable Critic sets `REVIEW_REQUIRED`
+and `needsHumanReview:true`, rather than reporting a complete semantic approval.
 
 Contract coverage: `node --test tests/security/ai-provider.test.mjs` uses only a
 local fake API. No production API key or real model quality evaluation is implied.

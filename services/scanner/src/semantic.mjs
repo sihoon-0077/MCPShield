@@ -13,24 +13,45 @@ const criticSchema = z.object({ assessments: z.array(z.object({ claimIndex: z.nu
 export const semanticOutputSchema = z.toJSONSchema(semanticReportSchema);
 export const criticOutputSchema = z.toJSONSchema(criticSchema);
 
-export function promptSources(prompt) {
-  const candidate = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1));
+function sourcesIn(candidate) {
   const sources = {};
   const visit = (value, path) => {
     if (typeof value === 'string') sources[path] = value;
     else if (value && typeof value === 'object') for (const [name, child] of Object.entries(value)) visit(child, path ? `${path}.${name}` : name);
   };
-  visit(candidate, '');
+  for (const key of ['tools', 'baselineTools', 'excerpts']) visit(candidate[key], key);
   return sources;
 }
 
-export function validateSemanticReport(value, sources) {
+export function promptSources(prompt) { return sourcesIn(JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1))); }
+
+export function citationCatalogue(candidate) {
+  const citations = [];
+  for (const [source, text] of Object.entries(sourcesIn(candidate))) {
+    if (!text || source.endsWith('.path')) continue;
+    const spans = [{ start: 0, end: text.length }];
+    // Precompute citations: a language model selects evidence, it never computes cryptographic hashes.
+    for (const match of text.matchAll(/[^.!?\n]+[.!?]?/g)) {
+      if (spans.length >= 5) break;
+      if (match[0].trim() && match[0].length < text.length) spans.push({ start: match.index, end: match.index + match[0].length });
+    }
+    for (const span of spans) {
+      if (citations.length >= 256) return citations;
+      citations.push({ source, ...span, textHash: `sha256:${createHash('sha256').update(text.slice(span.start, span.end)).digest('hex')}` });
+    }
+  }
+  return citations;
+}
+
+export function validateSemanticReport(value, sources, citations) {
   const report = semanticReportSchema.parse(value);
+  const allowed = citations ? new Set(citations.map(canonicalJson)) : null;
   for (const claim of report.riskClaims) for (const span of claim.evidence) {
     const text = sources[span.source];
     if (typeof text !== 'string' || span.start >= span.end || span.end > text.length) throw new TypeError('semantic evidence span is outside supplied source');
     const hash = `sha256:${createHash('sha256').update(text.slice(span.start, span.end)).digest('hex')}`;
     if (hash !== span.textHash) throw new TypeError('semantic evidence span hash mismatch');
+    if (allowed && !allowed.has(canonicalJson(span))) throw new TypeError('semantic evidence span must use a supplied citation');
   }
   return report;
 }
