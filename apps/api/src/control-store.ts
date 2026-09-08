@@ -1,7 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as pause } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Pool, PoolClient } from "pg";
 
@@ -39,10 +40,11 @@ export class ControlStore {
       store.sqlite.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     }
     const migration = (name: string) => readFileSync(fileURLToPath(new URL(`../../../database/migrations/${name}.sql`, import.meta.url)), "utf8");
-    const schema = [migration("002_control_plane"), migration(`003_scan_audit.${store.pool ? "pg" : "sqlite"}`), migration("004_chain_outbox"), migration("006_scan_request_keys"), migration("007_receipt_anchors"), migration(`009_scan_trace_index.${store.pool ? "pg" : "sqlite"}`), migration("010_runtime_preparations")].join("\n");
+    const names = ["002_control_plane", `003_scan_audit.${store.pool ? "pg" : "sqlite"}`, "004_chain_outbox", "006_scan_request_keys", "007_receipt_anchors", `009_scan_trace_index.${store.pool ? "pg" : "sqlite"}`, "010_runtime_preparations"];
+    const schema = names.map(migration).join("\n");
     const extensions = [
-      { column: "registry_address", sql: migration("005_chain_action_domain") },
-      { column: "submission_trace_parent", sql: migration("008_submission_trace") },
+      { name: "005_chain_action_domain", column: "registry_address", sql: migration("005_chain_action_domain") },
+      { name: "008_submission_trace", column: "submission_trace_parent", sql: migration("008_submission_trace") },
     ];
     if (store.sqlite) {
       store.sqlite.exec("BEGIN IMMEDIATE");
@@ -53,15 +55,43 @@ export class ControlStore {
         store.sqlite.exec("COMMIT");
       } catch (error) { store.sqlite.exec("ROLLBACK"); store.sqlite.close(); throw error; }
     } else {
-      const client = await store.pool!.connect();
       try {
-        await client.query("BEGIN"); await client.query("SELECT pg_advisory_xact_lock(hashtext('mcpshield-control-migrations'))");
-        await client.query(schema);
-        const columns = (await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'cp_chain_actions'")).rows;
-        for (const extension of extensions) if (!columns.some((column) => column.column_name === extension.column)) await client.query(extension.sql);
-        await client.query("COMMIT");
-      } catch (error) { await client.query("ROLLBACK"); throw error; }
-      finally { client.release(); }
+        const client = await store.pool!.connect();
+        let destroyed = false;
+        // Evicting this one connection aborts any outstanding SQL and rolls its transaction back server-side.
+        const totalDeadline = setTimeout(() => { destroyed = true; client.release(true); }, 15000);
+        try {
+          const plan = [...names.map((name) => ({ name, sql: migration(name), column: undefined as string | undefined })), ...extensions].sort((a, b) => a.name.localeCompare(b.name));
+          const deadline = Date.now() + 15000;
+          for (let attempt = 0; ; attempt++) {
+            try {
+              await client.query("BEGIN");
+              const remaining = Math.max(1, deadline - Date.now());
+              await client.query("SELECT set_config('statement_timeout',$1,true)", [`${remaining}ms`]);
+              await client.query("SELECT pg_advisory_xact_lock(hashtext('mcpshield-control-migrations'))");
+              await client.query("CREATE TABLE IF NOT EXISTS cp_schema_migrations (migration_id TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)");
+              const applied = new Map((await client.query("SELECT migration_id,checksum FROM cp_schema_migrations")).rows.map((row) => [row.migration_id, row.checksum]));
+              for (const step of plan) {
+                if (Date.now() >= deadline) throw Error("CONTROL_MIGRATION_DEADLINE");
+                await client.query("SELECT set_config('statement_timeout',$1,true)", [`${Math.max(1, deadline - Date.now())}ms`]);
+                const checksum = createHash("sha256").update(step.sql.replace(/\r\n/g, "\n")).digest("hex"), previous = applied.get(step.name);
+                if (previous && previous !== checksum) throw Error("CONTROL_MIGRATION_CHECKSUM_MISMATCH");
+                if (previous) continue;
+                const columns = step.column ? (await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='cp_chain_actions'")).rows : [];
+                if (!step.column || !columns.some((column) => column.column_name === step.column)) await client.query(step.sql);
+                await client.query("INSERT INTO cp_schema_migrations(migration_id,checksum,applied_at) VALUES($1,$2,$3)", [step.name, checksum, new Date().toISOString()]);
+              }
+              await client.query("COMMIT"); break;
+            } catch (error: any) {
+              if (destroyed) throw Error("CONTROL_MIGRATION_DEADLINE");
+              await client.query("ROLLBACK").catch(() => {});
+              // Only first-upgrade DDL can still meet existing business transactions. Retry the whole atomic migration, never hide other errors.
+              if (error?.code !== "40P01" || attempt >= 2 || Date.now() + 50 * (attempt + 1) >= deadline) throw error;
+              await pause(50 * (attempt + 1));
+            }
+          }
+        } finally { clearTimeout(totalDeadline); if (!destroyed) client.release(); }
+      } catch (error) { await store.pool!.end().catch(() => {}); throw error; }
     }
     return store;
   }

@@ -272,6 +272,22 @@ test("PostgreSQL real adapter persists and atomically dequeues", { skip: !proces
   const tenantId = `pg-${randomUUID()}`;
   try {
     assert.equal(store.driver, "POSTGRESQL");
+    // A reopened process must not replay DROP/CREATE TRIGGER while an existing business transaction holds its tables.
+    let acquired!: () => void, releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => { acquired = resolve; }), unlock = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const business = store.forTenant(tenantId, async (tx) => {
+      await tx.query("LOCK TABLE cp_scans IN ACCESS EXCLUSIVE MODE");
+      acquired(); await unlock;
+    });
+    await locked;
+    const reopening = ControlStore.open(process.env.MCPSHIELD_POSTGRES_TEST_URL); let timer: NodeJS.Timeout | undefined;
+    try {
+      const reopened = await Promise.race([reopening, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(Error("OPEN_REPLAYED_DDL_ON_BUSY_TABLES")), 3000);
+      })]);
+      assert.equal(reopened.driver, "POSTGRESQL");
+      assert.equal((await reopened.query("SELECT migration_id FROM cp_schema_migrations")).length, 9);
+    } finally { clearTimeout(timer); releaseLock(); await business; await (await reopening.catch(() => undefined))?.close(); }
     const first = await store.enqueue(tenantId, { releaseId: release.releaseId, policyHash: hash(defaultPolicy) }, "once", "input", "trace");
     assert.equal((await store.enqueue(tenantId, { releaseId: release.releaseId, policyHash: hash(defaultPolicy) }, "once", "input", "trace")).deduplicated, true);
     const leased = await store.claim(tenantId);
@@ -282,5 +298,24 @@ test("PostgreSQL real adapter persists and atomically dequeues", { skip: !proces
   } finally {
     await store.query("DELETE FROM cp_scans WHERE tenant_id = ?", [tenantId]);
     await store.close();
+  }
+});
+
+test("PostgreSQL migration ledger rejects checksum drift and releases failed initialization pools", { skip: !process.env.MCPSHIELD_POSTGRES_TEST_URL }, async () => {
+  const { Pool } = await import("pg"), pool = new Pool({ connectionString: process.env.MCPSHIELD_POSTGRES_TEST_URL });
+  const schema = `mcpshield_migration_${randomUUID().replace(/-/g, "")}`;
+  assert.match(schema, /^mcpshield_migration_[a-f0-9]{32}$/);
+  let first: ControlStore | undefined;
+  try {
+    await pool.query(`CREATE SCHEMA ${schema}`);
+    const target = new URL(process.env.MCPSHIELD_POSTGRES_TEST_URL!); target.searchParams.set("options", `-csearch_path=${schema}`);
+    first = await ControlStore.open(target.href);
+    await first.query("UPDATE cp_schema_migrations SET checksum=? WHERE migration_id=?", ["0".repeat(64), "003_scan_audit.pg"]);
+    await assert.rejects(ControlStore.open(target.href), /CONTROL_MIGRATION_CHECKSUM_MISMATCH/);
+    assert.equal((await first.query("SELECT checksum FROM cp_schema_migrations WHERE migration_id=?", ["003_scan_audit.pg"]))[0].checksum, "0".repeat(64));
+  } finally {
+    await first?.close();
+    // Only the fresh, regex-validated test-owned schema, never the shared database/public schema.
+    await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); await pool.end();
   }
 });
