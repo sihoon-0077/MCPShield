@@ -98,10 +98,11 @@ export async function acquireNpmClosure(options, { download = downloadRegistryUr
   } finally { clearTimeout(timer); controller.abort(); }
 }
 
-export function inspectClosureArchive(bytes) {
+export function inspectClosureArchive(bytes, { includeContents = false } = {}) {
   if (!Buffer.isBuffer(bytes) || bytes.length > CLOSURE_LIMITS.archiveBytes || bytes.length < 1024 ||
     bytes.length % 512 || !new tar.Header(bytes).cksumValid) throw Error('CLOSURE_ARCHIVE_INVALID');
   const entries = [];
+  const contents = [];
   const seen = new Set();
   let totalBytes = 0;
   const listing = tar.t({ sync: true, strict: true, onReadEntry(entry) {
@@ -118,13 +119,29 @@ export function inspectClosureArchive(bytes) {
     entries.push(item);
     if (entry.type === 'File') {
       const hash = createHash('sha256');
-      entry.on('data', (chunk) => hash.update(chunk));
-      entry.on('end', () => { item.digest = `sha256:${hash.digest('hex')}`; });
+      const chunks = [];
+      entry.on('data', (chunk) => { hash.update(chunk); if (includeContents) chunks.push(chunk); });
+      entry.on('end', () => {
+        item.digest = `sha256:${hash.digest('hex')}`;
+        if (includeContents) contents.push({ path, bytes: Buffer.concat(chunks) });
+      });
     }
   } });
   listing.end(bytes);
   if (!entries.length || entries.some((entry) => entry.type === 'File' && !digestPattern.test(entry.digest))) throw Error('CLOSURE_ARCHIVE_INCOMPLETE');
-  return { ...closureManifest(entries), bytes: totalBytes };
+  return { ...closureManifest(entries), bytes: totalBytes, ...(includeContents ? { contents } : {}) };
+}
+
+function closureReport(bytes) {
+  const reports = [];
+  const listing = tar.t({ sync: true, strict: true, onReadEntry(entry) {
+    if (entry.type !== 'File' || entry.linkpath || !['closure-report.json', 'mcpshield-closure-report.json'].includes(entry.path) ||
+      entry.size > 2 * 1024 * 1024) throw Error('CLOSURE_REPORT_INVALID');
+    const chunks = []; entry.on('data', (chunk) => chunks.push(chunk)); entry.on('end', () => reports.push(Buffer.concat(chunks)));
+  } });
+  listing.end(bytes);
+  if (reports.length !== 1) throw Error('CLOSURE_REPORT_INVALID');
+  return { bytes: reports[0], value: JSON.parse(reports[0]) };
 }
 
 function docker(args, timeoutMs, maxBytes = 128 * 1024) {
@@ -147,6 +164,30 @@ function docker(args, timeoutMs, maxBytes = 128 * 1024) {
       if (failure || code !== 0) reject(failure ?? Error(safeCode ? `RUNTIME_${safeCode[1]}_${safeCode[2]}` : 'RUNTIME_DOCKER_COMMAND_FAILED'));
       else resolveResult(Buffer.concat(chunks)); });
   });
+}
+
+// Export filesystem bytes through a never-started container; no candidate is imported
+// or extracted to executable host paths. The complete node_modules tree is included.
+export async function readPreparedClosure({ descriptor, expectedDescriptorDigest }) {
+  if (hashPreparedRuntimeDescriptor(descriptor) !== expectedDescriptorDigest || descriptor.stage !== 'CLOSURE_PREPARED') throw Error('RUNTIME_DESCRIPTOR_IDENTITY_INVALID');
+  if (process.platform !== 'linux') throw Error('RUNTIME_LINUX_DOCKER_REQUIRED');
+  const container = `mcpshield-review-${randomUUID()}`;
+  const deadline = Date.now() + 30_000;
+  const run = (args, size) => docker(args, Math.max(1, deadline - Date.now()), size);
+  try {
+    const info = JSON.parse(await run(['image', 'inspect', descriptor.finalImageDigest, '--format', '{{json .}}']));
+    if (info.Id !== descriptor.finalImageDigest || info.Os !== descriptor.platform.os || info.Architecture !== descriptor.platform.architecture) throw Error('RUNTIME_IMAGE_IDENTITY_MISMATCH');
+    await run(['create', '--pull=never', '--name', container, '--network=none', '--read-only', '--user=1000:1000',
+      '--cap-drop=ALL', '--security-opt=no-new-privileges', '--entrypoint=/usr/local/bin/node', descriptor.finalImageDigest, '--version']);
+    const { value: report } = closureReport(await run(['cp', `${container}:/mcpshield-closure-report.json`, '-'], 4 * 1024 * 1024));
+    const closure = inspectClosureArchive(await run(['cp', `${container}:/app/.`, '-'], CLOSURE_LIMITS.archiveBytes), { includeContents: true });
+    const original = { ...descriptor, stage: 'PREFLIGHT', finalImageDigest: null, toolSurfaceHash: null };
+    if (report.digest !== closure.digest || report.sourceDescriptorDigest !== hashPreparedRuntimeDescriptor(original) ||
+      report.installScripts !== false || report.installNetwork !== 'NONE' || report.npmVersion !== '12.0.2' ||
+      report.toolchainPatches !== 'brace-expansion@5.0.9,ip-address@10.3.1,tar@7.5.22' ||
+      closure.entries.find(({ path }) => path === descriptor.entrypoint.path)?.digest !== descriptor.entrypoint.digest) throw Error('CLOSURE_REPORT_MISMATCH');
+    return { ...closure, report, source: 'LIVE_DOCKER_IMAGE_EXPORT', candidateExecutionPerformed: false };
+  } finally { try { await docker(['rm', '-f', container], 5000); } catch { /* exact task-owned unstarted container */ } }
 }
 
 export async function prepareNpmClosure(options, acquisitionOptions) {
@@ -183,15 +224,7 @@ export async function prepareNpmClosure(options, acquisitionOptions) {
     if (output.toString('utf8').trim() !== 'MCPSHIELD_CLOSURE_PREPARED') throw Error('RUNTIME_INSTALLATION_FAILED');
     stage = 'REPORT_EXPORT';
     const reportBytes = await run(['cp', `${container}:/work/closure-report.json`, '-'], 4 * 1024 * 1024);
-    // docker cp emits tar; read one bounded regular report file without extracting to a host path.
-    const reports = [];
-    const reportTar = tar.t({ sync: true, strict: true, onReadEntry(entry) {
-      if (entry.type !== 'File' || entry.linkpath || entry.path !== 'closure-report.json' || entry.size > 2 * 1024 * 1024) throw Error('CLOSURE_REPORT_INVALID');
-      const chunks = []; entry.on('data', (chunk) => chunks.push(chunk)); entry.on('end', () => reports.push(Buffer.concat(chunks)));
-    } });
-    reportTar.end(reportBytes);
-    if (reports.length !== 1) throw Error('CLOSURE_REPORT_INVALID');
-    const report = JSON.parse(reports[0]);
+    const { bytes: rawReport, value: report } = closureReport(reportBytes);
     stage = 'CLOSURE_EXPORT';
     const archive = await run(['cp', `${container}:/work/app/.`, '-'], CLOSURE_LIMITS.archiveBytes);
     const verified = inspectClosureArchive(archive);
@@ -200,7 +233,7 @@ export async function prepareNpmClosure(options, acquisitionOptions) {
       report.toolchainPatches !== 'brace-expansion@5.0.9,ip-address@10.3.1,tar@7.5.22' ||
       verified.entries.find((entry) => entry.path === acquired.descriptor.entrypoint.path)?.digest !== acquired.descriptor.entrypoint.digest) throw Error('CLOSURE_REPORT_MISMATCH');
     await writeFile(join(workspace, 'closure.tar'), archive);
-    await writeFile(join(workspace, 'closure-report.json'), reports[0]);
+    await writeFile(join(workspace, 'closure-report.json'), rawReport);
     await copyFile(resolve(HERE, '../Dockerfile.runtime'), join(workspace, 'Dockerfile'));
     stage = 'IMAGE_TAG';
     await run(['image', 'tag', options.builderImageDigest, builderTag]);
@@ -213,7 +246,7 @@ export async function prepareNpmClosure(options, acquisitionOptions) {
     success = true;
     return { status: 'INCONCLUSIVE', ready: false, phase: 'CLOSURE_PREPARED', candidateExecutionPerformed: false,
       descriptor, descriptorDigest: hashPreparedRuntimeDescriptor(descriptor), acquisition: acquired.acquisition,
-      closure: { digest: verified.digest, files: verified.entries.length, bytes: verified.bytes, reportDigest: sha256(reports[0]) },
+      closure: { digest: verified.digest, files: verified.entries.length, bytes: verified.bytes, reportDigest: sha256(rawReport) },
       imageDigestKind: 'DOCKER_IMAGE_CONFIG_ID', runtimeTag, issues: [],
       pending: ['ACTUAL_MCP_DISCOVERY', 'RUNTIME_OBSERVATION', 'GATEWAY_RELEASE_IDENTITY_BINDING'],
       cleanup: () => docker(['image', 'rm', runtimeTag], 5000) };

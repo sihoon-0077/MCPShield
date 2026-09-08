@@ -89,14 +89,8 @@ export async function loadManifest(fixtureDir, allowMissing = false) {
   return manifest;
 }
 
-export function toolSurfaceHash(tools) {
-  const normalized = [...tools].sort((a, b) => {
-    const left = `${String(a.name)}\0${canonicalJson(a)}`;
-    const right = `${String(b.name)}\0${canonicalJson(b)}`;
-    return left < right ? -1 : left > right ? 1 : 0;
-  });
-  return `0x${createHash('sha256').update(canonicalJson(normalized)).digest('hex')}`;
-}
+export { toolSurfaceHash } from './tool-surface.mjs';
+import { toolSurfaceHash } from './tool-surface.mjs';
 
 async function sourceFiles(fixtureDir) {
   const files = [];

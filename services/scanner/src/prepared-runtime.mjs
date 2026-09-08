@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { hashPreparedRuntimeDescriptor } from '../../resolver/src/runtime-descriptor.mjs';
 import { preparedExecutionPolicy } from './prepared-binding.mjs';
 import { canonicalJson, createEvidenceBundle } from './evidence.mjs';
-import { toolSurfaceHash } from './scanner.mjs';
+import { toolSurfaceHash } from './tool-surface.mjs';
 import { runSandbox } from './sandbox.mjs';
 import { validateProbePlan, generateSyntheticProbes } from './probes.mjs';
 import { redactEvidenceDocument } from './redaction.mjs';
@@ -25,6 +25,7 @@ function surfaceOf(result) {
 
 function protocolComplete(result, runtime) {
   return Boolean(result && !result.error && !result.timedOut && result.exitCode === 0 && surfaceOf(result) &&
+    !result.egressEvents?.some(({ type }) => type === 'EGRESS_BODY_LIMIT') &&
     result.mcpReport.permissionProfile === 'NODE_PERMISSION_READ_ONLY_V1' &&
     canonicalJson(result.runtimeIdentity ?? null) === canonicalJson(runtime));
 }
@@ -68,6 +69,8 @@ function stepEvidence(result) {
   if (!result) return null;
   return { timedOut: Boolean(result.timedOut), exitCode: result.exitCode ?? null,
     protocolComplete: result.mcpReport?.complete === true, pages: result.mcpReport?.pages ?? null,
+    toolSurfaceHash: surfaceOf(result), runtimeIdentity: result.runtimeIdentity ?? null,
+    permissionProfile: result.mcpReport?.permissionProfile ?? null,
     protocolVersion: result.mcpReport?.protocolVersion ?? null,
     callResults: result.mcpReport?.callResults ?? [], canaryExfiltration: Boolean(result.canaryObserved),
     canaryHash: result.canaryObserved ? result.canaryHash : null, canaryType: result.canaryType ?? null,
@@ -117,6 +120,8 @@ export async function observePreparedRuntime({ descriptor, expectedDescriptorDig
     pending: ['FULL_BEHAVIOR_COVERAGE', 'PREPARED_PROFILE_STATIC_AI_REVIEW', 'VALIDATOR_APPROVAL', 'GATEWAY_RELEASE_IDENTITY_BINDING'] });
   const bundle = createEvidenceBundle({ 'report.json': report, 'runtime/execution-policy.json': executionPolicy,
     'runtime/descriptor.redacted.json': redactEvidenceDocument(observedDescriptor ?? descriptor),
+    // Raw metadata is an encrypted, operator-only evidence object, never a public view/log.
+    'runtime/tools.json': steps.discovery?.mcpReport?.tools ?? [],
     'runtime/tools.redacted.json': redactEvidenceDocument(steps.discovery?.mcpReport?.tools ?? []) });
   return { report, observedDescriptor, bundle };
 }
