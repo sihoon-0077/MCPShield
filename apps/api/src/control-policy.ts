@@ -21,9 +21,13 @@ export function validPolicy(document: any): boolean {
     && Array.isArray(document.requiredTiers) && [...document.requiredTiers].sort().join() === "sandbox,semantic,static";
 }
 export function policyVerdict(bundle: any, scanResult: any, policy: any = defaultPolicy, runtimeTrust?: Record<string, any>) {
-  // Dedicated OCI approval gate is connected only after its independent policy
-  // implementation exists. Image/Trivy/observation phase completion is not PASS.
-  if (policy.profile === ociPolicy.profile || bundle.files["oci/binding.json"] !== undefined) return "ABSTAIN";
+  if (policy.profile === ociPolicy.profile) {
+    if (!validPolicy(policy) || !runtimeTrust) return "ABSTAIN";
+    const { binding, source } = checkedOciEvidence(bundle);
+    assertRuntimeBudget(source, policy, binding.descriptor);
+    return assessOciPolicy(bundle, scanResult, binding, runtimeTrust).verdict as "PASS" | "FAIL" | "ABSTAIN";
+  }
+  if (bundle.files["oci/binding.json"] !== undefined) return "ABSTAIN";
   // Prepared evidence must never fall through the legacy policy's broader completion gate.
   if (policy.profile === preparedPolicy.profile) {
     if (!validPolicy(policy) || !runtimeTrust) return "ABSTAIN";
@@ -55,6 +59,8 @@ export function assertRuntimeBudget(source: any, policy: any, descriptor?: any) 
   } else if ((source.metadata?.expandedBytes ?? source.metadata?.sizeBytes ?? 0) > policy.maxArtifactBytes) throw new Error("ARTIFACT_TOO_LARGE");
 }
 import { isDeepStrictEqual } from "node:util";
-import { checkedPreparedEvidence } from "./prepared-evidence.js";
+import { checkedPreparedEvidence, checkedOciEvidence } from "./prepared-evidence.js";
 // @ts-expect-error Shared strict pure policy assessment is ESM JavaScript.
 import { assessPreparedPolicy } from "../../../services/scanner/src/prepared-policy.mjs";
+// @ts-expect-error Shared strict OCI policy is separate from Node and legacy approval.
+import { assessOciPolicy } from "../../../services/scanner/src/oci-policy.mjs";

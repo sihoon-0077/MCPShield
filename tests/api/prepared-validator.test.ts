@@ -28,10 +28,10 @@ test("prepared signing requires independent evidence, not API PASS or a supplied
   const context = { chainId: 31337, registryAddress: registry, policyHash, policy: preparedPolicy, scan,
     evidence: { bundle: f.bundle, reportRoot: f.bundle.manifest.root }, identity, validatorSetVersion: 1, nonce: 0, now,
     preparedRuntime: f.config, preparedRuntimeTrust: f.trusted, independentPreparedEvidence: independent };
-  assert.equal(checkedValidatorPayload(template, context).verdict, "PASS");
-  assert.throws(() => checkedValidatorPayload(template, { ...context, independentPreparedEvidence: undefined }), /BINDING_MISMATCH/);
-  assert.throws(() => checkedValidatorPayload(template, { ...context, preparedRuntimeTrust: { independentlyVerified: true } }), /BINDING_MISMATCH/);
-  assert.throws(() => checkedValidatorPayload(template, { ...context, preparedRuntime: { ...f.config, builderImageDigest: `sha256:${"0".repeat(64)}` } }), /BINDING_MISMATCH/);
+  assert.equal((await checkedValidatorPayload(template, context)).verdict, "PASS");
+  await assert.rejects(() => checkedValidatorPayload(template, { ...context, independentPreparedEvidence: undefined }), /BINDING_MISMATCH/);
+  await assert.rejects(() => checkedValidatorPayload(template, { ...context, preparedRuntimeTrust: { independentlyVerified: true } }), /BINDING_MISMATCH/);
+  await assert.rejects(() => checkedValidatorPayload(template, { ...context, preparedRuntime: { ...f.config, builderImageDigest: `sha256:${"0".repeat(64)}` } }), /BINDING_MISMATCH/);
   assert.throws(() => comparePreparedScans(f, f, preparedPolicy, f.trusted), /IDENTITY_MISMATCH/);
   const documents = structuredClone(f.documents); documents["semantic/reviews.json"].reviews[0].critic = undefined;
   delete documents["semantic/reviews.json"].reviews[0].critic;
