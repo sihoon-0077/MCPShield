@@ -322,6 +322,12 @@ stream-generated compressed fixture; no 513 MiB raw fixture file is written.
 Without those settings, actual image/large-memory tests remain SKIP/NOT_RUN,
 not passed measurements. **Still required for the full master**: filesystem and
 SBOM/binary review, independent OCI signing policy, and Gateway integration.
+
+The subsequent scanner inventory/Trivy phase is documented in
+`services/scanner/README.md`; its COMPLETE state is inventory completion only,
+never OCI execution approval. The 100 MiB native import, repeated export and
+non-Node MCP observation acceptance passed Linux CI run `34268881754`; this is
+not evidence that the newer Trivy review adapter or OCI signing has passed.
 These omissions are not npm-policy
 PASS substitutions. Relevant native contracts: [Docker load](https://docs.docker.com/reference/cli/docker/image/load/)
 and [OCI image configuration](https://specs.opencontainers.org/image-spec/config/).

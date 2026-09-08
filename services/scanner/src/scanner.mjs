@@ -39,7 +39,8 @@ async function listFiles(root, current = root, state = { entries: 0, limits: sna
   });
 }
 
-export async function artifactDigest(root, { profile = 'fixture-v1' } = {}) {
+export async function artifactDigest(root, { profile = 'fixture-v1', signal } = {}) {
+  signal?.throwIfAborted();
   const hash = createHash('sha256');
   const limits = snapshotLimits(profile);
   const files = await listFiles(root, root, { entries: 0, limits });
@@ -54,6 +55,7 @@ export async function artifactDigest(root, { profile = 'fixture-v1' } = {}) {
       hash.update(relative(root, path).split(sep).join('/')).update('\0');
       let read = 0;
       while (true) {
+        signal?.throwIfAborted();
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
         if (!bytesRead) break;
         read += bytesRead; totalBytes += bytesRead;
@@ -66,6 +68,7 @@ export async function artifactDigest(root, { profile = 'fixture-v1' } = {}) {
       hash.update('\0');
     } finally { await handle.close(); }
   }
+  signal?.throwIfAborted();
   return `sha256:${hash.digest('hex')}`;
 }
 
