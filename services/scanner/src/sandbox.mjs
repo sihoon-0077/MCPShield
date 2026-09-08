@@ -126,13 +126,15 @@ async function runLocal({ fixtureDir, entrypoint, timeoutMs, scanId, egressAllow
   try {
     const spec = fixtureCommand(fixtureDir, entrypoint, sink.url, canaryPath, token, fakeHome);
     const processResult = await run(spec.command, spec.args, { ...spec, timeoutMs });
+    const observedCanary = canaries.find(({ hash }) => sink.events.some((event) => event.canaryHash === hash));
     return {
       mode: 'LOCAL_PROCESS',
       timedOut: processResult.timedOut,
       exitCode: processResult.code,
       error: processResult.code === 0 || processResult.timedOut ? null : 'fixture exited unsuccessfully',
-      canaryObserved: sink.events.some((event) => canaries.some(({ hash }) => hash === event.canaryHash)),
-      canaryHash,
+      canaryObserved: Boolean(observedCanary),
+      canaryHash: observedCanary?.hash ?? canaryHash,
+      canaryType: observedCanary?.type ?? null,
       observations: observationsFrom(processResult.stderr),
       egressEvents: sink.events.filter((event) => event.type),
     };
@@ -211,6 +213,7 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId, egressAllo
     let events = '';
     try { events = await readFile(eventsPath, 'utf8'); } catch { /* no exfil event */ }
     const parsedEvents = events.split(/\r?\n/).filter(Boolean).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
+    const observedCanary = canaries.find(({ hash }) => parsedEvents.some((event) => event.canaryHash === hash));
     let mcpReport;
     if (mcpProbe) {
       const reportLine = fixture.stdout.split(/\r?\n/).find((line) => line.startsWith('MCPSHIELD_MCP_REPORT '));
@@ -222,8 +225,9 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId, egressAllo
       timedOut: fixture.timedOut,
       exitCode: fixture.code,
       error: fixture.code === 0 || fixture.timedOut ? null : `fixture exited unsuccessfully (${fixture.stderr.match(/\b(?:EACCES|EPERM|EROFS|ENOENT|ERR_MODULE_NOT_FOUND|ERR_ASSERTION|ERR_ACCESS_DENIED)\b/)?.[0] ?? 'UNCLASSIFIED'})`,
-      canaryObserved: parsedEvents.some((event) => canaries.some(({ hash }) => event.canaryHash === hash)),
-      canaryHash,
+      canaryObserved: Boolean(observedCanary),
+      canaryHash: observedCanary?.hash ?? canaryHash,
+      canaryType: observedCanary?.type ?? null,
       observations: observationsFrom(fixture.stderr),
       egressEvents: parsedEvents.filter((event) => event.type),
       ...(mcpProbe ? { mcpReport } : {}),
