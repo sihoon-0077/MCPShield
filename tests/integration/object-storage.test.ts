@@ -4,6 +4,16 @@ import { test } from 'node:test';
 import { createS3EvidenceStore } from '../../packages/object-storage/index.mjs';
 import { saveEvidence, loadEvidence, type ControlOptions } from '../../apps/api/src/control-plane.js';
 
+test('S3 total deadline includes a credential provider that never resolves', async () => {
+  const store = createS3EvidenceStore({ bucket: 'private-test', region: 'us-east-1', timeoutMs: 50,
+    credentials: async () => new Promise(() => {}) });
+  const started = performance.now();
+  try {
+    await assert.rejects(store.get('a'.repeat(64)), /S3_EVIDENCE_TIMEOUT/);
+    assert.ok(performance.now() - started < 1000);
+  } finally { store.close(); }
+});
+
 test('object-store evidence remains tenant-encrypted and a corrupted existing object cannot complete a retry', async () => {
   const objects = new Map<string, Buffer>();
   const options: ControlOptions = { credentials: [], artifactPath: 'unused', evidencePath: 'unused', evidenceKey: 'a'.repeat(64),

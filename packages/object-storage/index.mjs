@@ -22,27 +22,36 @@ export function createS3EvidenceStore({ bucket, region, endpoint, credentials, k
     let stream;
     const stop = () => stream?.destroy(Error('S3_EVIDENCE_TIMEOUT'));
     controller.signal.addEventListener('abort', stop, { once: true });
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await client.send(command, { abortSignal: controller.signal });
-      if (!read) return true;
-      stream = response.Body;
-      if (controller.signal.aborted) throw Error('S3_EVIDENCE_TIMEOUT');
-      if (!stream || Number(response.ContentLength) > maxBytes) throw Error('S3_EVIDENCE_SIZE_INVALID');
-      const chunks = []; let size = 0;
-      for await (const chunk of stream) {
-        size += chunk.length;
-        if (size > maxBytes) throw Error('S3_EVIDENCE_SIZE_INVALID');
-        chunks.push(chunk);
+    let timer;
+    // SDK abort does not cancel credential-provider resolution. Bound that wait
+    // too; any request/body that arrives late still sees the aborted signal.
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(Error('S3_EVIDENCE_TIMEOUT')); }, timeoutMs);
+    });
+    const operation = async () => {
+      try {
+        const response = await client.send(command, { abortSignal: controller.signal });
+        if (!read) return true;
+        stream = response.Body;
+        if (controller.signal.aborted) { stream?.destroy(); throw Error('S3_EVIDENCE_TIMEOUT'); }
+        if (!stream || Number(response.ContentLength) > maxBytes) throw Error('S3_EVIDENCE_SIZE_INVALID');
+        const chunks = []; let size = 0;
+        for await (const chunk of stream) {
+          size += chunk.length;
+          if (size > maxBytes) throw Error('S3_EVIDENCE_SIZE_INVALID');
+          chunks.push(chunk);
+        }
+        if (size < 28) throw Error('S3_EVIDENCE_SIZE_INVALID');
+        return Buffer.concat(chunks);
+      } catch (error) {
+        if (controller.signal.aborted) throw Error('S3_EVIDENCE_TIMEOUT');
+        if (!read && error.$metadata?.httpStatusCode === 412) return false;
+        if (error.message === 'S3_EVIDENCE_SIZE_INVALID') throw error;
+        throw Error('S3_EVIDENCE_UNAVAILABLE');
       }
-      if (size < 28) throw Error('S3_EVIDENCE_SIZE_INVALID');
-      return Buffer.concat(chunks);
-    } catch (error) {
-      if (controller.signal.aborted) throw Error('S3_EVIDENCE_TIMEOUT');
-      if (!read && error.$metadata?.httpStatusCode === 412) return false;
-      if (error.message === 'S3_EVIDENCE_SIZE_INVALID') throw error;
-      throw Error('S3_EVIDENCE_UNAVAILABLE');
-    } finally {
+    };
+    try { return await Promise.race([operation(), deadline]); }
+    finally {
       clearTimeout(timer);
       controller.signal.removeEventListener('abort', stop);
       stream?.destroy();
