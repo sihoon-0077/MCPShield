@@ -43,6 +43,7 @@ export const canonical = (value: any): string => Array.isArray(value) ? `[${valu
   : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
 export const hash = (value: any) => `0x${createHash("sha256").update(canonical(value)).digest("hex")}`;
 const bytes32 = /^0x[0-9a-f]{64}$/;
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const safeToken = (provided: string, expected: string) => Buffer.byteLength(provided) === Buffer.byteLength(expected) && timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
 const err = (code: string, statusCode = 400) => Object.assign(new Error(code), { statusCode });
 
@@ -144,7 +145,9 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
     api.post("/scans", async (request, reply) => {
       const user = authenticate(request.headers.authorization); authorize(user, "operator");
       const body = request.body as any;
-      if (!body || !bytes32.test(body.releaseId) || !bytes32.test(body.policyHash) || Object.keys(body).some((key) => !["releaseId", "policyHash", "requestedTiers", "baselineReleaseId"].includes(key))) throw err("INVALID_SCAN_REQUEST");
+      if (!body || !bytes32.test(body.releaseId) || !bytes32.test(body.policyHash)
+        || body.appealId !== undefined && (typeof body.appealId !== "string" || !uuid.test(body.appealId))
+        || Object.keys(body).some((key) => !["releaseId", "policyHash", "requestedTiers", "baselineReleaseId", "appealId"].includes(key))) throw err("INVALID_SCAN_REQUEST");
       const release = await get(user.tenantId, "release", body.releaseId);
       const policy = await get(user.tenantId, "policy", body.policyHash);
       if (policy.deprecatedAt) throw err("POLICY_DEPRECATED", 409);
@@ -158,7 +161,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       const result = await withSpan("scan.accept", { "mcpshield.release_id": body.releaseId }, async () =>
         store.enqueueConstrained(user.tenantId, { ...input, traceparent: traceHeaders().traceparent }, idempotencyKey, hash(input), currentTraceId() ?? randomUUID(), release, policy.document),
       { traceparent: typeof request.headers.traceparent === "string" ? request.headers.traceparent : undefined });
-      if (!result.deduplicated) await store.event(user.tenantId, body.releaseId, "scan.queued", { scanId: result.scan.scanId }, result.scan.traceId);
+      if (!result.deduplicated && !body.appealId) await store.event(user.tenantId, body.releaseId, "scan.queued", { scanId: result.scan.scanId }, result.scan.traceId);
       return reply.code(202).send({ ...result, scan: publicScan(result.scan), links: { self: `/v1/scans/${result.scan.scanId}` } });
     });
     api.get("/scans", async (request) => ({ items: (await store.scans(authenticate(request.headers.authorization).tenantId)).map(publicScan) }));
@@ -193,13 +196,21 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
     });
     api.post("/releases/:releaseId/appeals", async (request, reply) => {
       const user = authenticate(request.headers.authorization); authorize(user, "operator");
-      const releaseId = (request.params as any).releaseId; await get(user.tenantId, "release", releaseId);
+      const releaseId = (request.params as any).releaseId;
       const body = request.body as any;
-      if (!body || typeof body.reason !== "string" || body.reason.trim().length < 8 || body.reason.length > 2000) throw err("INVALID_APPEAL");
-      if (body.scanId && (await store.scan(user.tenantId, body.scanId))?.releaseId !== releaseId) throw err("SCAN_NOT_FOUND", 404);
-      const appeal = { appealId: randomUUID(), releaseId, reason: body.reason, status: "OPEN", createdAt: new Date().toISOString(), scanId: body.scanId ?? null };
-      await store.put(user.tenantId, "appeal", appeal.appealId, appeal);
-      await store.event(user.tenantId, releaseId, "appeal.opened", { appealId: appeal.appealId });
+      if (!body || Object.keys(body).some(key => !["reason", "scanId"].includes(key)) || typeof body.reason !== "string"
+        || body.reason.trim().length < 8 || body.reason.length > 2000 || body.scanId !== undefined && (typeof body.scanId !== "string" || !uuid.test(body.scanId))) throw err("INVALID_APPEAL");
+      const appeal = await store.forTenant(user.tenantId, async tx => {
+        const release = await tx.get(user.tenantId, "release", releaseId); if (!release) throw err("RELEASE_NOT_FOUND", 404);
+        const scan = body.scanId ? await tx.scan(user.tenantId, body.scanId) : undefined;
+        if (body.scanId && scan?.releaseId !== releaseId) throw err("SCAN_NOT_FOUND", 404);
+        const appeal = { appealId: randomUUID(), releaseId, reason: body.reason, status: "OPEN", createdAt: new Date().toISOString(), scanId: body.scanId ?? null,
+          original: { artifactDigest: release.artifactDigest, policyHash: scan?.policyHash ?? release.policyHash ?? null,
+            reportRoot: scan ? scan.result?.reportRoot ?? null : release.reportRoot ?? null }, rescan: null };
+        await tx.put(user.tenantId, "appeal", appeal.appealId, appeal);
+        await tx.event(user.tenantId, releaseId, "appeal.opened", { appealId: appeal.appealId, scanId: appeal.scanId, ...appeal.original });
+        return appeal;
+      });
       return reply.code(201).send({ appeal });
     });
     api.get("/releases/:releaseId/appeals", async (request) => {
@@ -209,11 +220,23 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
     });
     api.post("/appeals/:appealId/resolve", async (request) => {
       const user = authenticate(request.headers.authorization); authorize(user, "admin");
-      const appeal = await get(user.tenantId, "appeal", (request.params as any).appealId);
-      const body = request.body as any; if (!body || typeof body.resolution !== "string" || body.resolution.length < 8 || body.resolution.length > 2000) throw err("INVALID_RESOLUTION");
-      appeal.status = "RESOLVED"; appeal.resolution = body.resolution; appeal.resolvedAt = new Date().toISOString();
-      await store.put(user.tenantId, "appeal", appeal.appealId, appeal, true);
-      await store.event(user.tenantId, appeal.releaseId, "appeal.resolved", { appealId: appeal.appealId }); return { appeal };
+      const body = request.body as any;
+      if (!body || Object.keys(body).join() !== "resolution" || typeof body.resolution !== "string"
+        || body.resolution.trim().length < 8 || body.resolution.length > 2000) throw err("INVALID_RESOLUTION");
+      return store.forTenant(user.tenantId, async tx => {
+        const appeal = await tx.get(user.tenantId, "appeal", (request.params as any).appealId);
+        if (!appeal) throw err("APPEAL_NOT_FOUND", 404);
+        if (appeal.status === "RESOLVED") {
+          if (appeal.resolution !== body.resolution) throw err("APPEAL_ALREADY_RESOLVED", 409);
+          return { appeal, deduplicated: true };
+        }
+        if (appeal.status !== "OPEN") throw err("APPEAL_NOT_OPEN", 409);
+        appeal.status = "RESOLVED"; appeal.resolution = body.resolution; appeal.resolvedAt = new Date().toISOString();
+        await tx.put(user.tenantId, "appeal", appeal.appealId, appeal, true);
+        // A human disposition never changes a scan verdict, release status, or chain record.
+        await tx.event(user.tenantId, appeal.releaseId, "appeal.resolved", { appealId: appeal.appealId, rescanScanId: appeal.rescan?.scanId ?? null });
+        return { appeal, deduplicated: false };
+      });
     });
     api.post("/admission/check", async (request) => withSpan("admission.check", {}, async () => {
       const user = authenticate(request.headers.authorization), body = request.body as any;
@@ -269,8 +292,9 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
 function publicRelease({ artifactDir: _path, metadata: _metadata, preparedEvidenceKey: _key, preparedReportRoot: _root, runtimeTag: _tag, ...release }: Record<string, any>) { return release; }
 function publicScan({ tenantId: _tenant, leaseOwner: _owner, request, result, ...scan }: ScanJob) {
   const baselineReleaseId = request.baselineReleaseId ?? null;
-  if (!result) return { ...scan, baselineReleaseId };
-  const { evidenceKey: _key, preparedRuntimeTrust: _proof, ociRuntimeTrust: _ociProof, ...safeResult } = result; return { ...scan, baselineReleaseId, result: safeResult };
+  const appealId = request.appealId ?? null;
+  if (!result) return { ...scan, baselineReleaseId, appealId };
+  const { evidenceKey: _key, preparedRuntimeTrust: _proof, ociRuntimeTrust: _ociProof, ...safeResult } = result; return { ...scan, baselineReleaseId, appealId, result: safeResult };
 }
 export async function saveEvidence(options: ControlOptions, tenantId: string, bundle: Record<string, any>) {
   const content = Buffer.from(canonical(bundle));
