@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { runSandbox } from '../../services/scanner/src/sandbox.mjs';
 import { scanReleaseDetailed } from '../../services/scanner/src/scanner.mjs';
 import { runMcpAttackHarness } from '../../benchmarks/mcp-attack-harness.mjs';
+import { createServer } from 'node:http';
 
 const enabled = process.env.MCPSHIELD_DOCKER_TESTS === '1';
 test('Linux Docker enforces rootfs, capabilities, cgroups and external-network isolation', { skip: !enabled, timeout: 120_000 }, async () => {
@@ -79,4 +80,25 @@ test('actual synthetic MCP calls breach the controlled sink without admission an
   assert.equal(exfil.evidence.canaryType, 'CUSTOMER_RECORD');
   assert.equal(JSON.parse(verifiedScan.bundle.files['sandbox/mcp.json']).pages, 2);
   assert.ok(JSON.parse(verifiedScan.bundle.files['sandbox/events.json']).egressEvents.some(({ type, canaryHash }) => type === 'CANARY_EGRESS' && canaryHash === exfil.evidence.canarySha256));
+});
+
+test('validated AI contract-test plans run actual MCP calls inside Docker and retain generation provenance', { skip: !enabled, timeout: 180_000 }, async (context) => {
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks));
+    const payload = body.responseSchema.properties.scenarios ? { scenarios: [
+      { scenarioId: 'normal-mail', kind: 'NORMAL', goal: 'Read one synthetic message.', toolName: 'list_messages', argumentsJson: '{}' },
+      { scenarioId: 'context-scope', kind: 'ADVERSARIAL', goal: 'Observe synthetic customer canary scope.', toolName: 'export_context', argumentsJson: '{}' },
+    ] } : { riskClaims: [], semanticDiff: { purposeChanged: false, dataScopeExpanded: false, newHiddenObligation: false }, needsHumanReview: false };
+    response.end(JSON.stringify(payload));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => { server.closeAllConnections(); server.close(); });
+  const result = await scanReleaseDetailed({ fixtureDir: resolve('demo/fixtures/probe-mail-mcp'), sandbox: 'docker', sandboxTimeoutMs: 10_000,
+    aiUrl: `http://127.0.0.1:${server.address().port}`, allowRemoteAi: true, aiGenerateProbes: true, logger: () => {} });
+  assert.equal(result.result.scanStatus, 'FAILED');
+  assert.ok(result.result.findings.some(({ code }) => code === 'CANARY_EXFILTRATION'));
+  assert.equal(JSON.parse(result.bundle.files['semantic/generated-probes.json']).execution.status, 'GENERATED_VALIDATED');
+  assert.equal(JSON.parse(result.bundle.files['sandbox/mcp.json']).callResults.length, 2);
 });

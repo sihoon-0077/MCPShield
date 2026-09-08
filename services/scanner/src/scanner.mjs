@@ -12,6 +12,9 @@ import { analyzePackage, metadataSignals } from './analysis.mjs';
 import { currentTraceId, withSpan } from '../../../packages/telemetry/index.mjs';
 import { buildCriticPrompt, citationCatalogue, claimsToFindings, criticOutputSchema, promptSources, semanticOutputSchema, validateCritic, validateSemanticReport } from './semantic.mjs';
 import { requestAiJson } from './ai-transport.mjs';
+import { generateSyntheticProbes } from './probes.mjs';
+import { redactEvidenceDocument, redactPromptText, sanitizeUntrustedEvidence } from './redaction.mjs';
+export { redactEvidenceDocument, redactPromptText } from './redaction.mjs';
 
 const TEXT_EXTENSIONS = new Set(['.js', '.cjs', '.mjs', '.ts', '.json', '.py']);
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -138,50 +141,6 @@ function staticFindings(files, manifest) {
   return findings;
 }
 
-export function redactPromptText(content) {
-  return content
-    .replace(/(https?:\/\/)[^\s/"']+:[^\s/@"']+@/gi, '$1[REDACTED_USERINFO]@')
-    .replace(/([?&](?:token|key|secret|signature|sig|credential|authorization)=)[^&\s"']+/gi, '$1[REDACTED]')
-    .replace(/-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]')
-    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, '[REDACTED_ACCESS_KEY]')
-    .replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, '[REDACTED_GCP_API_KEY]')
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
-    .replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g, '[REDACTED_JWT]')
-    .replace(/\b(?:xox[baprs]-[A-Za-z0-9-]{10,}|sk_(?:live|test)_[A-Za-z0-9]{12,}|npm_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_TOKEN]')
-    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/-]{12,}/gi, '$1[REDACTED]')
-    .replace(/(["'])(password|passwd|secret|token|access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|private[_-]?key|authorization|credential)\1\s*:\s*(["'])([^\r\n]{4,}?)\3/gi,
-      (_match, keyQuote, key, valueQuote) => `${keyQuote}${key}${keyQuote}:${valueQuote}[REDACTED]${valueQuote}`)
-    .replace(/\b(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*(['"])[^'"\r\n]{4,}\2/gi, '$1=$2[REDACTED]$2')
-    .replace(/MCP_SHIELD_DEMO_CANARY_v1|CANARY::[A-Za-z0-9:_-]+/g, '[REDACTED_CANARY]');
-}
-
-export function redactEvidenceDocument(value, depth = 0, key = '') {
-  if (depth > 64) throw new TypeError('evidence nesting exceeds limit');
-  if (['input_tokens', 'output_tokens', 'total_tokens'].includes(key) && Number.isSafeInteger(value) && value >= 0) return value;
-  if (/password|passwd|secret|token|api.?key|authorization|credential|private.?key/i.test(key) && !/hash|sha256|digest/i.test(key)) return '[REDACTED]';
-  if (typeof value === 'string') return redactPromptText(value);
-  if (Array.isArray(value)) return value.map((item) => redactEvidenceDocument(item, depth + 1));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactEvidenceDocument(item, depth + 1, name)]));
-  return value;
-}
-
-function sanitizeUntrustedEvidence(value, depth = 0, key = '') {
-  if (/password|passwd|secret|token|api.?key|canary|authorization|credential|private.?key/i.test(key)) return '[REDACTED]';
-  if (depth > 4) return '[TRUNCATED]';
-  if (typeof value === 'string') return redactPromptText(value).slice(0, 512);
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value === 'boolean' || value === null) return value;
-  if (Array.isArray(value)) return value.slice(0, 32).map((item) => sanitizeUntrustedEvidence(item, depth + 1));
-  if (value && typeof value === 'object') {
-    const output = {};
-    for (const [childKey, childValue] of Object.entries(value).slice(0, 64)) {
-      if (['__proto__', 'prototype', 'constructor'].includes(childKey)) continue;
-      output[childKey.slice(0, 128)] = sanitizeUntrustedEvidence(childValue, depth + 1, childKey);
-    }
-    return output;
-  }
-  return String(value).slice(0, 128);
-}
 
 function promptFileContent(path, content) {
   if (extname(path).toLowerCase() !== '.json') return redactPromptText(content);
@@ -315,6 +274,7 @@ async function scanSnapshotRelease({
   aiToken,
   aiProvider = 'custom',
   aiModel,
+  aiGenerateProbes = false,
   aiTimeoutMs = 2_000,
   allowRemoteAi = false,
   source = 'LIVE',
@@ -327,6 +287,7 @@ async function scanSnapshotRelease({
   logger = (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
 } = {}) {
   if (!fixtureDir) throw new TypeError('fixtureDir is required');
+  if (aiGenerateProbes && (sandbox !== 'docker' || staticOnly || probeCalls.length)) throw new TypeError('AI probes require Docker, dynamic analysis and no manual probeCalls');
   if (!['local', 'docker'].includes(sandbox)) throw new TypeError(`unknown sandbox mode: ${sandbox}`);
   if (!['LIVE', 'MOCK', 'REPLAY'].includes(source)) throw new TypeError(`unknown scan source: ${source}`);
   for (const [name, value] of [['sandboxTimeoutMs', sandboxTimeoutMs], ['aiTimeoutMs', aiTimeoutMs]]) {
@@ -372,11 +333,17 @@ async function scanSnapshotRelease({
           return fallbackAnalysis(reason);
         })
     : Promise.resolve(fallbackAnalysis(remoteAiConfigured ? 'REMOTE_DISABLED' : 'NOT_CONFIGURED'));
+  const aiProbePromise = !aiGenerateProbes ? Promise.resolve(null)
+    : remoteAiConfigured && allowRemoteAi
+      ? withSpan('ai.probes', spanAttributes, () => generateSyntheticProbes({ tools: manifest.tools, url: aiUrl, token: aiToken, provider: aiProvider, model: aiModel, timeoutMs: aiTimeoutMs }))
+          .catch(() => ({ scenarios: [], execution: { status: 'DEFERRED', reason: 'PROBE_GENERATION_FAILED_OR_UNSAFE' } }))
+      : Promise.resolve({ scenarios: [], execution: { status: 'DEFERRED', reason: 'REMOTE_AI_NOT_ENABLED' } });
   const sandboxPromise = staticOnly || manifest.surfaceUnknown
     ? Promise.resolve({ mode: 'NOT_EXECUTED', error: 'dynamic analysis not performed', timedOut: false, canaryObserved: false, observations: [] })
-    : withSpan('sandbox.execute', spanAttributes, () => runSandbox({ mode: sandbox, fixtureDir: fixtureRoot, entrypoint: manifest.entrypoint, timeoutMs: sandboxTimeoutMs, scanId, egressAllowHosts, mcpProbe, probeCalls }))
+    : aiProbePromise.then((plan) => withSpan('sandbox.execute', spanAttributes, () => runSandbox({ mode: sandbox, fixtureDir: fixtureRoot, entrypoint: manifest.entrypoint, timeoutMs: sandboxTimeoutMs, scanId, egressAllowHosts,
+      mcpProbe: mcpProbe || aiGenerateProbes, probeCalls: plan?.scenarios.map(({ toolCall }) => toolCall) ?? probeCalls })))
     .catch((error) => ({ error: error.message, timedOut: false, canaryObserved: false, mode: sandbox.toUpperCase(), observations: [] }));
-  const [aiAnalysis, sandboxResult] = await Promise.all([aiPromise, sandboxPromise]);
+  const [aiAnalysis, sandboxResult, aiProbePlan] = await Promise.all([aiPromise, sandboxPromise, aiProbePromise]);
   const aiFindings = aiAnalysis.findings;
   findings.push(...aiFindings);
   const observations = sandboxResult.observations ?? [];
@@ -400,8 +367,8 @@ async function scanSnapshotRelease({
     message: 'The fixture sent the injected dummy canary to the controlled local sink.',
     evidence: { canarySha256: sandboxResult.canaryHash, ...(sandboxResult.canaryType ? { canaryType: sandboxResult.canaryType } : {}), sink: 'CONTROLLED_LOCAL', sandbox: sandboxResult.mode },
   });
-  let sandboxIncomplete = sandboxResult.timedOut || Boolean(sandboxResult.error);
-  if (mcpProbe && !staticOnly && !manifest.surfaceUnknown) {
+  let sandboxIncomplete = sandboxResult.timedOut || Boolean(sandboxResult.error) || (aiGenerateProbes && aiProbePlan?.execution.status !== 'GENERATED_VALIDATED');
+  if ((mcpProbe || aiGenerateProbes) && !staticOnly && !manifest.surfaceUnknown) {
     const report = sandboxResult.mcpReport;
     if (!report?.complete || !Array.isArray(report.tools)) sandboxIncomplete = true;
     else if (toolSurfaceHash(report.tools) !== surfaceHash) findings.push({
@@ -458,6 +425,7 @@ async function scanSnapshotRelease({
     'semantic/model-input.redacted.json': { prompt: buildAiPrompt({ releaseId, baselineTools, tools: manifest.tools, files }), templateVersion: 'semantic-v3-citations' },
     'semantic/model-output.json': aiAnalysis,
     'semantic/evidence-spans.json': analysis.metadataSignals,
+    'semantic/generated-probes.json': aiProbePlan ?? { scenarios: [], execution: { status: 'NOT_REQUESTED' } },
     'sandbox/scenarios.json': analysis.scenarios,
     'sandbox/events.json': { scanId: result.scanId, mode: sandboxResult.mode, complete: !sandboxIncomplete, observations: sanitizeUntrustedEvidence(observations), egressEvents: sandboxResult.egressEvents ?? [] },
     'sandbox/mcp.json': sandboxResult.mcpReport ?? { complete: false, execution: 'NOT_COLLECTED' },
@@ -499,9 +467,8 @@ export async function scanSource({ source, ...options }) {
   const { resolveArtifact } = await import('../../resolver/src/resolver.mjs');
   const resolved = await withSpan('resolve.artifact', {}, () => resolveArtifact({ source }));
   try {
-    const remote = source.type !== 'local';
     const detail = await scanReleaseDetailed({ ...options, fixtureDir: resolved.artifactDir, allowMissingManifest: true,
-      staticOnly: (remote && options.sandbox !== 'docker') || options.staticOnly === true });
+      mcpProbe: options.sandbox === 'docker', staticOnly: options.sandbox !== 'docker' || options.staticOnly === true });
     return { ...detail, resolution: resolved.metadata };
   } finally { await resolved.cleanup(); }
 }
@@ -509,5 +476,5 @@ export async function scanSource({ source, ...options }) {
 // Durable workers use this entry point: static inspection is the default for every ingested artifact.
 export async function scanResolvedArtifact(options = {}) {
   return scanReleaseDetailed({ ...options, fixtureDir: options.artifactDir ?? options.fixtureDir,
-    allowMissingManifest: true, staticOnly: options.sandbox !== 'docker' || options.staticOnly === true });
+    allowMissingManifest: true, mcpProbe: options.sandbox === 'docker', staticOnly: options.sandbox !== 'docker' || options.staticOnly === true });
 }
