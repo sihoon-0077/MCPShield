@@ -59,6 +59,7 @@ jobs:
         if: matrix.node == 22
         timeout-minutes: 5
         run: |
+          docker info --format '{{json .DriverStatus}}'
           mkdir -p runtime-builder-artifact/reports runtime-builder-cache runtime-builder-temp
           chmod 700 runtime-builder-cache runtime-builder-temp
           docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -f services/resolver/Dockerfile.builder -t "mcpshield-runtime-builder:$GITHUB_SHA" .

@@ -77,6 +77,19 @@
   확장/patch 의존 lock은 실행하지 않고 명시 거부한다. Docker ADD 목적지 권한을 0555로 고정하고
   CLOSURE_PREPARED 반환 전 실제 final CID를 미실행 export해 원본 closure와 다시 대조한다.
   통합 관련 회귀 13 통과·Docker 4 skip. 원래 Linux 실패 2건의 실제 해소 여부는 후속 실행으로 확인한다.
+- [Linux CI 34266169177](https://github.com/sihoon-0077/MCPShield/actions/runs/34266169177), `e2637c7`:
+  Node 22/24 일반 회귀·빌드, PostgreSQL, trusted builder 보안 검사와 실제 npm closure 전체 단계 성공.
+  앞선 generated-lock 설치 및 final closure/full scan 실패는 이 실행에서 해소됐다.
+  이후 3건 실패: prepared Gateway fixture가 관측 host UID에도 1000을 강요했고,
+  prepared fullcycle은 raw API 응답의 `status`를 Gateway 필드명 `releaseStatus`로 잘못 읽었다.
+  OCI는 관측 전에 native load 단계에서 실패했다. 전체 실행은 실패이며 후속 배포/10회 반복은 skipped다.
+- `44b229c`·`6cc80de`는 위 두 테스트 계약을 수정했다. non-root 관측 및 Gateway UID1000 경계를
+  각각 유지하고, BLOCK/reasonCode/서명된 REVOKED도 검사한다. 폐기된 synthetic registry는 새 케이스에서
+  재사용하지 않으며 terminal 기록을 지워 재허용하는 테스트 우회는 없다.
+- `6363ce0`·`d1eda30`: OCI 로더 실패는 고정 코드만 반환하고, 검증된 원본 blob에 Docker-save
+  표준 metadata를 추가해 native Docker가 직접 layer를 해석하도록 했다. 데몬/store 변경이나
+  자체 layer 변환은 하지 않는다. 타입 검사와 관련 portable 11개 통과·Docker 2개 skip;
+  실제 OCI load 및 두 prepared 회귀 수정의 Linux 수용 결과는 아직 대기다.
 - clean `de4fc9f`의 실제 로컬 EVM·SQLite·HTTP 측정(40회/동시4/identity4):
   hot p95 83.500ms, uniform p95 60.727ms, signed REVOKED 40/40 BLOCK·캐시 재사용0회,
   해당 BLOCK p95 46.899ms, 다음 admission의 차단 확인 49.126ms.
