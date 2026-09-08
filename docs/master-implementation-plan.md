@@ -15,6 +15,19 @@
 
 ### 현재 검증 경계
 
+- `85a2378`은 OCI pure policy를 scanner 판정에 연결했다. 정확한 원본·실행 identity·관측 effects·
+  Trivy/SBOM·두 AI 역할의 근거를 재구성하며, 지원되는 결정론적 유출은 FAIL, 제한된 전체 검사
+  충족은 PASS, 나머지는 ABSTAIN이다. `ready:false`를 유지하며 서명/정족수 없이 실행 승인을
+  뜻하지 않는다. Main 관련 회귀 20 통과·Linux/PG 5 skip 및 타입 검사 성공.
+  `332b73c`는 owned image 정리 실패/DB commit 불확실성을 기존 private recovery record와
+  고정 감사 이벤트에 남긴다. 자동 삭제나 완료된 release 상태 변경은 하지 않는다.
+  `ed4798c`는 OCI에도 기존 signed cache→조직 indexer→direct RPC와 명시적 1회 긴급 읽기를
+  재사용한다. 실제 로컬 이미지 검사는 그대로 선행하며 관련 공통/OCI 회귀 29개 통과.
+  실제 OCI Linux 호환 검증은 아직 미실행이다. 리뷰 중 발견한 공통 batch 전달 직전의
+  승인 만료 경계는 Front가 별도 재현/수정 중이다.
+  [진행 중 CI 34277348109](https://github.com/sihoon-0077/MCPShield/actions/runs/34277348109)는
+  이전 `24fa66e`를 검증하며 이 후속 세 commit은 포함하지 않는다. PostgreSQL 완료 성공,
+  Node 22/24 일반 테스트 통과 후 build 진행을 확인했다. 같은 SHA의 push run은 dispatch로 취소됐다.
 - `c198a20` 통합: OCI API 준비/재스캔 worker가 기존 tenant ACL·queue·lease·CAS를 재사용하고,
   Gateway는 로컬 native CID/rootfs/entrypoint/env와 실행 격리 및 매 호출 서명 승인을 확인한다.
   `LOCAL_CONTRACT_TEST`/`PROVIDER_QUALITY_NOT_MEASURED` 표기를 정책과 공개 요약에 유지한다.
@@ -280,7 +293,7 @@
 
 | ID | 내용 | 담당 | 현재 Main 구현 / 남은 증거 |
 |---|---|---|---|
-| FR-001–003 | npm/tarball/OCI 수집, 불변 버전, 출처 | Security / Backend | supplied/generated-lock npm closure의 격리 설치·전체 스캔·검증자·Gateway와 100MiB OCI native import/외부 MCP 관측은 `db5469a` Linux 통과. OCI inventory/Trivy/binding 추가 구현; OCI 전체 PASS·독립 서명·Gateway 연결 및 최신 코드 실검증은 미완료 |
+| FR-001–003 | npm/tarball/OCI 수집, 불변 버전, 출처 | Security / Backend | npm closure와 100MiB OCI native import/외부 MCP 관측은 이전 Linux 검증 통과. OCI inventory/Trivy/binding·정책·API worker·Gateway 연결 구현 및 portable 회귀 통과. OCI 독립 signer·실제 정상 PASS/악성 FAIL 전체 Linux 흐름과 최신 native 검증은 진행 중 |
 | FR-004–006 | artifact·manifest·전체 tool surface hash | Security / Gateway | JCS·Unicode/변조 벡터, Docker 내부 전체 MCP pagination 수집, Gateway private 전체 pagination·중복/cursor/drift 거부·실제 2페이지 stdio 통과 |
 | FR-007–008 | 스캔 중복 방지·자동 기준선 | Backend / Security | 다른 key 유효 결과 재사용·이전 VERIFIED 자동 기준선·명시적 비교 버전·원자적 tenant quota 구현. 실제 PostgreSQL·Linux 회귀 `5cabc48` 통과 |
 | FR-101–104 | 메타데이터·코드·변경점·SBOM | Security | schema/annotation/dependency/install diff, SBOM·metadata 규칙 구현. 외부 MCPTox 485 poisoned-tool records의 static review recall 실측 126/485=25.98%; 목표 미달 |
@@ -380,8 +393,10 @@
    전체 바이너리 안전성이나 무제한 source semantic coverage 증거가 아니다.
 3. 고위험 receipt UI와 오래된 앵커 reorg 복구, 모든 운영 UI 세부 항목.
 4. 실제 외부 LLM·Base Sepolia·비공개 S3/KMS/보존 정책·독립 validator 운영 검증.
-5. hot/uniform·cache/RPC 장애 smoke 측정의 큰 표본 반복/운영 환경 검증, 다중 크기 scan 처리량·10회 전체 데모,
+5. hot/uniform·cache/RPC 장애 smoke 측정의 큰 표본 반복/운영 환경 검증, 다중 크기 scan 처리량,
    외부 라이선스 확인 데이터셋·독립 라벨·전체 ablation/실제 모델 agent ASR.
+   기존 실제 Docker→EVM→두 Gateway 데모는 `229f147`에서 10회 연속 통과했으며,
+   새 OCI 전체 흐름이나 외부 모델 검증의 대체 증거로 사용하지 않는다.
 6. 공개 새 버전 배포, 최종 HEAD signed release 산출물·보안/라이선스 정책·배포/복원 증빙 점검.
 
 이 목록은 작업 범위를 줄이는 제외 목록이 아니라 남은 작업/외부 검증 목록이다.
