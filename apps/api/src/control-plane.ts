@@ -9,6 +9,8 @@ import type { EvidenceObjectStore } from "../../../packages/object-storage/index
 import { defaultPolicy, validPolicy } from "./control-policy.js";
 import { registerChainRoutes } from "./chain-control.js";
 import { enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
+import { registerReceiptRoutes } from "./receipt-control.js";
+import type { ReceiptRelayer } from "./receipt-relayer.js";
 export { defaultPolicy } from "./control-policy.js";
 
 export type Credential = { token: string; tenantId: string; role: "reader" | "operator" | "admin" };
@@ -22,6 +24,7 @@ export interface ControlOptions {
   chainDecision?: (release: Record<string, any>, policy: Record<string, any>) => Promise<Record<string, any>>;
   store?: ControlStore;
   v2Relayer?: V2Relayer;
+  receiptRelayer?: ReceiptRelayer;
   scannerOptions?: { sandbox?: "docker"; allowRemoteAi: boolean; aiProvider?: "custom" | "openai"; aiModel?: string; aiUrl?: string; aiToken?: string; aiTimeoutMs?: number };
 }
 export const canonical = (value: any): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
@@ -41,6 +44,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
   app.addHook("onClose", () => store.close());
   if (options.evidenceStore) app.addHook("onClose", async () => options.evidenceStore!.close());
   if (options.v2Relayer) app.addHook("onClose", async () => options.v2Relayer!.close());
+  if (options.receiptRelayer) app.addHook("onClose", async () => options.receiptRelayer!.close());
   if (options.chainDecision && "close" in options.chainDecision) app.addHook("onClose", async () => (options.chainDecision as any).close());
   for (const tenant of new Set(options.credentials.map((c) => c.tenantId))) {
     await store.put(tenant, "policy", hash(defaultPolicy), { policyHash: hash(defaultPolicy), alias: "mvp-default-v1", version: "1.0.0", document: defaultPolicy, createdAt: new Date().toISOString(), deprecatedAt: null });
@@ -64,6 +68,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       reply.code(error.statusCode ?? (code === "CONTROL_PLANE_FAILED" ? 500 : 400)).send({ error: { code, message: code } });
     });
     await registerChainRoutes(api, store, options, authenticate, authorize);
+    await registerReceiptRoutes(api, store, options, authenticate, authorize);
     api.get("/session", async (request) => {
       const { tenantId, role } = authenticate(request.headers.authorization);
       return { tenantId, role, capabilities: { read: true, scan: role !== "reader", evidence: role !== "reader", manage: role === "admin" } };

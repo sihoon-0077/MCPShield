@@ -3,6 +3,7 @@ import type { ControlOptions } from "./control-plane.js";
 import { v2ChainReader } from "./registry-v2-client.js";
 import { V2Relayer } from "./chain-outbox.js";
 import { createS3EvidenceStore } from "../../../packages/object-storage/index.mjs";
+import { ReceiptRelayer } from "./receipt-relayer.js";
 
 export function controlConfig(env = process.env): ControlOptions | undefined {
   if (env.CONTROL_PLANE_ENABLED !== "true") return undefined;
@@ -11,6 +12,8 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
   if (!Array.isArray(credentials) || !credentials.length) throw new Error("CONTROL_PLANE_CREDENTIALS required");
   if (!/^[0-9a-f]{64}$/.test(env.CONTROL_EVIDENCE_KEY ?? "")) throw new Error("CONTROL_EVIDENCE_KEY must be 32-byte hex");
   const allowRemoteAi = env.CONTROL_ALLOW_REMOTE_AI === "true";
+  if ([env.CONTROL_RECEIPT_RPC_URL, env.CONTROL_RECEIPT_REGISTRY_ADDRESS, env.CONTROL_RECEIPT_CHAIN_ID, env.CONTROL_RECEIPT_RELAYER_KEY].some(Boolean)
+    && ![env.CONTROL_RECEIPT_RPC_URL, env.CONTROL_RECEIPT_REGISTRY_ADDRESS, env.CONTROL_RECEIPT_CHAIN_ID, env.CONTROL_RECEIPT_RELAYER_KEY].every(Boolean)) throw new Error("INCOMPLETE_RECEIPT_CHAIN_CONFIG");
   const aiProvider = env.CONTROL_AI_PROVIDER ?? "custom", aiTimeoutMs = Number(env.CONTROL_AI_TIMEOUT_MS ?? 45000);
   if (!["custom", "openai"].includes(aiProvider) || !Number.isSafeInteger(aiTimeoutMs) || aiTimeoutMs < 100 || aiTimeoutMs > 120000) throw new Error("INVALID_CONTROL_AI_CONFIG");
   const aiToken = env.CONTROL_AI_TOKEN ?? (aiProvider === "openai" ? env.OPENAI_API_KEY : undefined);
@@ -36,5 +39,6 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
       registryContract: env.CONTROL_V2_REGISTRY_ADDRESS ?? "", chainId: Number(env.CONTROL_V2_CHAIN_ID),
       confirmations: Number(env.CONTROL_V2_CONFIRMATIONS ?? "2") }) : undefined,
     v2Relayer: env.CONTROL_V2_RELAYER_KEY && env.CONTROL_V2_RPC_URLS ? new V2Relayer(env.CONTROL_V2_RPC_URLS.split(",")[0], env.CONTROL_V2_REGISTRY_ADDRESS ?? "", Number(env.CONTROL_V2_CHAIN_ID), env.CONTROL_V2_RELAYER_KEY) : undefined,
+    receiptRelayer: env.CONTROL_RECEIPT_RPC_URL ? new ReceiptRelayer(env.CONTROL_RECEIPT_RPC_URL, env.CONTROL_RECEIPT_REGISTRY_ADDRESS!, Number(env.CONTROL_RECEIPT_CHAIN_ID), env.CONTROL_RECEIPT_RELAYER_KEY!, Number(env.CONTROL_RECEIPT_CONFIRMATIONS ?? 2)) : undefined,
   };
 }

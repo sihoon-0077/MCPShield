@@ -4,6 +4,7 @@ import { runControlWorkerOnce } from "./control-worker.js";
 import { controlConfig } from "./control-config.js";
 import { runChainActionOnce, reconcileV2Actions } from "./chain-outbox.js";
 import { indexV2 } from "../../indexer/src/v2-indexer.js";
+import { indexReceiptAnchors } from "../../indexer/src/receipt-indexer.js";
 
 const options = controlConfig();
 if (!options) throw new Error("CONTROL_PLANE_ENABLED=true is required");
@@ -20,7 +21,14 @@ try {
         await indexV2(store, options.v2Relayer, { deploymentBlock: Number(process.env.CONTROL_V2_DEPLOYMENT_BLOCK ?? 0), confirmations: Number(process.env.CONTROL_V2_CONFIRMATIONS ?? 2) });
       } catch { console.error(JSON.stringify({ event: "chain.synchronization.failed", code: "RPC_UNAVAILABLE" })); }
     }
+    if (options.receiptRelayer && !process.argv.includes("--scan-only")) {
+      try {
+        await indexReceiptAnchors(store, options.receiptRelayer);
+        await reconcileV2Actions(store, options.receiptRelayer);
+        await runChainActionOnce(store, options.receiptRelayer);
+      } catch { console.error(JSON.stringify({ event: "receipt.synchronization.failed", code: "RECEIPT_CHAIN_UNAVAILABLE" })); }
+    }
     if (process.argv.includes("--once")) break;
     if (!worked) await setTimeout(1000);
   }
-} finally { await store.close(); options.evidenceStore?.close(); options.v2Relayer?.close(); if (options.chainDecision && "close" in options.chainDecision) (options.chainDecision as any).close(); }
+} finally { await store.close(); options.evidenceStore?.close(); options.v2Relayer?.close(); options.receiptRelayer?.close(); if (options.chainDecision && "close" in options.chainDecision) (options.chainDecision as any).close(); }

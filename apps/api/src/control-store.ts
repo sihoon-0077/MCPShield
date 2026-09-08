@@ -39,7 +39,7 @@ export class ControlStore {
       store.sqlite.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     }
     const migration = (name: string) => readFileSync(fileURLToPath(new URL(`../../../database/migrations/${name}.sql`, import.meta.url)), "utf8");
-    const schema = [migration("002_control_plane"), migration(`003_scan_audit.${store.pool ? "pg" : "sqlite"}`), migration("004_chain_outbox"), migration("006_scan_request_keys")].join("\n");
+    const schema = [migration("002_control_plane"), migration(`003_scan_audit.${store.pool ? "pg" : "sqlite"}`), migration("004_chain_outbox"), migration("006_scan_request_keys"), migration("007_receipt_anchors")].join("\n");
     const domain = migration("005_chain_action_domain");
     if (store.sqlite) {
       store.sqlite.exec("BEGIN IMMEDIATE");

@@ -6,8 +6,9 @@ import { hash } from "./control-plane.js";
 import { traceHeaders, withSpan } from "../../../packages/telemetry/index.mjs";
 import { v2RpcRequest } from "../../../packages/contracts-sdk/src/transport.js";
 
-export type ChainActionKind = "REGISTER_RELEASE" | "PUBLISH_POLICY" | "DEPRECATE_POLICY" | "ATTEST" | "QUARANTINE" | "SYNC_EXPIRY";
-export const chainActionId = (relayer: V2Relayer, tenantId: string, kind: ChainActionKind, payload: Record<string, any>) =>
+export type ChainActionKind = "REGISTER_RELEASE" | "PUBLISH_POLICY" | "DEPRECATE_POLICY" | "ATTEST" | "QUARANTINE" | "SYNC_EXPIRY" | "REGISTER_RECEIPT_LEDGER" | "ANCHOR_RECEIPTS";
+export type ChainRelayer = Pick<V2Relayer, "provider" | "signer" | "chainId" | "registryAddress" | "alreadyApplied" | "prepare">;
+export const chainActionId = (relayer: ChainRelayer, tenantId: string, kind: ChainActionKind, payload: Record<string, any>) =>
   hash({ tenantId, kind, payload, chainId: relayer.chainId, registryAddress: relayer.registryAddress.toLowerCase() });
 export class V2Relayer {
   readonly provider: JsonRpcProvider;
@@ -52,7 +53,8 @@ export class V2Relayer {
     else if (kind === "DEPRECATE_POLICY") tx = await (await this.policyContract()).deprecate.populateTransaction(payload.policyHash);
     else if (kind === "ATTEST") tx = await this.registry.submitAttestation.populateTransaction(payload.attestation, payload.signature);
     else if (kind === "QUARANTINE") tx = await this.registry.quarantineBySignature.populateTransaction(payload.quarantine, payload.signature);
-    else tx = await this.registry.syncExpiry.populateTransaction(payload.releaseId, payload.policyHash);
+    else if (kind === "SYNC_EXPIRY") tx = await this.registry.syncExpiry.populateTransaction(payload.releaseId, payload.policyHash);
+    else throw new Error("UNSUPPORTED_CHAIN_ACTION");
     const populated = await this.signer.populateTransaction({ ...tx, nonce, chainId: this.chainId });
     const raw = await this.signer.signTransaction(populated);
     return { raw, txHash: keccak256(raw) };
@@ -66,7 +68,7 @@ export class V2Relayer {
   close() { this.provider.destroy(); }
 }
 
-export async function enqueueChainAction(store: ControlStore, relayer: V2Relayer, tenantId: string, kind: ChainActionKind, payload: Record<string, any>, traceparent = traceHeaders().traceparent) {
+export async function enqueueChainAction(store: ControlStore, relayer: ChainRelayer, tenantId: string, kind: ChainActionKind, payload: Record<string, any>, traceparent = traceHeaders().traceparent) {
   const actionId = chainActionId(relayer, tenantId, kind, payload), now = new Date().toISOString();
   await store.query(`INSERT INTO cp_chain_actions(action_id,tenant_id,release_id,kind,payload,chain_id,relayer_address,created_at,updated_at,trace_parent,registry_address)
     VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(action_id) DO NOTHING`, [actionId, tenantId, payload.releaseId ?? payload.attestation?.releaseId ?? payload.quarantine?.releaseId ?? null,
@@ -76,7 +78,7 @@ export async function enqueueChainAction(store: ControlStore, relayer: V2Relayer
 export async function chainActions(store: ControlStore, tenantId: string, actionId?: string) {
   return (await store.query(`SELECT action_id,release_id,kind,state,tx_hash,error_code,created_at,updated_at,chain_id,registry_address FROM cp_chain_actions WHERE tenant_id = ?${actionId ? " AND action_id = ?" : ""} ORDER BY created_at DESC LIMIT 250`, [tenantId, ...(actionId ? [actionId] : [])])).map((row) => ({ actionId: row.action_id, releaseId: row.release_id, kind: row.kind, status: row.state, txHash: row.tx_hash, errorCode: row.error_code, createdAt: row.created_at, updatedAt: row.updated_at, chainId: row.chain_id, registryAddress: row.registry_address }));
 }
-export async function runChainActionOnce(store: ControlStore, relayer: V2Relayer) {
+export async function runChainActionOnce(store: ControlStore, relayer: ChainRelayer) {
   const owner = randomUUID(), now = new Date().toISOString();
   const address = relayer.signer.address.toLowerCase(), expires = new Date(Date.now() + 60000).toISOString();
   await store.query("INSERT INTO cp_relayer_leases(chain_id,relayer_address) VALUES(?,?) ON CONFLICT(chain_id,relayer_address) DO NOTHING", [relayer.chainId, address]);
@@ -132,7 +134,7 @@ export async function runChainActionOnce(store: ControlStore, relayer: V2Relayer
     }, { traceparent: action.trace_parent ?? undefined });
   } catch (error: any) {
     // Prepared bytes are retained on every uncertain outcome; recovery rebroadcasts the identical tx.
-    const terminal = error.code === "CALL_EXCEPTION" && !action.raw_tx;
+    const terminal = (error.code === "CALL_EXCEPTION" || error.message === "UNSUPPORTED_CHAIN_ACTION") && !action.raw_tx;
     await store.query("UPDATE cp_chain_actions SET state = ?, error_code = ?, updated_at = ? WHERE action_id = ? AND lease_owner = ?",
       [terminal ? "FAILED" : action.raw_tx ? "PREPARED" : "NEW", terminal ? "CHAIN_ACTION_REJECTED" : error.message === "CHAIN_TIME_PENDING" ? "CHAIN_TIME_PENDING" : "RPC_UNAVAILABLE", new Date().toISOString(), action.action_id, owner]);
     if (terminal) await store.query("UPDATE cp_chain_actions SET nonce = NULL WHERE action_id = ? AND raw_tx IS NULL AND lease_owner = ?", [action.action_id, owner]);
@@ -143,7 +145,7 @@ export async function runChainActionOnce(store: ControlStore, relayer: V2Relayer
   return true;
 }
 
-export async function reconcileV2Actions(store: ControlStore, relayer: V2Relayer) {
+export async function reconcileV2Actions(store: ControlStore, relayer: ChainRelayer) {
   const completed = await store.query("SELECT action_id,tx_hash FROM cp_chain_actions WHERE chain_id = ? AND relayer_address = ? AND registry_address = ? AND state = 'COMPLETED' AND tx_hash IS NOT NULL ORDER BY updated_at DESC LIMIT 100", [relayer.chainId, relayer.signer.address.toLowerCase(), relayer.registryAddress.toLowerCase()]);
   let rewound = 0;
   for (const action of completed) {
