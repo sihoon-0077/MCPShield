@@ -91,8 +91,28 @@ that owns the read-only mounts; a root host runner is rejected. This preserves
 mount privacy without DAC capabilities or world-readable canary files.
 
 Current limits: SBOM is declared/lockfile based, not a vulnerability database;
-probes are bounded deterministic templates, not a measured LLM agent ASR
-benchmark. Metadata corpus is 16 synthetic author-labeled
+probes are bounded scripted calls, not a measured LLM agent ASR benchmark.
+Docker scans now launch a trusted MCP collector inside the isolated container,
+initialize the server, exhaust `tools/list` pagination (32-page/128-tool caps),
+reject repeated cursors/duplicate names and compare the complete observed surface
+with the pinned manifest. Incomplete collection cannot PASS. Optional
+`probeCalls:[{name,arguments}]` executes up to eight synthetic MCP calls and records
+only result hashes. Evidence `sandbox/mcp.json` includes completion, page count,
+observed tools and request/call metadata. Arbitrary OCI images still do not run;
+this collector applies to the supported Node MCP artifact profile only.
+
+`benchmarks/mcp-attack-harness.mjs` exports `runMcpAttackHarness({fixtureDir,
+authorize,...})`. It makes real MCP calls inside Docker for normal and scripted
+attack paths, checks the controlled sink for actual canary arrival, then applies
+the caller's admission decision before a protected process can start. The Linux
+Docker suite uses the scanner's deterministic policy as that callback and the
+paginated `probe-mail-mcp` fixture, whose attack only triggers on `export_context`.
+This measures a synthetic action effect and pre-spawn protection, with explicit
+`NONE_SCRIPTED_CALLS` model attribution; it does not claim a general LLM attack
+success rate or a real chain quorum. A backend/Gateway callback can use the same
+harness to measure the full quorum path.
+
+Metadata corpus is 16 synthetic author-labeled
 cases and intentionally reports the implicit-scope false negative. Real agent
 providers, independently labeled external datasets and kernel-level syscall
 coverage remain separate validation work. Disable the additions by continuing
