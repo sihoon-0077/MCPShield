@@ -4,7 +4,8 @@ test "$(/bin/busybox id -u)" = 1000 || exit 1
 test ! -e /var/run/docker.sock || exit 1
 if /bin/busybox touch /SHOULD_NOT_WRITE 2>/dev/null; then exit 1; fi
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | /bin/busybox sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  # Trusted test clients use compact JSON and numeric or UUID string IDs.
+  id=$(printf '%s' "$line" | /bin/busybox sed -n 's/.*"id":\([^,}]*\).*/\1/p')
   test -n "$id" || continue
   case "$line" in
     *'"method":"initialize"'*)

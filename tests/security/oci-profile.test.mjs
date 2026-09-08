@@ -19,6 +19,9 @@ test('approved-base OCI fixture variants are authored inert source with the same
     assert.ok(source.includes('"nextCursor":"next"'));
     assert.ok(source.includes('"name":"read_messages"')); assert.ok(source.includes('"name":"read_context"'));
     assert.ok(source.includes('/bin/busybox id -u'));
+    // Native Gateway full-pagination uses UUID string IDs; the fixture must
+    // preserve the JSON scalar, including quotes, rather than parse a number.
+    assert.ok(source.includes('sed -n \'s/.*"id":\\([^,}]*\\).*/\\1/p\''));
     assert.equal(source.includes('https://'), false);
   }
   assert.throws(() => ociProfileScript(original, 'unknown'), /VARIANT_INVALID/);
