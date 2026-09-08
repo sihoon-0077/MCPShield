@@ -140,3 +140,20 @@ isolated native solver with a registry-only acquisition broker; npm aliases,
 bundled/native/script-requiring packages under an explicit policy; generic OCI
 execution/observation and language-neutral stdio collector. Ordinary published
 npm archives often lack a lock, so 1A/1B alone cannot satisfy generic FR001–003.
+
+### Generated-lock contract (solver implementation follows separately)
+
+The internal `preflightNpmRuntime`/`acquireNpmClosure` options also accept a
+`generatedLock: Buffer` of at most 1 MiB. This is server-owned solver output,
+never a public API field or a substitute for actually running the isolated
+solver. It receives the same strict package/dependency/SRI/registry validation
+as a supplied lock and uses `lockOrigin: RESOLVER_GENERATED`. A supplied and
+generated lock cannot coexist, even if their bytes match.
+
+The source snapshot/tree digest is verified **before** adding this separately
+committed lock to the private acquisition input. Original caller/source files
+are never changed. The generated lock participates in final closure bytes and
+the descriptor lock digest, while original source identity stays immutable.
+Local paths, workspaces, Git/URL/alias dependency specs, overrides and bundled
+layouts are explicitly rejected before a native solver would start. Unsupported
+cases remain INCONCLUSIVE rather than falling back to host npm execution.
