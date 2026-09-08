@@ -77,3 +77,40 @@ jobs:
             printf '%s\n' "$unexpected"
             exit 1
           fi
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mcpshield
+          POSTGRES_PASSWORD: mcpshield_ci_only
+          POSTGRES_DB: mcpshield_ci
+        ports: ["5432/tcp"]
+        options: >-
+          --health-cmd "pg_isready -U mcpshield -d mcpshield_ci"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Exercise actual PostgreSQL control plane
+        env:
+          MCPSHIELD_POSTGRES_TEST_URL: postgresql://mcpshield:mcpshield_ci_only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/mcpshield_ci
+        run: node --import tsx --test tests/api/control-plane.test.ts
+      - name: Back up and restore into a separate empty database
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG_CONTAINER" psql -U mcpshield -d mcpshield_ci -v ON_ERROR_STOP=1 -c "INSERT INTO cp_records VALUES ('restore-test','policy','backup-check','{}','2026-09-08T00:00:00Z')"
+          docker exec "$PG_CONTAINER" pg_dump -U mcpshield -d mcpshield_ci --format=custom --file=/tmp/mcpshield-ci.dump
+          docker exec "$PG_CONTAINER" createdb -U mcpshield mcpshield_restore_drill
+          docker exec "$PG_CONTAINER" pg_restore -U mcpshield --exit-on-error --single-transaction -d mcpshield_restore_drill /tmp/mcpshield-ci.dump
+          test "$(docker exec "$PG_CONTAINER" psql -U mcpshield -d mcpshield_restore_drill -tAc "SELECT count(*) FROM cp_records WHERE tenant_id='restore-test' AND id='backup-check'")" = "1"
