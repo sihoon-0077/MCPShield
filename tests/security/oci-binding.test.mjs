@@ -3,7 +3,8 @@ import test from 'node:test';
 import { createServer } from 'node:http';
 import { canonicalJson } from '../../services/scanner/src/evidence.mjs';
 import { ociHash, hashOciRuntimeDescriptor, OCI_SOURCE_BUDGET_PROFILE, OCI_OBSERVATION_POLICY } from '../../services/resolver/src/oci-runtime-descriptor.mjs';
-import { ociExecutionPolicy, validateOciExecutionPolicy, createOciReleaseBinding, validateOciReleaseBinding } from '../../services/scanner/src/oci-binding.mjs';
+import { ociExecutionPolicy, scopedOciExecutionPolicy, validateOciExecutionPolicy, createOciReleaseBinding, validateOciReleaseBinding } from '../../services/scanner/src/oci-binding.mjs';
+import { scopedReviewPolicy } from '../../services/scanner/src/scoped-policy.mjs';
 import { preparedSemanticPrompt, reviewPreparedSemantics } from '../../services/scanner/src/prepared-review.mjs';
 
 const digest = ociHash('authored synthetic identity');
@@ -23,6 +24,10 @@ test('pure OCI binding uses exact six-field manifest, preserves original source 
   assert.equal(validateOciReleaseBinding(binding), true);
   assert.equal(binding.profile, 'oci-container-v1');
   assert.equal(binding.artifactDigest, hashOciRuntimeDescriptor(descriptor));
+  const v2 = createOciReleaseBinding({ sourceReleaseId, descriptor,
+    executionPolicy: scopedOciExecutionPolicy(trust, scopedReviewPolicy('PROVIDER_EXECUTION')) });
+  assert.equal(validateOciReleaseBinding(v2), true);
+  assert.equal(v2.artifactDigest, binding.artifactDigest); assert.notEqual(v2.manifestDigest, binding.manifestDigest);
   assert.equal(binding.sourceArtifactDigest, descriptor.sourceTreeDigest);
   assert.notEqual(binding.sourceArtifactDigest, binding.artifactDigest);
   const { schemaVersion, profile, sourceArtifactDigest, descriptorDigest, executionPolicyDigest } = binding;

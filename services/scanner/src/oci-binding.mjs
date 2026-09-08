@@ -1,5 +1,6 @@
 import { canonicalJson } from './evidence.mjs';
 import { hashOciRuntimeDescriptor, ociHash } from '../../resolver/src/oci-runtime-descriptor.mjs';
+import { SCOPED_OCI_PROFILE, scopedReviewPolicy, validateScopedReviewPolicy } from './scoped-policy.mjs';
 
 const sha = /^sha256:[a-f0-9]{64}$/, bytes32 = /^0x[a-f0-9]{64}$/;
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
@@ -29,8 +30,17 @@ export function ociExecutionPolicy(input) {
 }
 
 export function validateOciExecutionPolicy(value) {
-  try { return canonicalJson(value) === canonicalJson(ociExecutionPolicy(value.trust)); }
+  try { return canonicalJson(value) === canonicalJson(value?.profile === SCOPED_OCI_PROFILE
+    ? scopedOciExecutionPolicy(value.trust, value.semantic) : ociExecutionPolicy(value.trust)); }
   catch { return false; }
+}
+
+export function scopedOciExecutionPolicy(trust, semantic) {
+  if (!validateScopedReviewPolicy(semantic)) throw Error('OCI_SCOPED_POLICY_INVALID');
+  const policy = ociExecutionPolicy(trust);
+  return { ...policy, schemaVersion: 'mcpshield.oci-execution-policy.v2', profile: SCOPED_OCI_PROFILE,
+    review: { ...policy.review, semantic: 'SCOPED_METADATA_AND_REDACTED_RISK_DIFF_BLIND_ANALYZER_CRITIC' },
+    semantic: scopedReviewPolicy(semantic.evidenceMode) };
 }
 
 export function createOciReleaseBinding(input) {
