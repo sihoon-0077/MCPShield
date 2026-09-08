@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { artifactDigest, toolSurfaceHash } from '../../scanner/src/scanner.mjs';
 import { canonicalJson } from '../../scanner/src/evidence.mjs';
 import { copyFixtureSnapshot, removeFixtureSnapshot, SNAPSHOT_LIMITS } from '../../scanner/src/snapshot.mjs';
+import { preflightOciRuntime, validateRuntimePlatform } from './runtime-preflight.mjs';
 
 const digest = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
@@ -23,13 +24,15 @@ function verifyBlob(bytes, expected) {
 }
 
 export async function inspectOciImage({ index, readBlob, platform = { os: 'linux', architecture: 'amd64' } }) {
+  platform = validateRuntimePlatform(platform);
   let selected = index;
   let imageDigest = digest(Buffer.from(canonicalJson(index)));
   let imageBytes;
   for (let depth = 0; selected.manifests; depth++) {
     if (depth > 3 || !Array.isArray(selected.manifests) || selected.manifests.length > 128) throw new TypeError('OCI index limit exceeded');
-    const match = selected.manifests.find((entry) => entry.platform?.os === platform.os && entry.platform?.architecture === platform.architecture)
-      ?? (selected.manifests.length === 1 && !selected.manifests[0].platform ? selected.manifests[0] : null);
+    const matches = selected.manifests.filter((entry) => entry.platform?.os === platform.os && entry.platform?.architecture === platform.architecture);
+    const match = matches.length === 1 && !matches[0].platform.variant ? matches[0]
+      : matches.length === 0 && selected.manifests.length === 1 && !selected.manifests[0].platform ? selected.manifests[0] : null;
     if (!match) throw new TypeError('OCI platform is unsupported or ambiguous');
     imageBytes = verifyBlob(await readBlob(descriptor(match)), match);
     imageDigest = match.digest;
@@ -149,6 +152,8 @@ export async function resolveOciArtifact(source) {
       name, version: '0.0.0', versionIsSnapshotAlias: true, surfaceKnown: false, toolSurfaceHash: toolSurfaceHash([]),
       retrievedAt: new Date().toISOString(), publisherEvidence: [], runtime: inspection.runtime, imageFindings: inspection.findings,
       layers: inspection.layers, platform: inspection.platform, allLayerDigestsVerified: true, executionPerformed: false };
+    metadata.runtimePreparation = preflightOciRuntime({ sourceDigest: imageDigest, sourceTreeDigest: treeDigest,
+      runtime: inspection.runtime, platform: inspection.platform, builderImageDigest: source.builderImageDigest });
     return { artifactDir, root: artifactDir, releaseId: `${name}@0.0.0`, toolId: `oci:${originalLocator}`, version: '0.0.0', artifactUri: immutableReference,
       artifactDigest: treeDigest, manifestDigest, toolSurfaceHash: metadata.toolSurfaceHash, metadata, cleanup: () => removeFixtureSnapshot(workspace) };
   } catch (error) { await removeFixtureSnapshot(workspace); throw error; }

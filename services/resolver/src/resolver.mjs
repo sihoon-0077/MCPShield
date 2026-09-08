@@ -8,6 +8,7 @@ import semver from 'semver';
 import { artifactDigest, loadManifest, toolSurfaceHash } from '../../scanner/src/scanner.mjs';
 import { canonicalJson } from '../../scanner/src/evidence.mjs';
 import { copyFixtureSnapshot, removeFixtureSnapshot, SNAPSHOT_LIMITS } from '../../scanner/src/snapshot.mjs';
+import { preflightNpmRuntime } from './runtime-preflight.mjs';
 
 export const RESOLVER_LIMITS = Object.freeze({ downloadBytes: 16 * 1024 * 1024, expandedBytes: 20 * 1024 * 1024, files: 1024, ratio: 200, timeoutMs: 15_000 });
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
@@ -153,6 +154,9 @@ export async function resolveArtifact(input) {
       canonicalLocator: locator, immutableReference: `${locator}#${metadata.archiveDigest ?? digest}`, artifactDigest: digest,
       manifestDigest, toolSurfaceHash: toolSurfaceHash(manifest.tools), surfaceKnown: !manifest.surfaceUnknown,
       artifactDigestAlgorithm: 'sha256-sorted-path-nul-content-nul-v1' };
+    // Additive metadata only: do not replace legacy v1 identity or imply that dependencies were installed.
+    metadata.runtimePreparation = await preflightNpmRuntime({ root: artifactDir, sourceDigest: metadata.archiveDigest ?? digest,
+      sourceTreeDigest: digest, binName: source.binName, platform: source.platform, builderImageDigest: source.builderImageDigest });
     return { artifactDir, root: artifactDir, releaseId, toolId: `npm:${manifest.name}`, version: manifest.version,
       artifactUri: metadata.immutableReference, artifactDigest: digest, manifestDigest, toolSurfaceHash: metadata.toolSurfaceHash,
       metadata, cleanup: () => removeFixtureSnapshot(workspace) };
