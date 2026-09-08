@@ -188,10 +188,13 @@ test("OCI worker creates distinct encrypted identities, preserves borrowed image
     assert.ok(publicEvents.body.includes("PREPARATION_CLEANUP_FAILED"));
     assert.doesNotMatch(publicEvents.body, /mcpshield-oci-|private Docker error|runtimeTag/);
     options.scanOciRuntime = async input => { assert.equal(input.expectedDescriptorDigest, fixture.binding.descriptorDigest); return output(input, false); };
-    const rescan = () => app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": randomUUID() },
-      payload: { releaseId: derived!.releaseId, policyHash: hash(ociPolicy) } });
-    const second = await rescan(); assert.equal(second.statusCode, 202);
+    const appeal = (await app.inject({ method: "POST", url: `/v1/releases/${source.releaseId}/appeals`, headers: auth,
+      payload: { reason: "Synthetic OCI appeal: inspect the distinct prepared digest" } })).json().appeal;
+    const rescan = (appealId?: string) => app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": randomUUID() },
+      payload: { releaseId: derived!.releaseId, policyHash: hash(ociPolicy), ...(appealId ? { appealId } : {}) } });
+    const second = await rescan(appeal.appealId); assert.equal(second.statusCode, 202);
     await runControlWorkerOnce(store, options); assert.equal((await store.scan(tenant, second.json().scan.scanId))?.result?.verdict, "ABSTAIN");
+    assert.ok((await store.events(tenant, source.releaseId)).some(event => event.eventName === "appeal.rescan.completed" && event.payload.scanId === second.json().scan.scanId && event.payload.verdict === "ABSTAIN"));
     assert.equal(inspections, 4, "every borrowed execution rechecks native identity");
     options.inspectOciRuntime = async () => { throw new Error("OCI_RUNTIME_IMAGE_MISSING"); };
     const unavailable = await rescan(); await runControlWorkerOnce(store, options);
