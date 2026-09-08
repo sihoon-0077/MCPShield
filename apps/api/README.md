@@ -399,3 +399,14 @@ images, probes or AI credentials. No Docker socket is needed by the API process.
 The additive OCI policy/configuration checkpoint remains fail-closed (`ABSTAIN`)
 until the strict scanner policy and independent validator rerun are connected.
 Binding, image preparation and job completion alone are not PASS or VERIFIED.
+
+The trusted worker dispatches OCI preparation/rescans through the same 20-minute
+lease/CAS queue and stores a distinct `prepared-oci` release. Native image/database
+inspection runs in the worker, not the API. `OWNED` images retain only their own
+UUID tag; duplicate/stale failed jobs remove only that tag. `BORROWED` images retain
+no new tag and are never deleted by preparation cleanup. The row explicitly records
+borrowed ownership, not an image-retention guarantee: if an external owner removes
+the exact CID, the next native inspection fails closed and requires operator action.
+Database lease atomicity cannot keep an externally owned Docker image alive.
+All raw metadata stays tenant-encrypted; public job/scan/release summaries retain
+`LOCAL_CONTRACT_TEST` and `PROVIDER_QUALITY_NOT_MEASURED`, not native proof contents.

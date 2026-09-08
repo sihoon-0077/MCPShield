@@ -15,7 +15,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => 
 try {
   while (!stopped) {
     const worked = !process.argv.includes("--chain-only") && await runControlWorkerOnce(store, options);
-    const preparationWorked = !process.argv.includes("--chain-only") && options.preparedRuntime ? await runPreparationWorkerOnce(store, options) : false;
+    const preparationWorked = !process.argv.includes("--chain-only") && (options.preparedRuntime || options.ociRuntime) ? await runPreparationWorkerOnce(store, options) : false;
     const chainWorked = options.v2Relayer && !process.argv.includes("--scan-only") ? await runChainActionOnce(store, options.v2Relayer) : false;
     if (options.v2Relayer && !process.argv.includes("--scan-only")) {
       try {
