@@ -15,6 +15,22 @@
 
 ### 현재 검증 경계
 
+- `8f48705` Main 전체 `npm test` 성공: backend 88 통과·외부 환경 6 skip,
+  Security 103 통과·Linux 16 skip, Gateway 98 통과·Docker 1 skip, dashboard 23 통과,
+  replay·실제 MCP stdio E2E·live smoke 성공. 타입 검사 성공; `03318bb` dashboard production build도 성공.
+  `b30d9fb`의 외부 full-source 금지와 `30d7751`의 명시적 로컬 테스트 설정 전달을 통합했다.
+  최초 통합에서 발견한 synthetic validator fixture 2개 실패는 실제 로컬 semantic engine에
+  명시적 선언을 전달해 해소했으며 production 승인 검사를 느슨하게 바꾸지 않았다.
+  `03318bb` RPC 조회는 전체 시간 안에서 endpoint별 시간을 배분하고 순수 전송 장애와
+  변조/부분 폐기/만료/재편성을 구분한다. Main RPC·실험 진단 회귀 19개 통과.
+  `6f9ec77`·`2f18f66`은 cell 집계 즉시 출력·실패 부분 결과·고정 진단·실행 중 작업 정리 후
+  provenance를 보존한다. 이는 이전 79,000회 실패의 원인을 확정하거나 전체 재측정을 대체하지 않는다.
+  `ff5bc6d` OCI scan은 원본 inventory/Trivy/관측/로컬 AI 계약/불변 binding을 증거 bundle에 연결하고,
+  `8f48705`는 export 임시 컨테이너 정리가 확인되지 않으면 proof 성공을 반환하지 않는다.
+  OCI portable 15 통과·Linux 4 skip; `afa5e4a`에 실제 composed Linux 회귀를 추가했다.
+  독립 OCI 정책과 API/validator/Gateway 연결은 여전히 작업 중이며 scan phase는 승인이 아니다.
+  기존 원본 `mcp/main` HEAD는 `6aa370285154f683989f2bf9b219bd2c052e6cee` 유지,
+  공개 `/try` GET 200 확인. 새 코드가 Railway에 배포됐다는 의미는 아니다.
 - `e399a55`까지 통합. `e5987e4`의 OCI inventory/오프라인 Trivy 단계와 `0dc93c9`의
   원본/파생 identity·고정 실행 정책·OCI 전용 analyzer/critic 계약은 구현됐다.
   binding 생성과 phase COMPLETE만으로 PASS/READY 또는 Gateway 실행을 허용하지 않는다.
@@ -59,10 +75,12 @@
   Main 실제 stdio·별도 OS 프로세스 claim·준비 격리 계약 회귀 18개 통과. 공개 HTTP는 허용하지 않는다.
   사용 기록은 signed grant를 포함한 LOCAL_ENCRYPTED_UNANCHORED이며 외부 앵커 증거가 아니다.
   실제 prepared Docker emergency는 위 `54d3335` CI에서 통과했다.
-  모든 RPC의 장애와 trust rejection 구분·부분 REVOKED/identity 오류를 timeout으로 덮지 않는 처리는 통합 중이다.
+  모든 RPC의 장애와 trust rejection 구분·부분 REVOKED/identity 오류를 timeout으로 덮지 않는 처리는
+  `03318bb`에 통합됐고 새 Linux 검증은 대기다.
 - 마스터 2.5.4.3의 외부 LLM 전체 source·환경변수 전송 금지와 기존 prepared full-source
   semantic 입력 사이의 충돌을 확인했다. 실제 외부 provider 호출은 아직 하지 않았다.
-  외부 full-source를 기본 거부하고 합성 로컬 계약 테스트를 명시적으로 분리하는 수정 중이다.
+  외부 full-source를 기본 거부하고 합성 로컬 계약 테스트를 명시적으로 분리하는 수정은
+  `b30d9fb`·`30d7751`에 통합했다.
   외부 AI에는 metadata·보안 관련 redacted diff/제한된 근거만 보내는 별도 coverage 계약과
   end-to-end 분석을 이어서 구현해야 하며, AI를 끄는 것으로 전체 요구사항을 완료 처리하지 않는다.
 
