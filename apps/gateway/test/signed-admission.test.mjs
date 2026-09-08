@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, open, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -21,6 +21,7 @@ const base = { schemaVersion: "1.0.0", keyId: context.keyId, ...context.identity
   observedBlock: 123, blockHash: `0x${"e".repeat(64)}`, issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 30_000).toISOString() };
 const signed = (snapshot) => ({ snapshot, signature: sign(null, Buffer.from(JSON.stringify(Object.fromEntries(Object.keys(snapshot).sort().map((key) => [key, snapshot[key]])))), keys.privateKey).toString("base64url") });
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+const isolated = (suffix) => ({ context: { ...context, tenantId: `test-${suffix}` }, base: { ...base, tenantId: `test-${suffix}` } });
 
 test("admission timeout covers a stalled response body and bounds response size", async () => {
   await assert.rejects(admissionFetch("http://127.0.0.1", {}, async () => new Response(new ReadableStream({ start() {} })), 20), /timed out/);
@@ -50,6 +51,7 @@ test("signed admission binds every trust coordinate and rejects stale, tampered,
 });
 
 test("balanced fallback is read-only, short-lived, and cannot resurrect allow after a deny or malformed response", async () => {
+  const { context, base } = isolated("fallback");
   const options = { ...context, apiBaseUrl: "http://127.0.0.1:3101", timeoutMs: 100, now: () => now, operationClass: "READ_PRIVATE", admissionMode: "balanced" };
   const fresh = () => getSignedAdmission({ ...options, fetchImpl: async () => json(signed(base)) });
   const offline = async () => { throw new TypeError("fetch failed"); };
@@ -70,9 +72,10 @@ test("balanced fallback is read-only, short-lived, and cannot resurrect allow af
 });
 
 test("a concurrent late allow cannot return or repopulate cache after a newer denial or invalid response", async () => {
+  const { context, base } = isolated("concurrent");
   const options = { ...context, apiBaseUrl: "http://127.0.0.1:3102", timeoutMs: 5000, now: () => now, cacheFile: null, admissionMode: "balanced" };
   const offline = async () => { throw new TypeError("synthetic offline"); };
-  for (const response of [json(signed({ ...base, decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED" })), json({}), json({}, 403), new Response("not json"),
+  for (const response of [json(signed({ ...base, decision: "BLOCK", status: "QUARANTINED", reasonCode: "RELEASE_QUARANTINED" })), json({}), json({}, 403), new Response("not json"),
     new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("synthetic body interruption")); } }), { status: 403 }),
     new Response(new ReadableStream({ start() {} }), { status: 403 })]) {
     let resume, started;
@@ -88,6 +91,7 @@ test("a concurrent late allow cannot return or repopulate cache after a newer de
 });
 
 test("4xx headers invalidate cached allow even when their body fails, stalls or exceeds the limit", async () => {
+  const { context, base } = isolated("4xx");
   const options = { ...context, apiBaseUrl: "http://127.0.0.1:3104", timeoutMs: 20, now: () => now, cacheFile: null, admissionMode: "balanced" };
   const offline = async () => { throw new TypeError("synthetic offline"); };
   let cancelled = false;
@@ -106,6 +110,7 @@ test("4xx headers invalidate cached allow even when their body fails, stalls or 
 });
 
 test("persistent cache has one owner, never reclaims an unknown lock and respects another process's denial", async () => {
+  const { context, base } = isolated("persistent");
   const directory = await mkdtemp(join(tmpdir(), "mcpshield-signed-cache-test-"));
   assert.equal(dirname(directory), tmpdir());
   const cacheFile = join(directory, "admission.json");
@@ -126,8 +131,44 @@ test("persistent cache has one owner, never reclaims an unknown lock and respect
         envelope: signed({ ...base, decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED" }) }) });
     assert.equal(result.trim(), "BLOCK"); assert.equal(await readFile(cacheFile, "utf8"), "null");
     await assert.rejects(getSignedAdmission({ ...options, fetchImpl: offline }), /no matching signed cache/);
+    assert.equal(JSON.parse(await readFile(`${cacheFile}.revoked`, "utf8")).envelope.snapshot.status, "REVOKED");
+    // The parent never observed the child's response. Its durable terminal record
+    // must reject an otherwise valid old ALLOW, even on a later fresh HTTP request.
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: async () => json(signed(base)) }), /previously revoked/);
+    const later = now + 60_000, future = { ...base, issuedAt: new Date(later).toISOString(), expiresAt: new Date(later + 30_000).toISOString() };
+    await assert.rejects(getSignedAdmission({ ...options, now: () => later, fetchImpl: async () => json(signed(future)) }), /previously revoked/);
     const orphan = await open(`${cacheFile}.lock`, "wx", 0o600); await orphan.close();
     await assert.rejects(getSignedAdmission({ ...options, fetchImpl: offline }), /cache is locked/);
     assert.equal(await readFile(`${cacheFile}.lock`, "utf8"), "", "A lock of unknown ownership must remain untouched");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("terminal revocation rejects later re-signed allows across operation, credential and validator rotation", async () => {
+  const { context, base } = isolated("terminal");
+  const options = { ...context, apiBaseUrl: "http://127.0.0.1:3105", timeoutMs: 100, now: () => now, cacheFile: null };
+  await getSignedAdmission({ ...options, fetchImpl: async () => json(signed(base)) });
+  const denial = signed({ ...base, decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED" });
+  assert.equal((await getSignedAdmission({ ...options, fetchImpl: async () => json(denial) })).decision, "BLOCK");
+  for (const changed of [{}, { operationClass: "FINANCIAL" }, { apiToken: "rotated-test-credential" }, { validatorSetVersion: 2 }, { apiBaseUrl: "http://127.0.0.1:3106" }]) {
+    const snapshot = { ...base, operationClass: changed.operationClass ?? base.operationClass, validatorSetVersion: changed.validatorSetVersion ?? base.validatorSetVersion };
+    await assert.rejects(getSignedAdmission({ ...options, ...changed, fetchImpl: async () => json(signed(snapshot)) }), /previously revoked/);
+  }
+  // A different immutable policy is a different on-chain decision scope.
+  const policyHash = `0x${"f".repeat(64)}`;
+  assert.equal((await getSignedAdmission({ ...options, policyHash, fetchImpl: async () => json(signed({ ...base, policyHash })) })).decision, "ALLOW");
+});
+
+test("a failed cache invalidation retains its ownership lock instead of exposing the old allow", async () => {
+  const { context, base } = isolated("persistence-failure");
+  const directory = await mkdtemp(join(tmpdir(), "mcpshield-cache-write-failure-"));
+  assert.equal(dirname(directory), tmpdir());
+  const cacheFile = join(directory, "invalid-directory-target"); await mkdir(cacheFile);
+  const options = { ...context, apiBaseUrl: "http://127.0.0.1:3107", timeoutMs: 100, now: () => now, cacheFile };
+  try {
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: async () => json(signed(base)) }), /persistence failed/);
+    assert.equal(await readFile(`${cacheFile}.lock`, "utf8"), "");
+    let called = false;
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: async () => { called = true; return json(signed(base)); } }), /cache is locked/);
+    assert.equal(called, false);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

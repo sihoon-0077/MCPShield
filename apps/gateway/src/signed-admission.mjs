@@ -1,12 +1,32 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { open, rename, unlink, writeFile } from "node:fs/promises";
 import { traceHeaders } from "../../../packages/telemetry/index.mjs";
 
 const FIELDS = ["schemaVersion", "keyId", "decision", "releaseId", "artifactDigest", "toolSurfaceHash", "policyHash", "validatorSetVersion", "chainId", "registryContract", "observedBlock", "blockHash", "issuedAt", "expiresAt", "status", "operationClass", "tenantId", "reasonCode", "reportUrl"].sort();
 const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED", "EXPIRED"]);
 const memory = new Map();
 const pending = new Map();
+const revoked = new Set();
+let revocationCapacityExceeded = false;
 const canonical = (value) => JSON.stringify(Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]])));
+const revocationKey = (value) => canonical(Object.fromEntries(["tenantId", "releaseId", "artifactDigest", "toolSurfaceHash", "policyHash", "chainId", "registryContract"].map(key => [key, typeof value[key] === "string" && key !== "tenantId" ? value[key].toLowerCase() : value[key]])));
+
+async function readCacheJson(path, optional = false) {
+  let file;
+  try {
+    file = await open(path, "r");
+    const bytes = Buffer.alloc(32_769); let length = 0;
+    while (length < bytes.length) { const result = await file.read(bytes, length, bytes.length - length); if (!result.bytesRead) break; length += result.bytesRead; }
+    if (length > 32_768) throw new Error("Signed cache file is oversized");
+    return JSON.parse(bytes.subarray(0, length).toString("utf8"));
+  } catch (error) { if (optional && error.code === "ENOENT") return undefined; throw error; }
+  finally { await file?.close(); }
+}
+
+async function persistCache(write) {
+  try { await write(); }
+  catch { throw Object.assign(new Error("Signed cache persistence failed; ownership lock retained"), { cacheWriteFailed: true }); }
+}
 
 export async function admissionFetch(url, options, fetchImpl, timeoutMs) {
   const controller = new AbortController();
@@ -67,7 +87,7 @@ export function verifyAdmissionSnapshot(envelope, { identity, publicKey, keyId, 
 
 export async function getSignedAdmission(options) {
   const cacheFile = options.cacheFile === undefined ? process.env.MCPSHIELD_ADMISSION_CACHE_FILE : options.cacheFile;
-  let lock;
+  let lock, retainLock = false;
   // A persisted cache belongs to one wrapper. Never race another process's
   // deny/rename or silently reclaim a lock whose owner may still be running.
   if (cacheFile) {
@@ -75,7 +95,8 @@ export async function getSignedAdmission(options) {
     catch { throw new Error("Signed cache is locked or unavailable; admission fails closed"); }
   }
   try { return await signedAdmission({ ...options, cacheFile }); }
-  finally { if (lock) { try { await lock.close(); } finally { await unlink(`${cacheFile}.lock`); } } }
+  catch (error) { retainLock = error.cacheWriteFailed === true; throw error; }
+  finally { if (lock) { try { await lock.close(); } finally { if (!retainLock) await unlink(`${cacheFile}.lock`); } } }
 }
 
 async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, admissionMode = process.env.MCPSHIELD_ADMISSION_MODE ?? "strict",
@@ -93,6 +114,19 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
   identity = { ...identity, releaseId: controlReleaseId ?? identity.releaseId };
   if (!/^0x[0-9a-f]{64}$/i.test(identity.releaseId)) throw new Error("MCPSHIELD_CONTROL_RELEASE_ID must pin the exact /v1 release ID");
   const context = { identity, publicKey, keyId, policyHash, chainId, registryContract, validatorSetVersion, tenantId, operationClass };
+  const terminalKey = revocationKey({ ...identity, policyHash, chainId, registryContract, tenantId });
+  let storedRevocation;
+  if (cacheFile) {
+    storedRevocation = await readCacheJson(`${cacheFile}.revoked`, true);
+    if (storedRevocation !== undefined) {
+      const value = storedRevocation?.envelope?.snapshot;
+      if (storedRevocation?.schemaVersion !== "mcpshield.revocation.v1" || revocationKey(value ?? {}) !== terminalKey || value.decision !== "BLOCK" || value.status !== "REVOKED") throw new Error("Signed revocation journal does not match this wrapper");
+      // Terminal chain revocation outlives the short ALLOW TTL and validator-set
+      // rotation. Authenticate the old proof at issuance; never reuse it to allow.
+      verifyAdmissionSnapshot(storedRevocation.envelope, { ...context, operationClass: value.operationClass,
+        validatorSetVersion: value.validatorSetVersion, now: Date.parse(value.issuedAt) + 1 });
+    }
+  }
   const credentialFingerprint = createHash("sha256").update(apiToken ?? "").digest("hex");
   const cacheKey = canonical({ apiBaseUrl, releaseId: identity.releaseId, artifactDigest: identity.artifactDigest, toolSurfaceHash: identity.toolSurfaceHash, policyHash, chainId, registryContract, validatorSetVersion, keyId, tenantId, operationClass, credentialFingerprint });
   const pendingKey = canonical({ releaseId: identity.releaseId, tenantId });
@@ -109,7 +143,7 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
     for (const [key, value] of memory) {
       if (value.snapshot.releaseId === identity.releaseId && value.snapshot.tenantId === tenantId) memory.delete(key);
     }
-    if (cacheFile) await writeFile(cacheFile, "null", { mode: 0o600 });
+    if (cacheFile) await persistCache(() => writeFile(cacheFile, "null", { mode: 0o600 }));
   };
   try {
     response = await admissionFetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/admission/check`, {
@@ -125,9 +159,7 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
     // must not resurrect an allow after another wrapper persisted a denial.
     envelope = cacheFile ? undefined : memory.get(cacheKey);
     if (!envelope && cacheFile) {
-      const file = await readFile(cacheFile, "utf8");
-      if (Buffer.byteLength(file) > 32_768) throw new Error("Signed cache file is oversized");
-      const saved = JSON.parse(file);
+      const saved = await readCacheJson(cacheFile);
       if (saved?.cacheKey === cacheKey) envelope = saved.envelope;
     }
     if (!envelope) throw new Error("Admission unavailable and no matching signed cache exists");
@@ -142,7 +174,18 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
   let snapshot;
   try { snapshot = verifyAdmissionSnapshot(envelope, { ...context, now: now() }); }
   catch (error) { await forget(true); throw error; }
+  if (snapshot.decision === "ALLOW" && (storedRevocation || revoked.has(terminalKey) || revocationCapacityExceeded)) {
+    await forget(true); throw new Error("Release was previously revoked or terminal journal is full; admission fails closed");
+  }
   if (cacheHit && snapshot.decision !== "ALLOW") throw new Error("Cached admission does not allow execution");
+  if (snapshot.decision === "BLOCK" && snapshot.status === "REVOKED") {
+    // ponytail: 4096 terminal identities per process. Never evict a revocation
+    // to gain capacity; use separate wrappers/private journals at larger scale.
+    if (revoked.size >= 4096 && !revoked.has(terminalKey)) revocationCapacityExceeded = true;
+    else revoked.add(terminalKey);
+    if (cacheFile && !storedRevocation) await persistCache(() => writeFile(`${cacheFile}.revoked`,
+      JSON.stringify({ schemaVersion: "mcpshield.revocation.v1", envelope }), { mode: 0o600, flag: "wx" }));
+  }
   if (snapshot.decision === "BLOCK") await forget(true);
   const superseded = () => snapshot.decision === "ALLOW" && state.epoch !== epoch;
   if (superseded()) { await forget(); throw new Error("Admission superseded by a newer denial or invalid response"); }
@@ -152,8 +195,10 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
     if (!cacheFile) memory.set(cacheKey, envelope);
     if (cacheFile) {
       const temporary = `${cacheFile}.${process.pid}.tmp`;
-      await writeFile(temporary, JSON.stringify({ cacheKey, envelope }), { mode: 0o600 });
-      await rename(temporary, cacheFile);
+      await persistCache(async () => {
+        await writeFile(temporary, JSON.stringify({ cacheKey, envelope }), { mode: 0o600 });
+        await rename(temporary, cacheFile);
+      });
     }
   }
   // No await on the successful path after this final fence and before returning ALLOW.

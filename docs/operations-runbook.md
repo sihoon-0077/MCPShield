@@ -140,7 +140,15 @@ node --import tsx --test tests/integration/fullcycle-telemetry.test.ts
 5. 잘못된 허용이 관찰되면 캐시를 임의 삭제해 재허용하지 말고 해당 Gateway 사용을 중단한다.
 
 메모리 캐시는 동시 요청의 최신 차단·잘못된 응답 이후 도착한 과거 ALLOW를 폐기한다.
+한 번 서명으로 확인한 `REVOKED`는 tenant·chain·registry·policy·정확한 release에 대해 terminal이다.
+API 주소·토큰·operation·validator-set을 바꿔 받은 과거/새 ALLOW도 이를 되돌리지 못한다.
+메모리는 4,096개 terminal identity를 보존하며 포화 시 폐기를 지우지 않고 추가 허용을 차단한다.
+재시작 후에도 보존하려면 wrapper별 파일 캐시를 사용한다. `.revoked` 비공개 sidecar에는 최초
+서명된 폐기 증거를 별도로 저장하며 ALLOW의 짧은 TTL 이후에도 유지한다. 이 기록을 TTL cleanup이나
+장애 복구라는 이유로 삭제하지 않는다. 다른 릴리스/정책 wrapper에는 새 파일 경로를 사용한다.
+키 교체로 과거 증거를 확인할 수 없으면 자동 초기화하지 않고 차단한다. 서명 키 이력 확인은 operator 작업이다.
 파일 캐시를 켠 경우 그 파일이 프로세스 간 기준이며, 같은 이름의 `.lock`을 배타적으로 연다.
+캐시/폐기 저장 실패 시에도 lock을 남겨 다른 프로세스가 이전 허용을 재사용하지 못하게 한다.
 이미 사용 중이면 기다리거나 잠금을 빼앗지 않고 차단한다. 캐시 파일은 wrapper마다 따로 지정한다.
 비정상 종료 후 잠금이 남으면 모든 관련 wrapper가 중지됐는지 확인한 뒤 정확한 해당 잠금과
 캐시의 복구를 운영자가 진행하고, 네트워크가 복구된 상태에서 새 서명 판정을 받아 재시작한다.
