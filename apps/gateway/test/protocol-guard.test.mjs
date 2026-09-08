@@ -102,3 +102,28 @@ test("stateless envelope cannot be removed or downgraded after classification", 
     } finally { guards.close(); }
   }
 });
+
+test("unattested non-tool methods and nested server requests cannot bypass the tools-only policy", async () => {
+  for (const method of ["resources/read", "prompts/get", "tools/unapprovedExtension"]) {
+    for (const initialized of [false, true]) {
+      const guards = harness();
+      try {
+        if (initialized) {
+          await write(guards.requests, { jsonrpc: "2.0", id: "init", method: "initialize", params: { protocolVersion: "2025-11-25" } });
+          await write(guards.responses, { jsonrpc: "2.0", id: "init", result: { protocolVersion: "2025-11-25" } });
+          await write(guards.requests, { jsonrpc: "2.0", method: "notifications/initialized" });
+        }
+        const before = guards.forwarded.length;
+        await assert.rejects(write(guards.requests, { jsonrpc: "2.0", id: 1, method, params: { uri: "file:///synthetic-secret" } }), /Unsupported client method/);
+        assert.equal(guards.forwarded.length, before); assert.equal(guards.probes.length, 0);
+      } finally { guards.close(); }
+    }
+  }
+  for (const method of ["sampling/createMessage", "elicitation/create", "roots/list", "ping"]) {
+    const guards = harness();
+    try {
+      await assert.rejects(write(guards.responses, [{ jsonrpc: "2.0", method: "notifications/progress", params: {} }, { jsonrpc: "2.0", id: "nested", method, params: {} }]), /Unsupported server method/);
+      assert.equal(guards.returned.length, 0);
+    } finally { guards.close(); }
+  }
+});

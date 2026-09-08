@@ -13,6 +13,8 @@ export class ToolSurfaceDriftError extends Error {
 const idKey = (id) => `${typeof id}:${JSON.stringify(id)}`;
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const MODERN = "2026-07-28";
+const CLIENT_METHODS = new Set(["initialize", "notifications/initialized", "ping", "server/discover", "tools/list", "tools/call", "notifications/cancelled", "notifications/progress"]);
+const SERVER_NOTIFICATIONS = new Set(["notifications/tools/list_changed", "notifications/progress"]);
 
 function frameTransform(inspect) {
   let pending = Buffer.alloc(0);
@@ -105,15 +107,16 @@ export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall, { sen
   const requests = frameTransform(async (message) => {
     if (typeof message.id === "string" && message.id.startsWith(privatePrefix)) throw new Error("Reserved Gateway request ID");
     if (typeof message.method !== "string") {
-      if (era === "modern") throw new Error("Stateless MCP clients cannot send responses");
-      return;
+      throw new Error("Gateway tools-only profile does not accept client responses");
     }
+    if (!CLIENT_METHODS.has(message.method)) throw new Error("Unsupported client method in Gateway tools-only profile");
     const meta = message.params?._meta;
     if (object(meta) && Object.hasOwn(meta, PROTOCOL_VERSION_META_KEY)) {
       if (meta[PROTOCOL_VERSION_META_KEY] !== MODERN || !object(meta[CLIENT_INFO_META_KEY]) || typeof meta[CLIENT_INFO_META_KEY].name !== "string" || typeof meta[CLIENT_INFO_META_KEY].version !== "string" || !object(meta[CLIENT_CAPABILITIES_META_KEY])) throw new Error("Invalid stateless MCP request envelope");
       if (era === "legacy") throw new Error("MCP protocol era cannot change during a session");
       era = "modern";
     } else if (era === "modern") throw new Error("Stateless MCP requests require their protocol envelope");
+    if (message.method === "server/discover" && era !== "modern") throw new Error("MCP discovery requires a stateless protocol envelope");
     if (message.method === "initialize") {
       if (era || initialization || !Object.hasOwn(message, "id") || !SUPPORTED_PROTOCOL_VERSIONS.includes(message.params?.protocolVersion)) throw new Error("Invalid or duplicate MCP initialization");
       era = "legacy"; initializationId = idKey(message.id); initialization = waiting();
@@ -140,9 +143,9 @@ export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall, { sen
     }
   });
   const responses = frameTransform((message) => {
+    if (typeof message.method === "string" && (Object.hasOwn(message, "id") || !SERVER_NOTIFICATIONS.has(message.method))) throw new Error("Unsupported server method in Gateway tools-only profile");
     if (message.method === "notifications/tools/list_changed") { surfaceChanged = true; revision++; return; }
     if (typeof message.method === "string") {
-      if (era === "modern" && Object.hasOwn(message, "id")) throw new Error("Stateless MCP servers cannot initiate requests");
       return;
     }
     if (typeof message.id === "string" && message.id.startsWith(privatePrefix)) {
