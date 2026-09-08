@@ -1,4 +1,4 @@
-FROM node:22-alpine AS builder
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS builder
 
 WORKDIR /app
 
@@ -11,7 +11,13 @@ RUN npm ci --ignore-scripts
 COPY . .
 RUN npm run build:dashboard && npm prune --omit=dev --ignore-scripts --offline
 
-FROM node:22-alpine AS runner
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runner
+
+# Runtime never installs packages. Remove unused global package managers instead of shipping their vulnerable trees.
+# The immutable upstream image predates the OpenSSL fix; the image vulnerability gate checks the actual result.
+RUN apk upgrade --no-cache libcrypto3 libssl3 \
+    && rm -rf /usr/local/lib/node_modules/npm /opt/yarn-v1.22.22 \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/yarn /usr/local/bin/yarnpkg
 
 WORKDIR /app
 
@@ -47,4 +53,4 @@ ENV NODE_ENV=production \
 USER node
 EXPOSE 3000
 
-CMD ["sh", "-c", "npm run start:api & api=$!; node apps/gateway/src/index.mjs serve & gateway=$!; node apps/dashboard/server.js & web=$!; trap 'kill $api $gateway $web' TERM INT; wait -n $api $gateway $web"]
+CMD ["sh", "-c", "node --import tsx apps/api/src/server.ts & api=$!; node apps/gateway/src/index.mjs serve & gateway=$!; node apps/dashboard/server.js & web=$!; trap 'kill $api $gateway $web' TERM INT; wait -n $api $gateway $web"]
