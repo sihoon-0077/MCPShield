@@ -15,6 +15,13 @@
 
 ### 현재 검증 경계
 
+- 새 통합 `391a7825ec7dc0f49f11bc543c4bbf9e994b8d86`의
+  [CI 34279690606](https://github.com/sihoon-0077/MCPShield/actions/runs/34279690606)를 dispatch했다.
+  최초 확인은 pending(작업 배정 전)이며 성공/실패 결과는 아직 없다. 앞선 push 검증과 같은
+  concurrency 그룹을 사용하므로 중복 실행 결과를 합산하지 않는다. `391a782`는 OCI UI가
+  참조하는 pure binding/descriptor/snapshot 3파일을 standalone dashboard 이미지에도 포함한다.
+  `a38ef4a`는 AI 출처 미제공·모델 품질 미측정을 합성 응답 사용으로 추정하지 않도록 수정했고
+  실제 API/BFF 및 SSR 회귀 1개 통과. 새 공개 배포·서명된 최종 산출물은 아직 아니다.
 - `bb87dea` Main 전체 `npm test` 성공(Security 107 통과·18 Linux skip,
   dashboard 23 통과, backend/Gateway/replay/MCP stdio/live smoke 성공), `npm run build` 성공.
   이어서 `d7b909b`는 실제 OCI resolver→worker→독립 단일키 validator CLI 4개→V2 정족수→
