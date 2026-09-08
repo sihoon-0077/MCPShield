@@ -189,10 +189,12 @@ test("prepared worker atomically creates a distinct identity and encrypted scan 
       assert.ok(Date.parse(claimed.lease_expires_at) - Date.now() > 19 * 60 * 1000, "prepared full review needs the bounded 20-minute worker lease");
       return syntheticPreparedOutput({ ...input, preparation: { platform: input.descriptor.platform } }, async () => {});
     };
-    const rescan = await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "prepared-rescan" }, payload: { releaseId, policyHash: hash(preparedPolicy) } });
+    const appeal = (await f.app.inject({ method: "POST", url: `/v1/releases/${source.releaseId}/appeals`, headers: auth, payload: { reason: "Synthetic appeal: inspect the distinct prepared digest" } })).json().appeal;
+    const rescan = await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "prepared-rescan" }, payload: { releaseId, policyHash: hash(preparedPolicy), appealId: appeal.appealId } });
     assert.equal(rescan.statusCode, 202); assert.equal(rescan.json().scan.baselineReleaseId, null);
     await runControlWorkerOnce(f.store, f.options);
     assert.equal((await f.store.scan(tenant, rescan.json().scan.scanId))?.result?.verdict, "ABSTAIN");
+    assert.ok((await f.store.events(tenant, source.releaseId)).some(event => event.eventName === "appeal.rescan.completed" && event.payload.scanId === rescan.json().scan.scanId && event.payload.verdict === "ABSTAIN"));
     assert.equal((await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "prepared-baseline" }, payload: { releaseId, policyHash: hash(preparedPolicy), baselineReleaseId: source.releaseId } })).statusCode, 400);
   } finally { await f.app.close(); await rm(dir, { recursive: true, force: true }); }
 });

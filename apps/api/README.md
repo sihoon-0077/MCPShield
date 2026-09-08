@@ -88,13 +88,13 @@ Run the independently deployable worker with `node --import tsx apps/api/src/con
 | `GET /v1/session` | reader+ | tenant, role, capabilities |
 | `GET /v1/releases`, `/v1/policies`, `/v1/scans` | reader+ | `{items:[...]}` |
 | `POST /v1/releases/resolve` | operator+ | `{release}`; sourceType npm/tarball/fixture, locator |
-| `POST /v1/scans` | operator+ | `{scan,deduplicated,links}`; releaseId,policyHash + Idempotency-Key |
+| `POST /v1/scans` | operator+ | `{scan,deduplicated,links}`; releaseId,policyHash, optional appealId + Idempotency-Key |
 | `GET /v1/scans/:id` | reader+ | `{scan}` |
 | `GET /v1/scans/:id/evidence` | operator+ | decrypted Merkle-verified `{bundle,reportRoot}` plus audit event |
 | `POST /v1/scans/:id/retry` | operator+ | only retryable DLQ work |
 | `GET /v1/releases/:id/history`, `/v1/events` | reader+ | bounded audit events |
 | `GET/POST /v1/releases/:id/appeals` | reader/operator+ | reason and optional same-release scanId |
-| `POST /v1/appeals/:id/resolve` | admin | resolution text, immutable history retained |
+| `POST /v1/appeals/:id/resolve` | admin | one-time resolution text; exact repeat is deduplicated, different conclusion is 409 |
 | `POST /v1/policies` | admin | alias + versioned document; hash immutable |
 | `POST /v1/policies/:hash/deprecate` | admin | explicit deprecation audit |
 | `GET /v1/operations` | reader+ | latest-250 scan counts and actual DB driver |
@@ -107,6 +107,20 @@ Set `CONTROL_SIGNING_KEY` to an Ed25519 PKCS8 PEM and `CONTROL_SIGNING_KEY_ID` t
 Verification: `node --import tsx --test tests/api/control-plane.test.ts tests/contracts/release-registry-v2.test.ts`. Set `MCPSHIELD_POSTGRES_TEST_URL` to run the actual PostgreSQL case (otherwise explicitly skipped). Existing tests are unchanged.
 
 Current boundaries: V2 contracts/reader are separate from V1 and have not been publicly deployed. V2 write relayer/validator fanout and durable chain projection are next integration work; never label a completed off-chain scan VERIFIED. SQL queue is the durable source; Redis stage streams, S3-compatible object replication, richer stage scheduling, PITR and production governance are not implemented by this batch.
+
+## UC-07 / FR-406: appeal, fresh rescan and retained history
+
+`POST /v1/releases/:releaseId/appeals` accepts only `{reason,scanId?}`. It saves `original:{artifactDigest,policyHash,reportRoot}` from that same-tenant release/optional scan; these are challenged-record snapshots, not fresh chain proofs. Missing policy/root remains null. The original scan, evidence and release status are never replaced.
+
+To request an actual new scan, submit the existing `POST /v1/scans` body with `appealId` (UUID): `{releaseId,policyHash,appealId,baselineReleaseId?,requestedTiers?}` and an `Idempotency-Key`. The appeal must be OPEN and the target must have the same tool identity plus a changed artifact digest or a different pinned policy hash. All ordinary profile, deprecated-policy, tier, tenant and scan-quota checks still apply. A checked appeal bypasses completed-result reuse, not policy checks; arbitrary `force`/path/image/approval fields are rejected. This is shared by source, prepared Node and prepared OCI scan workers.
+
+One appeal links one rescan as `rescan:{scanId,releaseId,policyHash,requestedAt}`. Repeating the same idempotency key/body returns that same scan, including after administrative resolution; a different body conflicts and a second new key cannot attach another scan. Open another appeal for another round. Old appeals lacking both an original policy snapshot and original scan cannot request a same-digest policy comparison (`APPEAL_ORIGINAL_POLICY_REQUIRED`); changed digests remain eligible. Normal policy deprecation/availability guards still run on retries.
+
+Queue insertion, appeal linkage and `appeal.rescan.queued` history are one tenant transaction. Worker completion/failure atomically records `appeal.rescan.completed`/`appeal.rescan.failed` on the original release, with target release/scan/policy and report root or fixed error code; source and target histories remain linked. The public scan includes `appealId`. History is the existing bounded latest-250 view, not a lossless event replay API. Evidence access stays operator-only.
+
+Admin `POST /v1/appeals/:appealId/resolve` accepts only `{resolution}`. OPEN→RESOLVED is atomic; exactly the same text returns `{appeal,deduplicated:true}` without another event, a changed conclusion returns `409 APPEAL_ALREADY_RESOLVED`. Administrative resolution is independent of scan completion and never means PASS, quorum, VERIFIED or removal of REVOKED. A running rescan can complete later and add evidence history without reopening the appeal.
+
+Checks: `node --import tsx --test tests/api/appeals.test.ts tests/api/preparations.test.ts tests/api/oci-preparations.test.ts`. The appeal test uses actual API/SQL/worker/evidence paths, explicit synthetic cache/disposition fixtures and one actual local resolver/static scan (no Docker or remote AI claim). Prepared profile cases use their existing synthetic native hooks and retain ABSTAIN. `MCPSHIELD_POSTGRES_TEST_URL` enables the real PostgreSQL concurrency case; otherwise it is explicitly skipped.
 # V2 authenticated control plane
 
 The original `/api` demo stays compatible. `/v1` requires a tenant-scoped bearer token;

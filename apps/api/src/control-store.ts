@@ -187,9 +187,32 @@ export class ControlStore {
     return this.forTenant(tenantId, async (transaction) => {
       const existing = await transaction.idempotentScan(tenantId, key, requestHash);
       if (existing) return { scan: existing, deduplicated: true, reusedResult: false };
+      let appeal: Record<string, any> | undefined;
+      if (request.appealId) {
+        const fail = (code: string, statusCode = 409): never => { throw Object.assign(new Error(code), { statusCode }); };
+        appeal = await transaction.get(tenantId, "appeal", request.appealId);
+        if (!appeal) fail("APPEAL_NOT_FOUND", 404);
+        if (appeal!.status !== "OPEN") fail("APPEAL_NOT_OPEN");
+        if (appeal!.rescan) fail("APPEAL_RESCAN_ALREADY_REQUESTED");
+        const original = await transaction.get(tenantId, "release", appeal!.releaseId);
+        const target = await transaction.get(tenantId, "release", request.releaseId);
+        const selectedPolicy = await transaction.get(tenantId, "policy", request.policyHash);
+        if (!original || !target) fail("RELEASE_NOT_FOUND", 404);
+        if (target!.toolId !== original!.toolId) fail("APPEAL_TOOL_MISMATCH");
+        if (target!.artifactDigest !== request.artifactDigest || target!.runtimeProfile !== release.runtimeProfile) fail("APPEAL_TARGET_CHANGED");
+        if (!selectedPolicy || selectedPolicy.deprecatedAt || JSON.stringify(selectedPolicy.document) !== JSON.stringify(policy)) fail("POLICY_DEPRECATED");
+        if ((target!.runtimeProfile ?? null) !== (policy.profile ?? null)) fail("SCAN_PROFILE_MISMATCH");
+        if (target!.artifactDigest === (appeal!.original?.artifactDigest ?? original!.artifactDigest)) {
+          // Old records with no pinned policy cannot infer the challenged policy from today's mutable projection.
+          const challenged = appeal!.original?.policyHash ?? (appeal!.scanId ? (await transaction.scan(tenantId, appeal!.scanId))?.policyHash : undefined);
+          if (!challenged) fail("APPEAL_ORIGINAL_POLICY_REQUIRED");
+          if (request.policyHash === challenged) fail("APPEAL_NEW_DIGEST_OR_POLICY_REQUIRED");
+        }
+      }
       const field = (column: string, name: string) => this.pool ? `${column}::jsonb->>'${name}'` : `json_extract(${column}, '$.${name}')`;
       const now = new Date().toISOString();
-      const [cached] = await transaction.query(`SELECT * FROM cp_scans WHERE tenant_id = ? AND release_id = ? AND policy_hash = ?
+      // Only an authenticated, checked OPEN appeal can bypass result reuse; there is no caller-controlled force flag.
+      const [cached] = appeal ? [] : await transaction.query(`SELECT * FROM cp_scans WHERE tenant_id = ? AND release_id = ? AND policy_hash = ?
         AND state = 'COMPLETED' AND ${field("result_json", "validUntil")} > ? AND ${field("result_json", "verdict")} IN ('PASS','FAIL')
         ${request.baselineReleaseId ? `AND ${field("request_json", "baselineReleaseId")} = ?` : ""} ORDER BY updated_at DESC LIMIT 1`,
         [tenantId, request.releaseId, request.policyHash, now, ...(request.baselineReleaseId ? [request.baselineReleaseId] : [])]);
@@ -209,6 +232,12 @@ export class ControlStore {
         result = { ...await transaction.enqueue(tenantId, { ...request, ...(baselineReleaseId ? { baselineReleaseId } : {}) }, key, requestHash, traceId), reusedResult: false };
       }
       await transaction.query("INSERT INTO cp_scan_request_keys(tenant_id,idempotency_key,request_hash,scan_id) VALUES(?,?,?,?)", [tenantId, key, requestHash, result.scan.scanId]);
+      if (appeal) {
+        appeal.rescan = { scanId: result.scan.scanId, releaseId: request.releaseId, policyHash: request.policyHash, requestedAt: now };
+        await transaction.put(tenantId, "appeal", appeal.appealId, appeal, true);
+        await transaction.event(tenantId, request.releaseId, "scan.queued", { scanId: result.scan.scanId, appealId: appeal.appealId }, traceId);
+        await transaction.event(tenantId, appeal.releaseId, "appeal.rescan.queued", { appealId: appeal.appealId, ...appeal.rescan }, traceId);
+      }
       return result;
     });
   }
