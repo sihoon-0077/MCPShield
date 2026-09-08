@@ -78,6 +78,10 @@ async function handle(request: NextRequest, context: Context) {
         if (!/^0x[a-f0-9]{64}$/.test(path[1]) || Object.keys(parsed).join() !== "policyHash" || !/^0x[a-f0-9]{64}$/.test((parsed as { policyHash?: string }).policyHash ?? "") || !key?.trim() || key.length > 256) return json({ error: "원본 릴리스와 준비 전용 정책 해시, 재시도 식별키만 전달할 수 있습니다." }, 400);
       }
       if (/^preparations\/[^/]+\/retry$/.test(route) && Object.keys(parsed).length) return json({ error: "재시도에서 실행 이미지·경로·비밀값을 지정할 수 없습니다." }, 400);
+      if (/^appeals\/[^/]+\/resolve$/.test(route)) {
+        const resolution = (parsed as { resolution?: unknown }).resolution;
+        if (Object.keys(parsed).join() !== "resolution" || typeof resolution !== "string" || resolution.trim().length < 8 || resolution.length > 2000) return json({ error: "검토 결론은 공백을 제외한 8자 이상, 전체 2000자 이하로 작성하세요. 결론 외 필드는 전달할 수 없습니다." }, 400);
+      }
       body = JSON.stringify(parsed);
     } catch (error) { return json({ error: "요청 JSON이 잘못되었거나 제한 크기·시간을 초과했습니다." }, error instanceof Error && error.message === "BODY_TOO_LARGE" ? 413 : 400); }
   }
