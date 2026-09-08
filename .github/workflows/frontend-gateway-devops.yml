@@ -83,10 +83,11 @@ jobs:
         run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --test apps/gateway/test/prepared-docker.test.mjs
       - name: Exercise native OCI import and external non-Node MCP observation
         if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
-        timeout-minutes: 4
+        timeout-minutes: 7
         env:
           MCPSHIELD_DOCKER_TESTS: "1"
-        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/security/oci-runtime.test.mjs
+          MCPSHIELD_OCI_100M_TESTS: "1"
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/security/oci-runtime.test.mjs tests/security/oci-budget.test.mjs
       - name: Exercise prepared Docker scans and single-key validators through V2 and both Gateways
         if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
         timeout-minutes: 11

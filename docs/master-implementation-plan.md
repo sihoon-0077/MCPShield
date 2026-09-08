@@ -96,8 +96,35 @@
   시작/종료 source hash는 `0585e0af2b31e72e6daee7f645f2c83a8432d346dff1e26e01094ac97cb3cc1f`로 동일하다.
   작은 Windows/Ganache 실험이며 운영 SLO·1만 key·실제 네트워크 장애 측정이 아니다.
 
-명시적으로 남은 구현/검증은 범용 OCI 실행/관측, legacy 독립 재실행의 실제 Linux 검증,
-조직 indexer·직접 RPC fallback 및 서명된 break-glass 감사, 문서의 전체 부하·평가 행렬이다.
+- [Linux CI 34267533697](https://github.com/sihoon-0077/MCPShield/actions/runs/34267533697), `1ef0a47`:
+  Node 22/24 일반 테스트·빌드 및 PostgreSQL backup/restore 성공. 실제 npm closure,
+  prepared Gateway 격리·호출별 폐기, native OCI import·외부 non-Node MCP 관측도 성공했다.
+  prepared fullcycle은 여전히 실패: 두 폐기 실행의 테스트 입력이 누락되어
+  `PREPARED_MCP_INPUT_REQUIRED`에서 중단됐다. 전체 성공·10회 반복·새 signed image를 주장하지 않는다.
+  이 실행의 OCI 성공은 작은 표본이며 아래 100MiB 추가 수용 검사를 포함하지 않는다.
+- `54196f1`·`1bcd13a`: OCI source 100MiB, layer+final export 누적 512MiB,
+  50,000 entries 및 1MiB JSON 상한을 고정하고 복사/해시를 bounded streaming으로 처리한다.
+  인증·재시도·멈춘 응답 body 전체에 취득 deadline 120초를 공유한다.
+  Linux 실제 100MiB MCP 실행 검사를 CI에 추가했으나 아직 실행 결과는 없다.
+- `8f03f5d`: API 장애 시 서명 캐시→별도 신뢰키·자격증명의 조직 indexer→직접 RPC 경로를 통합했다.
+  4xx·불량 서명·명시 BLOCK은 다음 경로로 우회하지 않는다. RPC는 읽기 전용·총 1.5초·고정 quota이며
+  ALLOW를 캐시하지 않는다. 마지막 블록 30초 freshness 및 attestation 유효기간을 재검사한다.
+  조직 서명/RPC의 폐기는 재시작·다른 tenant·정책에서도 유지한다. Main 직접 실행한 새 fallback·
+  OCI portable 회귀 15개 통과·대용량 메모리 검사 1개 opt-in skip; 실제 로컬 EVM 정족수/폐기 포함.
+- Backend clean `cb7bccf` 파일럿은 실제 64키·196트랜잭션·720회/18셀·동시16, 46.020초다.
+  시작/종료 source hash `1152206630aa48d2e636615be3d5d33f611fe88b2c9cac1a2d912f6ed483c732` 일치.
+  장애를 주입하지 않은 STATUS_UNAVAILABLE 87건과 관련 동시 요청 취소 34건을 별도로 기록했다.
+  head가 움직일 때의 정상 요청 가용성을 개선 중이며, 이 측정은 `8f03f5d` freshness 추가 이전이다.
+  10,000키 실행은 29.5분으로 외삽되어 20분 상한 내 실행하지 않았다. 외삽은 실측이 아니다.
+  `76406de`·`1eeaccc`는 opt-in 10,000키/99,000요청 및 정확한 오류 분류 코드만 통합했다.
+
+- `1eeaccc` 통합 후 Main 전체 `npm test` 및 `npm run build` 성공. Windows의 Docker/외부 DB 검사는
+  명시 skip이며 위 Linux 증거와 구분한다. `801e504`는 prepared fullcycle 입력 누락을 수정했고
+  portable guard 회귀 1개 통과·Docker 1개 skip이다. 실제 Linux 재실행 전에는 실패 해소로 확정하지 않는다.
+  원본 `mcp/main`은 여전히 `6aa370285154f683989f2bf9b219bd2c052e6cee`다.
+
+명시적으로 남은 구현/검증은 범용 OCI 전체 검사·독립 서명·Gateway 연결, legacy 독립 재실행의
+실제 Linux 검증, 새 fallback의 최신 전체 회귀 및 서명된 break-glass 감사, 전체 부하·평가 행렬이다.
 실제 AI·Base Sepolia·비공개 S3/KMS·독립 기관·운영 Linux 호스트와 최신 전체 버전 공개 배포는
 설정 및 실측이 필요한 별도 미완료 항목이다. 기존 Railway 공개 데모는 보존했다.
 
