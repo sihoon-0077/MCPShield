@@ -133,12 +133,18 @@ function docker(args, timeoutMs, maxBytes = 128 * 1024) {
     const chunks = [];
     let total = 0;
     let failure;
+    let diagnostics = '';
     const timer = setTimeout(() => { failure = Error('RUNTIME_DOCKER_TIMEOUT'); child.kill('SIGKILL'); }, Math.max(1, timeoutMs));
     child.stdout.on('data', (chunk) => { total += chunk.length; if (total > maxBytes) { failure = Error('RUNTIME_DOCKER_OUTPUT_LIMIT'); child.kill('SIGKILL'); } else chunks.push(chunk); });
     // Drain but never surface candidate/daemon stderr, which may contain private paths or metadata.
-    child.stderr.on('data', () => {});
+    child.stderr.on('data', (chunk) => {
+      // Only a small trusted installer's constant vocabulary can leave this helper.
+      if (diagnostics.length < 2048) diagnostics += chunk.toString('utf8').slice(0, 2048 - diagnostics.length);
+    });
     child.once('error', () => { clearTimeout(timer); reject(Error('RUNTIME_DOCKER_UNAVAILABLE')); });
-    child.once('close', (code) => { clearTimeout(timer); if (failure || code !== 0) reject(failure ?? Error('RUNTIME_DOCKER_COMMAND_FAILED'));
+    child.once('close', (code) => { clearTimeout(timer);
+      const safeCode = /(?:^|\n)MCPSHIELD_CLOSURE_FAILURE:(TOOLCHAIN|INPUT|CACHE|INSTALL|MANIFEST):(ENOTCACHED|EUSAGE|EINTEGRITY|ENOENT|EACCES|EPERM|NPM_FAILED|FAILED)(?:\r?\n|$)/.exec(diagnostics);
+      if (failure || code !== 0) reject(failure ?? Error(safeCode ? `RUNTIME_${safeCode[1]}_${safeCode[2]}` : 'RUNTIME_DOCKER_COMMAND_FAILED'));
       else resolveResult(Buffer.concat(chunks)); });
   });
 }
@@ -160,18 +166,22 @@ export async function prepareNpmClosure(options, acquisitionOptions) {
     return docker(args, deadline - Date.now(), maxBytes);
   };
   let success = false;
+  let stage = 'BUILDER_INSPECT';
   try {
     const info = JSON.parse(await run(['image', 'inspect', options.builderImageDigest, '--format', '{{json .}}']));
     if (info.Id !== options.builderImageDigest || info.Os !== 'linux' || info.Architecture !== options.platform.architecture ||
       info.Config?.Labels?.['io.mcpshield.runtime-builder'] !== 'node-closure-v1' || info.Config?.Labels?.['io.mcpshield.npm-version'] !== '12.0.2' ||
       info.Config?.Labels?.['io.mcpshield.npm-patches'] !== 'brace-expansion@5.0.9,ip-address@10.3.1,tar@7.5.22' ||
       JSON.stringify(info.Config?.Entrypoint) !== JSON.stringify(['/usr/local/bin/node', '/trusted/prepare-container.mjs'])) throw Error('RUNTIME_BUILDER_IDENTITY_MISMATCH');
+    stage = 'VOLUME_CREATE';
     await run(['volume', 'create', volume]);
+    stage = 'INSTALL_RUN';
     const output = await run(['run', '--pull=never', '--name', container, '--network=none', '--read-only', '--user=1000:1000',
       '--cap-drop=ALL', '--security-opt=no-new-privileges', '--memory=512m', '--cpus=1', '--pids-limit=64',
       '--tmpfs=/tmp:rw,noexec,nosuid,size=32m', '--mount', `type=bind,source=${acquired.inputDir},target=/input,readonly`,
       '--mount', `type=volume,source=${volume},target=/work`, options.builderImageDigest]);
     if (output.toString('utf8').trim() !== 'MCPSHIELD_CLOSURE_PREPARED') throw Error('RUNTIME_INSTALLATION_FAILED');
+    stage = 'REPORT_EXPORT';
     const reportBytes = await run(['cp', `${container}:/work/closure-report.json`, '-'], 4 * 1024 * 1024);
     // docker cp emits tar; read one bounded regular report file without extracting to a host path.
     const reports = [];
@@ -182,6 +192,7 @@ export async function prepareNpmClosure(options, acquisitionOptions) {
     reportTar.end(reportBytes);
     if (reports.length !== 1) throw Error('CLOSURE_REPORT_INVALID');
     const report = JSON.parse(reports[0]);
+    stage = 'CLOSURE_EXPORT';
     const archive = await run(['cp', `${container}:/work/app/.`, '-'], CLOSURE_LIMITS.archiveBytes);
     const verified = inspectClosureArchive(archive);
     if (report.digest !== verified.digest || report.sourceDescriptorDigest !== acquired.descriptorDigest ||
@@ -191,8 +202,11 @@ export async function prepareNpmClosure(options, acquisitionOptions) {
     await writeFile(join(workspace, 'closure.tar'), archive);
     await writeFile(join(workspace, 'closure-report.json'), reports[0]);
     await copyFile(resolve(HERE, '../Dockerfile.runtime'), join(workspace, 'Dockerfile'));
+    stage = 'IMAGE_TAG';
     await run(['image', 'tag', options.builderImageDigest, builderTag]);
+    stage = 'IMAGE_BUILD';
     await run(['build', '--pull=false', '--network=none', '--quiet', '--build-arg', `BUILDER_IMAGE=${builderTag}`, '--tag', runtimeTag, workspace]);
+    stage = 'FINAL_INSPECT';
     const finalImageDigest = (await run(['image', 'inspect', runtimeTag, '--format', '{{.Id}}'])).toString('utf8').trim();
     if (!digestPattern.test(finalImageDigest)) throw Error('RUNTIME_FINAL_IMAGE_DIGEST_INVALID');
     const descriptor = { ...acquired.descriptor, stage: 'CLOSURE_PREPARED', finalImageDigest };
@@ -204,7 +218,8 @@ export async function prepareNpmClosure(options, acquisitionOptions) {
       pending: ['ACTUAL_MCP_DISCOVERY', 'RUNTIME_OBSERVATION', 'GATEWAY_RELEASE_IDENTITY_BINDING'],
       cleanup: () => docker(['image', 'rm', runtimeTag], 5000) };
   } catch (error) {
-    return { status: 'INCONCLUSIVE', ready: false, phase: 'FAILED', candidateExecutionPerformed: false, issues: [errorCode(error)] };
+    return { status: 'INCONCLUSIVE', ready: false, phase: 'FAILED', candidateExecutionPerformed: false,
+      issues: [errorCode(error)], diagnostics: { stage } };
   } finally {
     for (const args of [['rm', '-f', container], ['volume', 'rm', volume], ['image', 'rm', builderTag], ...(!success ? [['image', 'rm', runtimeTag]] : [])]) {
       try { await docker(args, 5000); } catch { /* exact task-owned resource, best effort cleanup */ }

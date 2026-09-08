@@ -123,7 +123,7 @@ test('actual Linux patched builder installs locked dependencies offline and fina
 }, async () => fixture(async ({ options, bytes }) => {
   const result = await prepareNpmClosure(options, { download: async () => bytes });
   try {
-    assert.deepEqual(result.issues, []);
+    assert.deepEqual(result.issues, [], JSON.stringify(result.diagnostics ?? {}));
     assert.equal(result.phase, 'CLOSURE_PREPARED');
     assert.equal(result.ready, false);
     assert.equal(result.descriptor.toolSurfaceHash, null);
@@ -156,7 +156,7 @@ test('actual prepared image MCP discovery paginates, normal tools run and advers
   const source = await artifactDigest(root);
   const prepared = await prepareNpmClosure({ ...options, sourceDigest: source, sourceTreeDigest: source }, { download: async () => bytes });
   try {
-    assert.deepEqual(prepared.issues, []);
+    assert.deepEqual(prepared.issues, [], JSON.stringify(prepared.diagnostics ?? {}));
     const observed = await observePreparedRuntime({ descriptor: prepared.descriptor, expectedDescriptorDigest: prepared.descriptorDigest,
       probePlan: { scenarios: [
         { scenarioId: 'normal-mail', kind: 'NORMAL', goal: 'Read one synthetic message.', toolName: 'list_messages', argumentsJson: '{}' },
