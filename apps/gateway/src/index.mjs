@@ -9,6 +9,7 @@ import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { createArtifactSnapshot, toolSurfaceHash } from "./artifact.mjs";
 import { admissionFetch, getSignedAdmission } from "./signed-admission.mjs";
+import { currentTraceId, recordAdmission, withSpan } from "../../../packages/telemetry/index.mjs";
 
 const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED"]);
 const SOURCES = new Set(["LIVE", "MOCK", "REPLAY"]);
@@ -19,7 +20,7 @@ const MCP_LANDING_PAGE = readFileSync(new URL("./mcp-landing.html", import.meta.
 
 export class AdmissionBlockedError extends Error {
   constructor(decision) {
-    super(`MCPShield blocked ${decision.releaseId}: ${decision.reasonCode}`);
+    super(`MCPShield blocked ${decision.releaseId}: ${decision.reasonCode} (${decision.releaseStatus})${decision.reportUrl ? `; report: ${decision.reportUrl}` : ""}`);
     this.name = "AdmissionBlockedError";
     this.decision = decision;
   }
@@ -51,7 +52,24 @@ function mockDecision(identity) {
   return validateDecision({ schemaVersion: "1.0.0", releaseId: identity.releaseId, decision: "BLOCK", releaseStatus: "UNVERIFIED", reasonCode: "STATUS_UNAVAILABLE", checkedAt: new Date().toISOString(), source: "MOCK" }, identity.releaseId);
 }
 
-export async function getAdmission({ identity, mode = process.env.MCPSHIELD_MODE ?? "live", apiBaseUrl = process.env.MCPSHIELD_API_URL ?? "http://127.0.0.1:3001", replayFile = process.env.MCPSHIELD_REPLAY_FILE, timeoutMs = Number(process.env.MCPSHIELD_ADMISSION_TIMEOUT_MS ?? 3000), fetchImpl = fetch, ...signedOptions }) {
+export async function getAdmission(options) {
+  return withSpan("admission.check", { "mcpshield.release_id": options.identity?.releaseId }, async () => {
+    const started = performance.now();
+    let decision = "BLOCK";
+    let source = String(options.mode ?? process.env.MCPSHIELD_MODE ?? "live").toUpperCase();
+    try {
+      const result = await checkAdmission(options);
+      decision = result.decision; source = result.cacheHit ? "CACHE" : result.source;
+      return result;
+    } finally {
+      recordAdmission({ decision, source, riskTier: ["READ_PUBLIC", "READ_PRIVATE"].includes(options.operationClass) ? "READ_ONLY" : "WRITE", durationSeconds: (performance.now() - started) / 1000 });
+      const traceId = currentTraceId();
+      if (traceId && !/^0+$/.test(traceId)) log("admission_checked", { traceId, decision, source });
+    }
+  });
+}
+
+async function checkAdmission({ identity, mode = process.env.MCPSHIELD_MODE ?? "live", apiBaseUrl = process.env.MCPSHIELD_API_URL ?? "http://127.0.0.1:3001", replayFile = process.env.MCPSHIELD_REPLAY_FILE, timeoutMs = Number(process.env.MCPSHIELD_ADMISSION_TIMEOUT_MS ?? 3000), fetchImpl = fetch, ...signedOptions }) {
   if (!identity?.releaseId || !identity.artifactDigest || !identity.toolSurfaceHash) throw new Error("Gateway-owned artifact identity is required");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) throw new Error("Admission timeout must be between 1 and 30000ms");
   if (mode === "mock") return mockDecision(identity);
@@ -142,6 +160,7 @@ async function eachMessage(value, inspect) {
 
 export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall) {
   const listRequests = new Map();
+  let surfaceChanged = false;
   const allowedTools = new Set(tools.map(({ name }) => name));
   const makeRoom = () => {
     if (listRequests.size < 1_024) return;
@@ -155,6 +174,7 @@ export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall) {
     if (message.method === "tools/call" && !allowedTools.has(message.params?.name)) {
       throw new Error(`Undeclared runtime tool call: ${String(message.params?.name)}`);
     }
+    if (message.method === "tools/call" && surfaceChanged) throw new ToolSurfaceDriftError(expectedHash, "TOOLS_LIST_CHANGED_REQUIRES_RECHECK");
     if (message.method === "tools/call" && beforeCall) await beforeCall(message);
     if (Object.hasOwn(message, "id")) {
       const key = idKey(message.id);
@@ -167,6 +187,7 @@ export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall) {
   }));
   const responses = lineTransform((value) => eachMessage(value, (message) => {
     if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("JSON-RPC batch contains an invalid response");
+    if (message.method === "notifications/tools/list_changed") { surfaceChanged = true; return; }
     const key = Object.hasOwn(message, "id") ? idKey(message.id) : undefined;
     if (!key || !listRequests.has(key)) return;
     if (listRequests.get(key) === "COMPLETE") throw new Error("Duplicate tools/list response");
@@ -175,6 +196,7 @@ export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall) {
     if (!Array.isArray(message.result?.tools)) throw new ToolSurfaceDriftError(expectedHash, "INVALID_TOOLS_LIST");
     const observed = toolSurfaceHash(message.result.tools);
     if (observed !== expectedHash) throw new ToolSurfaceDriftError(expectedHash, observed);
+    surfaceChanged = false;
   }));
   return { requests, responses };
 }
@@ -200,6 +222,17 @@ async function admittedSnapshot(artifactDir, options) {
     await snapshot.cleanup();
     throw error;
   }
+}
+
+export async function inspectArtifact({ artifactDir, rollout = "observe", ...options }) {
+  if (!["observe", "warn", "enforce"].includes(rollout)) throw new Error("Rollout must be observe, warn, or enforce");
+  const snapshot = await createArtifactSnapshot(artifactDir);
+  try {
+    const decision = await getAdmission({ ...options, identity: snapshot, operationClass: operationClass(snapshot.tools) });
+    return { ...decision, rollout, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash,
+      assessment: rollout === "observe" ? "RECORD_ONLY" : rollout === "warn" && decision.decision !== "ALLOW" ? "REVIEW_REQUIRED" : decision.decision,
+      spawnAttempted: false };
+  } finally { await snapshot.cleanup(); }
 }
 
 function operationClass(tools) {
@@ -327,7 +360,7 @@ export function createRemoteMcpServer(options = {}) {
     catch (error) {
       const reason = error instanceof AdmissionBlockedError ? error.decision.reasonCode : "EXECUTION_FAILED";
       log("remote_mcp_blocked", { reason });
-      return { isError: true, content: [{ type: "text", text: `MCPShield blocked this call: ${reason}` }] };
+      return { isError: true, content: [{ type: "text", text: error instanceof AdmissionBlockedError ? error.message : `MCPShield blocked this call: ${reason}` }] };
     }
   });
   return server;
@@ -389,8 +422,8 @@ function serve() {
   }).listen(port, host, () => log("gateway_ready", { host, port, mcpEndpoint: "/mcp" }));
 }
 
-function parseRun(args) {
-  const allowed = new Set(["--artifact", "--mode", "--replay"]);
+function parseRun(args, inspect = false) {
+  const allowed = new Set(["--artifact", "--mode", "--replay", ...(inspect ? ["--rollout"] : [])]);
   const parsed = {};
   for (let index = 0; index < args.length; index += 2) {
     const key = args[index]; const value = args[index + 1];
@@ -405,8 +438,13 @@ async function main() {
   const [subcommand = "stdio", ...args] = process.argv.slice(2);
   if (subcommand === "stdio") return stdio();
   if (subcommand === "serve") return serve();
-  if (subcommand !== "run") throw new Error(`Unknown command: ${subcommand}`);
-  const parsed = parseRun(args);
+  if (!["run", "inspect"].includes(subcommand)) throw new Error(`Unknown command: ${subcommand}`);
+  const parsed = parseRun(args, subcommand === "inspect");
+  if (subcommand === "inspect") {
+    const assessment = await inspectArtifact({ artifactDir: parsed.artifact, mode: parsed.mode, replayFile: parsed.replay, rollout: parsed.rollout });
+    process.stdout.write(`${JSON.stringify(assessment)}\n`);
+    return;
+  }
   try {
     const result = await runArtifact({ artifactDir: parsed.artifact, mode: parsed.mode ?? process.env.MCPSHIELD_MODE ?? "live", replayFile: parsed.replay ?? process.env.MCPSHIELD_REPLAY_FILE });
     process.exitCode = result.code;

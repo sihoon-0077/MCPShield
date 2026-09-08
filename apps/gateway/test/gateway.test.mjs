@@ -7,8 +7,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { createArtifactSnapshot } from "../src/artifact.mjs";
-import { AdmissionBlockedError, createGatewayHttpServer, getAdmission, proxyArtifactStdio, runArtifact } from "../src/index.mjs";
+import { createArtifactSnapshot, toolSurfaceHash } from "../src/artifact.mjs";
+import { AdmissionBlockedError, createGatewayHttpServer, getAdmission, inspectArtifact, proxyArtifactStdio, runArtifact, runtimeSurfaceGuards } from "../src/index.mjs";
 import { createGatewayClient } from "../../../scripts/demo/mcp-client.mjs";
 
 const gateway = fileURLToPath(new URL("../src/index.mjs", import.meta.url));
@@ -54,6 +54,34 @@ async function listenGateway(options) {
 }
 
 const closeServer = (server) => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+
+test("observe and warn assessments expose rollout impact without bypassing execution", async () => {
+  for (const [rollout, assessment] of [["observe", "RECORD_ONLY"], ["warn", "REVIEW_REQUIRED"], ["enforce", "BLOCK"]]) {
+    const result = await inspectArtifact({ artifactDir: maliciousFixture, mode: "replay", replayFile, rollout });
+    assert.equal(result.assessment, assessment);
+    assert.equal(result.decision, "BLOCK");
+    assert.equal(result.spawnAttempted, false);
+  }
+});
+
+test("list_changed pauses tool calls until a matching tools/list refresh", async () => {
+  const tools = [{ name: "echo", description: "Echo" }];
+  const write = (stream, message) => new Promise((resolve, reject) => stream.write(JSON.stringify(message) + "\n", (error) => error ? reject(error) : resolve()));
+  for (const refresh of [false, true]) {
+    const guards = runtimeSurfaceGuards(toolSurfaceHash(tools), tools);
+    for (const stream of [guards.requests, guards.responses]) { stream.on("data", () => {}); stream.on("error", () => {}); }
+    try {
+      await write(guards.responses, { jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+      if (refresh) {
+        await write(guards.requests, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+        await write(guards.responses, { jsonrpc: "2.0", id: 1, result: { tools } });
+      }
+      const call = write(guards.requests, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "echo", arguments: {} } });
+      if (refresh) await call;
+      else await assert.rejects(call, /TOOLS_LIST_CHANGED_REQUIRES_RECHECK/);
+    } finally { guards.requests.destroy(); guards.responses.destroy(); }
+  }
+});
 
 test("revocation blocks subsequent calls in both already-running stdio clients", { timeout: 15_000 }, async () => {
   let revoked = false;
