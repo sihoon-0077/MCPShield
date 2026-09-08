@@ -11,6 +11,7 @@ import { registerChainRoutes } from "./chain-control.js";
 import { enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
 import { registerReceiptRoutes } from "./receipt-control.js";
 import type { ReceiptRelayer } from "./receipt-relayer.js";
+import { registerEventStream } from "./event-stream.js";
 export { defaultPolicy } from "./control-policy.js";
 
 export type Credential = { token: string; tenantId: string; role: "reader" | "operator" | "admin" };
@@ -69,6 +70,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
     });
     await registerChainRoutes(api, store, options, authenticate, authorize);
     await registerReceiptRoutes(api, store, options, authenticate, authorize);
+    registerEventStream(api, store, authenticate);
     api.get("/session", async (request) => {
       const { tenantId, role } = authenticate(request.headers.authorization);
       return { tenantId, role, capabilities: { read: true, scan: role !== "reader", evidence: role !== "reader", manage: role === "admin" } };

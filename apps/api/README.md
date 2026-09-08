@@ -254,6 +254,25 @@ It checks exact exported parent relationships and rejects raw tool/credential/ba
 fields. Its bounded loopback receiver is a protocol-contract collector, not a live
 production collector or query backend; the scan report fixture is not Docker proof.
 
+## Authenticated invalidation stream
+
+`GET /v1/events/stream` accepts the same bearer credentials, including the reader role.
+Use authenticated streaming fetch or a server-side BFF; tokens in query parameters
+are not accepted. Each connection/reconnection begins with `event: resync` and
+`data: {"type":"RESYNC_REQUIRED","reason":"INITIAL"}`. Changed recent event-ID sets
+send the same envelope with reason `EVENTS_CHANGED`; `RECONNECT` requests a new stream.
+Refetch existing JSON lists and the latest admission decision after resync.
+
+This is only tenant-scoped UI invalidation: no event payload, tenant name, cursor,
+`id`, exact audit ordering, or lossless replay. `Last-Event-ID` is deliberately ignored.
+The existing bounded 250-event snapshot is fingerprinted every second; heartbeat
+comments arrive after 15 quiet seconds. Connections close after 2 minutes without
+changes or 10 minutes total. Snapshot reads time out after 3 seconds; slow consumers
+are disconnected instead of queued. Limits are 3 connections per tenant / 32 per
+API process, not cluster-wide. Abort, credential revocation and server pre-close
+release stream resources. SSE is never chain truth or execution authorization;
+Gateway fresh admission checking remains unchanged.
+
 `tests/contracts/receipt-anchor.test.ts` measures local Ganache gas (not money prices);
 `tests/api/receipt-anchors.test.ts` exercises real EVM/API/outbox/indexer/CLI, tenant ACL,
 signature binding, AES-GCM storage, N-depth, actual snapshot/revert and raw-tx recovery.
