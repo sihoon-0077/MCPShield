@@ -72,7 +72,9 @@ test("balanced fallback is read-only, short-lived, and cannot resurrect allow af
 test("a concurrent late allow cannot return or repopulate cache after a newer denial or invalid response", async () => {
   const options = { ...context, apiBaseUrl: "http://127.0.0.1:3102", timeoutMs: 5000, now: () => now, cacheFile: null, admissionMode: "balanced" };
   const offline = async () => { throw new TypeError("synthetic offline"); };
-  for (const response of [json(signed({ ...base, decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED" })), json({}), json({}, 403), new Response("not json")]) {
+  for (const response of [json(signed({ ...base, decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED" })), json({}), json({}, 403), new Response("not json"),
+    new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("synthetic body interruption")); } }), { status: 403 }),
+    new Response(new ReadableStream({ start() {} }), { status: 403 })]) {
     let resume, started;
     const entered = new Promise(resolve => { started = resolve; });
     const late = getSignedAdmission({ ...options, fetchImpl: () => new Promise(resolve => { resume = () => resolve(json(signed(base))); started(); }) });
@@ -83,6 +85,24 @@ test("a concurrent late allow cannot return or repopulate cache after a newer de
   }
   const healthy = await Promise.all(Array.from({ length: 8 }, () => getSignedAdmission({ ...options, fetchImpl: async () => json(signed(base)) })));
   assert.ok(healthy.every(result => result.decision === "ALLOW" && !result.cacheHit), "Concurrent healthy reads must not invalidate each other");
+});
+
+test("4xx headers invalidate cached allow even when their body fails, stalls or exceeds the limit", async () => {
+  const options = { ...context, apiBaseUrl: "http://127.0.0.1:3104", timeoutMs: 20, now: () => now, cacheFile: null, admissionMode: "balanced" };
+  const offline = async () => { throw new TypeError("synthetic offline"); };
+  let cancelled = false;
+  for (const body of [
+    new ReadableStream({ start(controller) { controller.error(new TypeError("synthetic body interruption")); } }),
+    new ReadableStream({ start() {}, cancel() { cancelled = true; } }),
+    "x".repeat(65_537),
+  ]) {
+    await getSignedAdmission({ ...options, fetchImpl: async () => json(signed(base)) });
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: async () => new Response(body, { status: 403 }) }), /returned 403/);
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: offline }), /no matching signed cache/);
+  }
+  assert.equal(cancelled, true);
+  await getSignedAdmission({ ...options, fetchImpl: async () => json(signed(base)) });
+  assert.equal((await getSignedAdmission({ ...options, fetchImpl: async () => new Response(new ReadableStream({ start() {} }), { status: 503 }) })).cacheHit, true);
 });
 
 test("persistent cache has one owner, never reclaims an unknown lock and respects another process's denial", async () => {

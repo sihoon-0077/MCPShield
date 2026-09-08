@@ -17,6 +17,12 @@ export async function admissionFetch(url, options, fetchImpl, timeoutMs) {
   });
   const receive = async () => {
     const response = await fetchImpl(url, { ...options, headers: { ...options.headers, ...traceHeaders() }, signal: controller.signal, redirect: "error" });
+    // The status already decides non-2xx handling. A broken/stalled 4xx body
+    // must not disguise an explicit denial as an offline-cache opportunity.
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => {});
+      return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
+    }
     controller.signal.throwIfAborted();
     if (!response.body) return response;
     reader = response.body.getReader();
