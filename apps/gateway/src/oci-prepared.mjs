@@ -39,11 +39,11 @@ export function validateOciContainer(value, binding, image) {
   if (canonicalJson(env) !== canonicalJson(expectedEnvironment(image)) || h.NetworkMode !== "none" || h.ReadonlyRootfs !== true || h.Privileged !== false
     || h.Memory !== 268_435_456 || h.MemorySwap !== 268_435_456 || h.NanoCpus !== 1_000_000_000 || h.PidsLimit !== 64
     || canonicalJson(h.CapDrop) !== '["ALL"]' || (h.CapAdd?.length ?? 0) !== 0 || !Array.isArray(h.SecurityOpt) || h.SecurityOpt.length !== 1
-    || !["no-new-privileges", "no-new-privileges:true"].includes(h.SecurityOpt[0]) || h.PidMode || h.IpcMode === "host" || h.UTSMode === "host" || h.UsernsMode === "host"
+    || !["no-new-privileges", "no-new-privileges:true"].includes(h.SecurityOpt[0]) || h.PidMode || ![undefined, "", "private"].includes(h.IpcMode) || h.UTSMode === "host" || h.UsernsMode === "host"
     || (h.Binds?.length ?? 0) !== 0 || (h.Devices?.length ?? 0) !== 0 || (h.DeviceRequests?.length ?? 0) !== 0 || (h.VolumesFrom?.length ?? 0) !== 0
     || (h.Links?.length ?? 0) !== 0 || (h.ExtraHosts?.length ?? 0) !== 0 || Object.keys(h.PortBindings ?? {}).length !== 0
     || Object.keys(h.Tmpfs ?? {}).join() !== "/tmp" || typeof h.Tmpfs["/tmp"] !== "string"
-    || !["noexec", "nosuid", "nodev", "size=32m"].every(option => h.Tmpfs["/tmp"].split(",").includes(option)) || !Array.isArray(value.Mounts)
+    || h.Tmpfs["/tmp"].split(",").sort().join() !== "nodev,noexec,nosuid,rw,size=32m" || !Array.isArray(value.Mounts)
     || value.Mounts.some(mount => mount.Type !== "tmpfs" || mount.Destination !== "/tmp")) fail();
 }
 
