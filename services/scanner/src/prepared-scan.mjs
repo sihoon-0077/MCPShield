@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { prepareNpmClosure, readPreparedClosure } from '../../resolver/src/npm-closure.mjs';
+import { generateNpmLock } from '../../resolver/src/generated-lock.mjs';
 import { hashPreparedRuntimeDescriptor } from '../../resolver/src/runtime-descriptor.mjs';
 import { canonicalJson, createEvidenceBundle } from './evidence.mjs';
 import { observePreparedRuntime } from './prepared-runtime.mjs';
@@ -95,12 +96,22 @@ export async function scanPreparedRuntime({ descriptor, expectedDescriptorDigest
 
 export async function prepareAndScanRuntime({ preparation, sourceReleaseId, releaseId, scanId, ai, probePlan, timeoutMs,
   trusted = readTrustedPreparedIdentity(preparation.builderImageDigest) }, acquisitionOptions) {
-  const prepared = await prepareNpmClosure(preparation, acquisitionOptions);
+  let prepared = await prepareNpmClosure(preparation, acquisitionOptions);
+  let generated;
+  if (prepared.phase === 'NOT_RUN' && prepared.issues.length === 1 && prepared.issues[0] === 'RUNTIME_LOCK_REQUIRED') {
+    generated = await generateNpmLock(preparation, acquisitionOptions);
+    if (generated.lockGenerated) prepared = await prepareNpmClosure({ ...preparation, generatedLock: generated.generatedLock }, acquisitionOptions);
+    else prepared = generated;
+  }
   if (prepared.phase !== 'CLOSURE_PREPARED') return { result: null, binding: null, bundle: null,
     analysis: { profile: 'restricted-node-docker-v1', verdict: 'ABSTAIN', checks: {}, issues: prepared.issues, phase: prepared.phase } };
   try {
-    return { ...await scanPreparedRuntime({ descriptor: prepared.descriptor, expectedDescriptorDigest: prepared.descriptorDigest,
-      sourceReleaseId, releaseId, scanId, ai, probePlan, timeoutMs, trusted }), runtimeTag: prepared.runtimeTag, cleanup: prepared.cleanup };
+    const scanned = await scanPreparedRuntime({ descriptor: prepared.descriptor, expectedDescriptorDigest: prepared.descriptorDigest,
+      sourceReleaseId, releaseId, scanId, ai, probePlan, timeoutMs, trusted });
+    if (generated?.generation && scanned.bundle) scanned.bundle = createEvidenceBundle({
+      ...Object.fromEntries(Object.entries(scanned.bundle.files).map(([path, content]) => [path, JSON.parse(content)])),
+      'prepared/lock-generation.json': generated.generation });
+    return { ...scanned, runtimeTag: prepared.runtimeTag, cleanup: prepared.cleanup };
   } catch (error) {
     await prepared.cleanup();
     throw error;

@@ -31,10 +31,10 @@ source tree digest, lock digest/origin, builder image digest, target platform,
 final image digest, discovered tool surface hash, entrypoint bytes, exact argv
 and isolation policy. Unknown values remain null. OCI lock origin is explicitly
 `NOT_APPLICABLE`; missing npm lock origin is null, supplied is `SUPPLIED`, and
-future isolated lock generation must use `RESOLVER_GENERATED`. The exported
+isolated lock generation uses `RESOLVER_GENERATED`. The exported
 `hashPreparedRuntimeDescriptor()` validates these distinctions and hashes
 canonical JSON. It rejects forged READY stages and extra fields. The additive
-`CLOSURE_PREPARED` stage requires the supplied lock, builder, platform, entrypoint
+`CLOSURE_PREPARED` stage requires a verified supplied/generated lock, builder, platform, entrypoint
 and final image identity; it still cannot grant READY. A descriptor
 hash is an identity commitment, never authorization to run.
 
@@ -135,13 +135,12 @@ integrity, timeout, dependency hash changes and malicious tar boundaries.
    reinstall or resolve a mutable tag. Missing graph/image/observation evidence
    remains INCONCLUSIVE. Cross-module identity/admission changes need Main review.
 
-Later required stages, not completed here: lockless package resolution in an
-isolated native solver with a registry-only acquisition broker; npm aliases,
+Later required stages, not completed here: npm aliases,
 bundled/native/script-requiring packages under an explicit policy; generic OCI
 execution/observation and language-neutral stdio collector. Ordinary published
 npm archives often lack a lock, so 1A/1B alone cannot satisfy generic FR001–003.
 
-### Generated-lock contract (solver implementation follows separately)
+### Generated-lock contract
 
 The internal `preflightNpmRuntime`/`acquireNpmClosure` options also accept a
 `generatedLock: Buffer` of at most 1 MiB. This is server-owned solver output,
@@ -157,3 +156,41 @@ the descriptor lock digest, while original source identity stays immutable.
 Local paths, workspaces, Git/URL/alias dependency specs, overrides and bundled
 layouts are explicitly rejected before a native solver would start. Unsupported
 cases remain INCONCLUSIVE rather than falling back to host npm execution.
+
+### Isolated native generation for published packages without a lock
+
+`generateNpmLock()` runs the approved builder's native `npm install
+--package-lock-only --ignore-scripts --ignore-extension` in a fresh, non-root,
+read-only Docker container. Only the verified `package.json` is mounted; source,
+package `.npmrc`, npm extensions, host environment and secrets are absent. Distinct
+blank user/global config files, fixed registry, disabled Git executable and native
+file/directory/Git/remote dependency restrictions are enforced. No node_modules
+installation is permitted during generation. The original archive/tree is never
+changed; the resulting lock is validated again through strict preflight.
+
+The solver has an internal-only network, loopback DNS and a static address for a
+separate authenticated metadata broker. Only that trusted broker has Internet
+egress. It accepts canonical npm package-name GETs, not arbitrary URLs, tarball
+paths, CONNECT or body forwarding. External requests use fixed registry HTTPS,
+no redirects or forwarded credentials. Bounds are 8 seconds per response, 90
+seconds per broker job, 4 MiB per response, 32 MiB total, 128 cached packages,
+256 requests and 16 concurrent requests. Evidence retains response/package-name
+hashes, sizes and collection times, never token or metadata body contents.
+
+The trusted broker and solver scripts are part of the builder image config ID;
+`io.mcpshield.lock-generator=npm-package-lock-only-v1` is required. Rebuild and
+vulnerability-scan the exact new builder ID before approving this path. Generation
+returns `LOCK_GENERATED/INCONCLUSIVE`, not READY or scan PASS. The full
+`prepareAndScanRuntime()` wrapper handles missing-lock generation, verified tar
+acquisition, network-none installation, final-image discovery and full scanning.
+Its encrypted bundle adds digest-only `prepared/lock-generation.json` provenance.
+
+The Linux `npm-closure.test.mjs` test above additionally exercises actual native
+lock generation against **authored synthetic registry metadata**, then installs
+verified synthetic tar bytes offline. This checks real Docker/npm isolation but
+does not claim a live public-registry or commercial-model measurement. Portable
+`registry-broker.test.mjs` checks canonical routes, auth/header isolation, cache,
+size rejection and an actual stalled HTTP body deadline. Missing Docker/builder
+configuration remains NOT_RUN/INCONCLUSIVE; unsupported dependency layouts remain
+explicitly rejected. npm behavior follows the [package-lock-only contract](https://docs.npmjs.com/cli/v11/commands/npm-install/)
+and [native npm configuration](https://docs.npmjs.com/using-npm/config/).

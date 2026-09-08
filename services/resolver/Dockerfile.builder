@@ -19,9 +19,11 @@ RUN set -eu; node --input-type=module -e "import {writeFile} from 'node:fs/promi
  node --input-type=module -e "import {readFile} from 'node:fs/promises';for(const [name,version]of [['brace-expansion','5.0.9'],['ip-address','10.3.1'],['tar','7.5.22']]){if(JSON.parse(await readFile('/usr/local/lib/node_modules/npm/node_modules/'+name+'/package.json')).version!==version)throw Error('PATCH_VERSION_MISMATCH')}"; \
  test "$(npm --version)" = '12.0.2'
 COPY services/resolver/src/prepare-container.mjs services/resolver/src/closure-files.mjs /trusted/
+COPY services/resolver/src/lock-container.mjs services/resolver/src/registry-broker.mjs /trusted/
 RUN mkdir /work && chown 1000:1000 /work
 LABEL io.mcpshield.runtime-builder="node-closure-v1" io.mcpshield.npm-version="12.0.2"
 LABEL io.mcpshield.npm-patches="brace-expansion@5.0.9,ip-address@10.3.1,tar@7.5.22"
+LABEL io.mcpshield.lock-generator="npm-package-lock-only-v1"
 USER 1000:1000
 WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/node", "/trusted/prepare-container.mjs"]
