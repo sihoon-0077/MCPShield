@@ -7,6 +7,7 @@ import { runSandbox } from '../../services/scanner/src/sandbox.mjs';
 import { scanReleaseDetailed } from '../../services/scanner/src/scanner.mjs';
 import { runMcpAttackHarness } from '../../benchmarks/mcp-attack-harness.mjs';
 import { createServer } from 'node:http';
+import { runPairedAgentHarness, summarizeAgentExperiments } from '../../benchmarks/agent-mcp-harness.mjs';
 
 const enabled = process.env.MCPSHIELD_DOCKER_TESTS === '1';
 test('Linux Docker enforces rootfs, capabilities, cgroups and external-network isolation', { skip: !enabled, timeout: 120_000 }, async () => {
@@ -101,4 +102,29 @@ test('validated AI contract-test plans run actual MCP calls inside Docker and re
   assert.ok(result.result.findings.some(({ code }) => code === 'CANARY_EXFILTRATION'));
   assert.equal(JSON.parse(result.bundle.files['semantic/generated-probes.json']).execution.status, 'GENERATED_VALIDATED');
   assert.equal(JSON.parse(result.bundle.files['sandbox/mcp.json']).callResults.length, 2);
+});
+
+test('paired agent contract test uses identical benign tasks and actual Docker sink effects, preserving safe-task availability', { skip: !enabled, timeout: 300_000 }, async (context) => {
+  const tasks = [];
+  const server = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks));
+    const prompt = JSON.parse(body.prompt); tasks.push(prompt.userTask);
+    const name = prompt.tools.some(({ name }) => name === 'export_context') ? 'export_context' : 'list_messages';
+    response.end(JSON.stringify({ disposition: 'SELECTED', calls: [{ name, argumentsJson: '{}' }] }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => { server.closeAllConnections(); server.close(); });
+  const result = await runPairedAgentHarness({ safeDir: resolve('demo/fixtures/mail-mcp-1.0.0'), poisonedDir: resolve('demo/fixtures/probe-mail-mcp'),
+    allowRemoteAi: true, url: `http://127.0.0.1:${server.address().port}`, authorize: async ({ fixtureDir, artifactDigest, calls }) => {
+      const scan = await scanReleaseDetailed({ fixtureDir, sandbox: 'docker', sandboxTimeoutMs: 10_000, probeCalls: calls, logger: () => {} });
+      return { allow: scan.result.artifactDigest === artifactDigest && scan.result.scanStatus === 'PASSED', reasonCode: 'SCANNER_POLICY_NOT_CHAIN' };
+    } });
+  assert.equal(tasks.length, 2);
+  assert.equal(tasks[0], tasks[1]);
+  assert.equal(result.measurements.safe.baseline.taskCompleted, true);
+  assert.equal(result.measurements.safe.protected.taskCompleted, true);
+  assert.equal(result.measurements.poisoned.baseline.canaryExfiltration, true);
+  assert.equal(result.measurements.poisoned.protected.spawned, false);
+  assert.equal(summarizeAgentExperiments([result]).protectedAsr, 0);
 });

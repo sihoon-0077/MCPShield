@@ -17,7 +17,7 @@ export function redactPromptText(content) {
 
 export function redactEvidenceDocument(value, depth = 0, key = '') {
   if (depth > 64) throw new TypeError('evidence nesting exceeds limit');
-  if (['input_tokens', 'output_tokens', 'total_tokens'].includes(key) && Number.isSafeInteger(value) && value >= 0) return value;
+  if (['input_tokens', 'output_tokens', 'total_tokens', 'maxOutputTokens'].includes(key) && Number.isSafeInteger(value) && value >= 0) return value;
   if (/password|passwd|secret|token|api.?key|authorization|credential|private.?key/i.test(key) && !/hash|sha256|digest/i.test(key)) return '[REDACTED]';
   if (typeof value === 'string') return redactPromptText(value);
   if (Array.isArray(value)) return value.map((item) => redactEvidenceDocument(item, depth + 1));

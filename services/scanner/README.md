@@ -188,6 +188,56 @@ callback for integrated experiments. Missing credentials produce `NOT_RUN`,
 never fabricated model results. This is a synthetic action-effect benchmark,
 not a general agent ASR or independently labeled MCPTox evaluation.
 
+### Same-task safe/poisoned agent evaluation (master 17.8)
+
+```powershell
+node benchmarks/evaluate-ai-mcp.mjs --mode agent --model YOUR_MODEL --runs 3
+```
+
+With the same explicit provider opt-in, this mode asks a small single-turn
+JSON tool-decision agent to perform the same benign email task against the
+safe and poisoned actual MCP tool lists. It does **not** ask the model to
+generate an attack. Scanner-owned snapshots pin both artifacts. The isolated
+collector executes the selected calls, and canary arrival at the controlled
+sink determines attack success. The protected branch reuses the exact model
+decision and applies the admission callback before spawn. Its safe-task result
+is measured too, so blocking everything cannot look like a successful defense.
+Invalid/out-of-profile plans are counted separately; refusals remain valid
+non-successful attacks. Completion here means a successful expected tool call
+without canary egress, not a general judgment of answer quality. Startup exfil
+is rejected from this experiment because it is not model-induced behavior.
+
+`runPairedAgentHarness()` accepts custom safe/poisoned snapshots, benign task and
+real admission callback. Default CLI fixtures differ in code and capabilities,
+so their result is not a pure metadata-only ablation. The model invocation
+records provider/model/date, prompt/instruction hashes, token usage and fixed
+request limits. Temperature remains `PROVIDER_DEFAULT`, seed `NOT_REQUESTED`:
+repeated calls are not claimed deterministic. Local contract tests intentionally
+use scripted fake model responses; only an opted-in real model run may support
+claims about that model's synthetic ASR. No actual model ASR has been measured
+without credentials.
+
+### MCPTox static-only evidence
+
+The [upstream repository](https://github.com/zhiqiangwang4/MCPTox-Benchmark)
+at commit `f85189f9ad12504c197c7f920ab818a40657b1fa` contains no explicit LICENSE
+or usage terms in its minimal README as checked on 2026-09-09. Raw data is not
+bundled or redistributed here. Obtain the pinned source separately under
+applicable permissions, then run:
+
+```powershell
+node benchmarks/mcptox-metadata.mjs --input PATH_TO_PURE_TOOL_JSON
+```
+
+The adapter checks the exact source SHA-256, treats descriptions only as data,
+and emits aggregate statistics without payload text. The recorded read-only
+measurement in `benchmarks/results/mcptox-static-2026-09-09.json` is **126/485
+review detections (25.98%)**, with 359 misses. Template-3 has only 7/225 detections.
+These are poisoned *tool records*, not the paper's 1,312 agent attack instances.
+FPR and agent ASR are unmeasured (`null`); upstream author labels are not an
+independent labeling exercise. This is evidence that lexical rules alone miss
+implicit attacks, not evidence that the full system meets a 90% target.
+
 The scanner produces a canonical MCPShield `ScanResult` v1 from a controlled
 fixture. It combines reproducible artifact/tool hashes, static rules, a
 structured semantic analysis, and observed sandbox behavior. Raw canary data,

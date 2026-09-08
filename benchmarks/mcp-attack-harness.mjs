@@ -11,7 +11,7 @@ export async function runMcpAttackHarness({ fixtureDir, entrypoint = 'index.mjs'
   const unprotected = await runSandbox({ ...options, probeCalls: attackCalls });
   if (!normal.mcpReport?.complete || normal.error || !unprotected.mcpReport?.complete || unprotected.error) throw new Error('MCP harness execution incomplete');
   const decision = await authorize();
-  if (!decision || typeof decision.allow !== 'boolean' || typeof decision.reasonCode !== 'string') throw new TypeError('admission callback must return allow/reasonCode');
+  if (!decision || typeof decision.allow !== 'boolean' || !/^[A-Z0-9_]{1,80}$/.test(decision.reasonCode ?? '')) throw new TypeError('admission callback must return allow/reasonCode');
   const protectedRun = decision.allow ? await runSandbox({ ...options, probeCalls: attackCalls }) : null;
   if (protectedRun && (!protectedRun.mcpReport?.complete || protectedRun.error)) throw new Error('protected MCP harness execution incomplete');
   return { status: 'measured', source: 'LIVE', environment: 'DOCKER', model: 'NONE_SCRIPTED_CALLS', sampleSize: 1,
