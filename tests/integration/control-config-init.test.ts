@@ -34,8 +34,10 @@ test('local configuration generates distinct credentials and never overwrites ev
     const observability = await promisify(execFile)(process.execPath, [script, '--observability', '--output', observabilityOutput], { windowsHide: true });
     const passwordConfig = parseEnv(await readFile(observabilityOutput, 'utf8'));
     assert.deepEqual(Object.keys(passwordConfig), ['MCPSHIELD_GRAFANA_ADMIN_PASSWORD']);
-    assert.match(passwordConfig.MCPSHIELD_GRAFANA_ADMIN_PASSWORD, /^[a-f0-9]{64}$/);
-    assert.ok(!observability.stdout.includes(passwordConfig.MCPSHIELD_GRAFANA_ADMIN_PASSWORD));
+    const password = passwordConfig.MCPSHIELD_GRAFANA_ADMIN_PASSWORD;
+    assert.equal(typeof password, 'string');
+    assert.match(password!, /^[a-f0-9]{64}$/);
+    assert.ok(!observability.stdout.includes(password!));
     await assert.rejects(promisify(execFile)(process.execPath, [script, '--observability', '--output', observabilityOutput], { windowsHide: true }));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
