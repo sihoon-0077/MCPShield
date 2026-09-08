@@ -15,11 +15,23 @@
 
 ### 현재 검증 경계
 
-- `59a7fe1`까지 통합. `e5987e4`의 OCI inventory/오프라인 Trivy 단계와 `0dc93c9`의
+- `e399a55`까지 통합. `e5987e4`의 OCI inventory/오프라인 Trivy 단계와 `0dc93c9`의
   원본/파생 identity·고정 실행 정책·OCI 전용 analyzer/critic 계약은 구현됐다.
   binding 생성과 phase COMPLETE만으로 PASS/READY 또는 Gateway 실행을 허용하지 않는다.
   Main OCI portable 10개 통과·Linux 4개 명시 skip, OCI binding 4개 통과,
-  prepared/measurement 회귀 11개 통과. 실제 Trivy CLI 검증은 `1f7deb5`의 새 CI 단계로 확인한다.
+  prepared/measurement 회귀 11개 통과. 실제 Trivy CLI 검증은 아래 Linux 실패와 구분한다.
+- [Linux CI 34272462941](https://github.com/sihoon-0077/MCPShield/actions/runs/34272462941),
+  `54d3335`: Node 24·PostgreSQL 완료 성공. Node 22의 일반 테스트/build, 실제 npm closure,
+  prepared Docker Gateway(긴급 읽기 1회 포함), OCI import 및 독립 검증자 전체 흐름은 통과했다.
+  실제 검증자 재스캔 4회·Gateway OS 프로세스 2개·폐기 이미지 create/start 0건을 다시 확인했다.
+  AI는 합성 루프백 계약 서버이며 외부 모델의 분석 품질을 증명하지 않는다.
+  native OCI Trivy 단계는 DB snapshot의 `fixture exceeds 1073741824 bytes`로 실패했다.
+  전체 run은 실패이며 후속 repeat-demo/signed-image는 skipped다. `922329b`는 신뢰된 DB만
+  별도 2GiB streaming 예산으로 수정했고 후보 16MiB·OCI 원본 100MiB 제한은 유지한다.
+  `e399a55`는 독립 반복/이미지 진단을 다른 gate 실패 후에도 실행하되 서명·이미지 보관은
+  upstream verify와 PostgreSQL 성공 및 앞선 이미지 검사 성공을 계속 요구한다.
+  Main 관련 회귀 10개 통과·Linux 2개 명시 skip. DB 수정·이미지 readiness·10회 반복의
+  실제 해소 여부는 다음 Linux 실행으로 판단한다.
 - [Linux CI 34270393788](https://github.com/sihoon-0077/MCPShield/actions/runs/34270393788),
   `105f12f`: Node 22·24·PostgreSQL 세 job 완료 성공. 실제 prepared 회귀는
   검증자 재스캔 4회, 서로 다른 Gateway OS 프로세스 2개, 폐기 이미지 create/start 0건을 확인했다.
@@ -34,13 +46,25 @@
 - `f6bdc69`·`59a7fe1`: 부하 실험의 외부 fallback/telemetry 상속을 차단하고 자원 표본을 기록한다.
   명시적 1만 key 실험은 setup 15분/전체 60분의 watchdog으로 제한한다.
   별도 clean backend `9dccfd0`에서 실제 10,000개 등록·20,000건 PASS 서명·30,004건 transaction
-  검사를 끝내고 99,000요청 행렬 측정 중이다. 최종 결과 파일 전에는 성공률·p95를 확정하지 않는다.
+  검사를 끝냈으나 99,000요청 중 79,000회 완료 후 16번째 cell의 사후 assertion으로 실패했다.
+  `48eddb3`의 `benchmarks/results/admission-matrix-10000-2026-09-09.json`은 PARTIAL_FAILED다.
+  15개 cell 검증 통과·16번째 검증 실패·2개 미실행이며, 요청 완료 수를 ALLOW 성공 수로 읽지 않는다.
+  원래 CLI가 stack과 cell 최종 집계를 보존하지 않아 `48 !== 0`의 정확한 invariant와 p95는 불명이다.
+  시작/종료 결과 provenance 대신 실행 중/실패 후 일치한 진단 snapshot만 있으며 이를 명시했다.
+  자원 표본 105개의 최대 RSS는 2,771,922,944 bytes다. 실패 원인 진단·부분 결과 보존을 고친 뒤
+  작은 재현부터 검사하며, 이번 실패를 성공으로 바꾸거나 전체 실험을 자동 재시작하지 않는다.
   서명은 명시적 TEST_ONLY이고 공유 Windows 개발 PC의 Ganache 실험이지 독립 검증기관이나 운영 SLO가 아니다.
 - `15d61b9` break-glass 통합: operator-signed 60초 이하 grant, 정확한 읽기 1회/identity/arguments/
   client metadata 고정, 원자적 ADMISSION→CALL 사용 기록, 암호화 audit, 원래 REVOKED 유지.
   Main 실제 stdio·별도 OS 프로세스 claim·준비 격리 계약 회귀 18개 통과. 공개 HTTP는 허용하지 않는다.
   사용 기록은 signed grant를 포함한 LOCAL_ENCRYPTED_UNANCHORED이며 외부 앵커 증거가 아니다.
-  모든 RPC의 장애와 trust rejection 구분은 후속 작업이고 실제 prepared Docker emergency 검증도 대기다.
+  실제 prepared Docker emergency는 위 `54d3335` CI에서 통과했다.
+  모든 RPC의 장애와 trust rejection 구분·부분 REVOKED/identity 오류를 timeout으로 덮지 않는 처리는 통합 중이다.
+- 마스터 2.5.4.3의 외부 LLM 전체 source·환경변수 전송 금지와 기존 prepared full-source
+  semantic 입력 사이의 충돌을 확인했다. 실제 외부 provider 호출은 아직 하지 않았다.
+  외부 full-source를 기본 거부하고 합성 로컬 계약 테스트를 명시적으로 분리하는 수정 중이다.
+  외부 AI에는 metadata·보안 관련 redacted diff/제한된 근거만 보내는 별도 coverage 계약과
+  end-to-end 분석을 이어서 구현해야 하며, AI를 끄는 것으로 전체 요구사항을 완료 처리하지 않는다.
 
 ### 이전 체크포인트 이력 (해당 커밋 당시 상태)
 
