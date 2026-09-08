@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { setTimeout } from 'node:timers/promises';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 // One total deadline and size budget cover successful and error responses; never log response bodies.
-async function judgeRequest(origin, path, method, status, body, fetchImpl) {
+async function judgeRequest(origin, path, method, status, body, fetchImpl, timeoutMs = 20_000) {
   const controller = new AbortController();
   let timer, reader;
-  const deadline = new Promise((_, reject) => { timer = globalThis.setTimeout(() => { controller.abort(); reject(new Error('RELEASE_JUDGE_TIMEOUT')); }, 20_000); });
+  const deadline = new Promise((_, reject) => { timer = globalThis.setTimeout(() => { controller.abort(); reject(new Error('RELEASE_JUDGE_TIMEOUT')); }, timeoutMs); });
   try {
     const response = await Promise.race([fetchImpl(`${origin}/api/judge/${path}`, {
       method, headers: { origin, accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
@@ -29,6 +29,26 @@ async function judgeRequest(origin, path, method, status, body, fetchImpl) {
     assert.ok(/^application\/json\b/i.test(response.headers.get('content-type') ?? ''), 'RELEASE_JUDGE_JSON_REQUIRED');
     try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new Error('RELEASE_JUDGE_INVALID_JSON'); }
   } finally { globalThis.clearTimeout(timer); controller.abort(); void reader?.cancel().catch(() => {}); }
+}
+
+export async function waitForJudgeBackend(value, fetchImpl = fetch, timeoutMs = 20_000) {
+  const url = new URL(value);
+  assert.ok(url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash, 'Release readiness accepts only a loopback image origin');
+  assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 20_000, 'RELEASE_READINESS_BUDGET_INVALID');
+  const deadline = performance.now() + timeoutMs, path = `sessions/${randomUUID()}`;
+  // A web 200 proves neither API startup nor the enabled demo route. A GET for a
+  // fresh random ID verifies both without creating/retrying a stateful session.
+  while (performance.now() < deadline) {
+    try {
+      const result = await judgeRequest(url.origin, path, 'GET', 404, undefined, fetchImpl, Math.max(1, Math.min(2000, deadline - performance.now())));
+      assert.ok(result?.schemaVersion === '1.0.0' && result.error?.code === 'DEMO_SESSION_NOT_FOUND', 'RELEASE_READINESS_ROUTE_MISMATCH');
+      return;
+    } catch (error) {
+      if (!(error instanceof TypeError) && !['RELEASE_JUDGE_HTTP_503', 'RELEASE_JUDGE_TIMEOUT'].includes(error.message)) throw error;
+    }
+    await setTimeout(Math.max(0, Math.min(500, deadline - performance.now())));
+  }
+  throw new Error('RELEASE_BACKEND_NOT_READY');
 }
 
 export async function smokeJudgeExperience(value, fetchImpl = fetch) {
@@ -107,6 +127,7 @@ try {
   const landing = await fetch(`${origin}/mcp`, { headers: { accept: 'text/html' }, signal: AbortSignal.timeout(5000) });
   assert.equal(landing.status, 200); assert.match(landing.headers.get('content-type') ?? '', /^text\/html/);
   assert.match(await landing.text(), /MCPShield/);
+  await waitForJudgeBackend(origin);
   const judge = await smokeJudgeExperience(origin);
   for (const era of ['legacy', 'modern']) {
     client = new Client({ name: 'release-image-smoke', version: '1' }, { versionNegotiation: { mode: era === 'modern' ? { pin: '2026-07-28' } : 'legacy' } });
@@ -124,9 +145,25 @@ try {
   assert.equal(stopped.Running, false); assert.equal(stopped.OOMKilled, false);
   assert.ok([0, 143].includes(stopped.ExitCode), `Release did not terminate gracefully: ${stopped.ExitCode}`);
   console.log(JSON.stringify({ image, web: 'PASS', mcpLegacy: 'PASS', mcpModern: 'PASS', mcpData: 'SYNTHETIC_REPLAY', judge, lifecycle: 'PASS', resourceEnvelope: { memoryBytes: 500000000, cpus: 1, swapBytes: 0, sustainedLoadMeasured: false } }));
+} catch (error) {
+  if (container && /^[a-f0-9]{64}$/.test(container)) {
+    try {
+      const state = JSON.parse(docker('inspect', container))[0].State;
+      const output = spawnSync('docker', ['logs', '--tail=80', container], { encoding: 'utf8', timeout: 5000, maxBuffer: 65_536, stdio: ['ignore', 'pipe', 'pipe'] });
+      const logs = `${output.stdout ?? ''}\n${output.stderr ?? ''}`;
+      console.error(JSON.stringify({ event: 'RELEASE_SMOKE_FAILED', running: state.Running, oomKilled: state.OOMKilled, exitCode: state.ExitCode,
+        logsRead: !output.error && output.status === 0,
+        diagnosticCodes: ['ERR_MODULE_NOT_FOUND', 'MODULE_NOT_FOUND', 'ECONNREFUSED', 'EADDRINUSE', 'ERR_SQLITE_ERROR'].filter(code => logs.includes(code)) }));
+    } catch { console.error('{"event":"RELEASE_SMOKE_DIAGNOSTICS_UNAVAILABLE"}'); }
+  }
+  // execFileSync errors may contain argv, including this run's synthetic API
+  // credentials. Never let Node print the raw subprocess exception object.
+  throw new Error(/^RELEASE_[A-Z_0-9]+$/.test(error?.message ?? '') ? error.message : 'RELEASE_IMAGE_SMOKE_FAILED');
 } finally {
   await client?.close().catch(() => {});
-  if (container && /^[a-f0-9]{64}$/.test(container)) docker('rm', '--force', container);
+  if (container && /^[a-f0-9]{64}$/.test(container)) {
+    try { docker('rm', '--force', container); } catch { throw new Error('RELEASE_CONTAINER_CLEANUP_FAILED'); }
+  }
 }
 }
 
