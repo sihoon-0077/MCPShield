@@ -1,8 +1,9 @@
 import React, { useEffect, useState, type FormEvent } from "react";
 import { controlApi } from "../lib/control-client";
 
-export type Release = { releaseId: string; legacyReleaseId: string; toolId: string; version: string; status: string; artifactDigest: string; toolSurfaceHash: string; policyHash: string | null; reportRoot: string | null; validUntil: string | null; sourceType?: string; runtimeProfile?: string; sourceReleaseId?: string; chainUnavailable?: boolean; chain: null | { chainId: number; registryContract: string; observedBlock: number; blockHash: string; txHash: string | null } };
-export type Scan = { scanId: string; releaseId: string; policyHash: string; status: string; stage: string; attempts: number; maxAttempts: number; traceId: string; createdAt: string; updatedAt: string; nextAttemptAt: string; lastError?: unknown; result?: { state?: string; verdict?: string; validUntil?: string; reportRoot?: string; scanResult?: { scanStatus?: string } } };
+export type SemanticEvidenceScope = { semanticEvidenceMode?: string; providerQuality?: string };
+export type Release = SemanticEvidenceScope & { releaseId: string; legacyReleaseId: string; toolId: string; version: string; status: string; artifactDigest: string; toolSurfaceHash: string; policyHash: string | null; reportRoot: string | null; validUntil: string | null; sourceType?: string; runtimeProfile?: string; sourceReleaseId?: string; chainUnavailable?: boolean; chain: null | { chainId: number; registryContract: string; observedBlock: number; blockHash: string; txHash: string | null } };
+export type Scan = { scanId: string; releaseId: string; policyHash: string; status: string; stage: string; attempts: number; maxAttempts: number; traceId: string; createdAt: string; updatedAt: string; nextAttemptAt: string; lastError?: unknown; result?: SemanticEvidenceScope & { state?: string; verdict?: string; validUntil?: string; reportRoot?: string; scanResult?: { scanStatus?: string } } };
 export type ChainAction = { actionId: string; releaseId: string | null; kind: string; status: string; txHash: string | null; errorCode: string | null; chainId: number; registryAddress: string; createdAt: string; updatedAt: string };
 export type Admission = { decision: string; status: string; reasonCode: string; releaseId: string; policyHash: string; source: string; checkedAt: string; traceId: string; signature?: string; snapshot?: { expiresAt: string; observedBlock: number; blockHash: string; chainId: number; registryContract: string; operationClass: string } };
 const date = (value?: string | null) => value ? new Date(value).toLocaleString("ko-KR") : "기록 없음";
@@ -10,6 +11,14 @@ const short = (value?: string | null) => value ? `${value.slice(0, 12)}…${valu
 const actionName: Record<string, string> = { REGISTER_RELEASE: "릴리스 등록", PUBLISH_POLICY: "정책 공개", DEPRECATE_POLICY: "정책 폐기", ATTEST: "검증자 서명 제출", QUARANTINE: "긴급 격리", SYNC_EXPIRY: "만료 반영" };
 const actionStatus: Record<string, string> = { NEW: "전송 대기", PREPARED: "서명 준비 · 전송 미확인", SUBMITTED: "전송됨 · 영수증 대기", COMPLETED: "처리됨 · 최종성은 별도 확인", FAILED: "실패" };
 export const policyMatchesRelease = (release: Pick<Release, "runtimeProfile"> | undefined, policy: { document?: unknown }) => Boolean(release) && (policy.document as { profile?: string } | undefined)?.profile === release?.runtimeProfile;
+
+export function SemanticEvidenceNotice({ evidence, oci = false }: { evidence?: SemanticEvidenceScope; oci?: boolean }) {
+  if (!oci && !evidence?.semanticEvidenceMode && !evidence?.providerQuality) return null;
+  return <p className="ops-data-note"><b>AI 증거의 범위 · API 제공 메타데이터</b><br />
+    분석 출처: <code>{evidence?.semanticEvidenceMode ?? "미제공"}</code><br />모델 품질: <code>{evidence?.providerQuality ?? "미제공"}</code><br />
+    {evidence?.semanticEvidenceMode === "LOCAL_CONTRACT_TEST" || evidence?.providerQuality === "PROVIDER_QUALITY_NOT_MEASURED" ? "로컬 합성 응답으로 분석 연동을 검사한 범위입니다. 상용 AI 모델의 탐지 품질을 측정하거나 승인한 결과가 아닙니다." : "출처와 품질이 확인되지 않은 값을 실제 AI 품질 검증으로 해석하지 마세요."}
+    {" "}네이티브 Docker 검사·검증자 서명·현재 실행 허가는 별도로 확인합니다.</p>;
+}
 
 export function ChainActionsView({ actions }: { actions: ChainAction[] }) {
   return <div className="ops-table-wrap"><table><thead><tr><th>작업 / 범위</th><th>전송 상태</th><th>트랜잭션</th><th>최근 변경</th></tr></thead><tbody>{actions.map((item) => <tr key={item.actionId}><td>{actionName[item.kind] ?? item.kind}<small>{item.releaseId ? "현재 릴리스" : "조직 정책 작업 · 적용 정책 확인 필요"}</small><small title={item.actionId}>{short(item.actionId)}</small></td><td><b>{item.status}</b><small>{actionStatus[item.status] ?? "알 수 없는 상태"}</small>{item.errorCode && <small className="ops-flow-error">{item.errorCode}</small>}</td><td><code title={item.txHash ?? ""}>{short(item.txHash)}</code><small>chain {item.chainId} · {short(item.registryAddress)}</small></td><td>{date(item.updatedAt)}</td></tr>)}</tbody></table>{!actions.length && <p className="ops-empty">불러온 내역에 체인 작업이 없습니다. 전송 또는 검증 완료로 간주하지 않습니다.</p>}</div>;
@@ -64,6 +73,7 @@ export function ReleaseWorkflow({ release, scans, policies, actions, manage, onR
   return <section className="ops-workflow" aria-label="V2 검증에서 실행 판정까지">
     <div className="ops-section-heading"><h3>검사 → 검증자 → 체인 → 실행 판정</h3><span className="ops-badge">V2 운영 API · REPLAY 아님</span></div>
     <p>연결된 API의 실제 기록입니다. 로컬 체인도 chain ID로 구분하며, 전송 접수와 실행 허용을 혼동하지 않습니다.</p>
+    <SemanticEvidenceNotice evidence={scan?.result ?? release} oci={release.runtimeProfile === "restricted-oci-offline-v1"} />
     <div className="ops-flow-select"><label>확인할 검사<select value={scan?.scanId ?? ""} onChange={(event) => setScanId(event.target.value)} disabled={busy || !releaseScans.length}><option value="">검사 내역 없음</option>{releaseScans.map((item) => <option key={item.scanId} value={item.scanId}>{date(item.createdAt)} · {item.status} · {short(item.scanId)}</option>)}</select></label>{!scan && <label>실행 판정 정책<select value={fallbackPolicy} onChange={(event) => setFallbackPolicy(event.target.value)} disabled={busy}><option value="">정책 선택</option>{policies.map((item) => <option key={item.policyHash} value={item.policyHash}>{item.alias}{item.deprecatedAt ? " (폐기됨)" : ""}</option>)}</select></label>}</div>
     <p className="ops-data-note">현재 정책: {policy?.alias ?? "목록에서 확인 불가"} · <code>{policyHash || "선택 없음"}</code>{policy?.deprecatedAt ? " · DEPRECATED" : ""}</p>
     <ol className="ops-flow" aria-label="현재 증빙 단계">
