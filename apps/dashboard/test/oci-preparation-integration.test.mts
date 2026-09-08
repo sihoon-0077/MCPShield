@@ -106,6 +106,10 @@ test("OCI console uses actual API/BFF preparation, strict export and explicit sy
       assert.doesNotMatch(html, /SYNTHETIC_PRIVATE|name="(?:privateKey|apiToken|arguments)"/);
     }
     const missing = renderToStaticMarkup(React.createElement(SemanticEvidenceNotice, { oci: true })); assert.match(missing, /미제공/); assert.doesNotMatch(missing, /LOCAL_CONTRACT_TEST/);
+    for (const semanticEvidenceMode of [undefined, "UNKNOWN_API_MODE"]) {
+      const unknown = renderToStaticMarkup(React.createElement(SemanticEvidenceNotice, { evidence: { semanticEvidenceMode, providerQuality: "PROVIDER_QUALITY_NOT_MEASURED" } }));
+      assert.match(unknown, /모델 품질은 미측정/); assert.match(unknown, /출처를 임의로 추정하지 않습니다/); assert.doesNotMatch(unknown, /로컬 합성 응답으로 분석 연동을 검사한/);
+    }
     const html = renderToStaticMarkup(React.createElement(PreparationConsole, { jobs: [], releases, policies, operator: true, onRefresh: async () => {}, onSelect: () => {} }));
     assert.match(html, /npm · OCI 실행 이미지 준비/); assert.match(html, /원본을 먼저 선택하세요/); assert.match(html, /button disabled=""/);
     assert.doesNotMatch(renderToStaticMarkup(React.createElement(PreparationDetail, { job: completed, operator: false, summary: null })), /href=.*gateway-config/);

@@ -16,7 +16,8 @@ export function SemanticEvidenceNotice({ evidence, oci = false }: { evidence?: S
   if (!oci && !evidence?.semanticEvidenceMode && !evidence?.providerQuality) return null;
   return <p className="ops-data-note"><b>AI 증거의 범위 · API 제공 메타데이터</b><br />
     분석 출처: <code>{evidence?.semanticEvidenceMode ?? "미제공"}</code><br />모델 품질: <code>{evidence?.providerQuality ?? "미제공"}</code><br />
-    {evidence?.semanticEvidenceMode === "LOCAL_CONTRACT_TEST" || evidence?.providerQuality === "PROVIDER_QUALITY_NOT_MEASURED" ? "로컬 합성 응답으로 분석 연동을 검사한 범위입니다. 상용 AI 모델의 탐지 품질을 측정하거나 승인한 결과가 아닙니다." : "출처와 품질이 확인되지 않은 값을 실제 AI 품질 검증으로 해석하지 마세요."}
+    {evidence?.semanticEvidenceMode === "LOCAL_CONTRACT_TEST" ? "로컬 합성 응답으로 분석 연동을 검사한 범위입니다. 상용 AI 모델의 탐지 품질을 측정하거나 승인한 결과가 아닙니다." : "분석 출처가 확인된 로컬 합성 모드인지 알 수 없습니다. 미제공·알 수 없는 출처를 임의로 추정하지 않습니다."}
+    {evidence?.providerQuality === "PROVIDER_QUALITY_NOT_MEASURED" ? " 모델 품질은 미측정입니다." : " 모델 품질 수준은 이 화면에서 검증하지 않습니다."}
     {" "}네이티브 Docker 검사·검증자 서명·현재 실행 허가는 별도로 확인합니다.</p>;
 }
 
