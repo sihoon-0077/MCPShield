@@ -2,6 +2,7 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import { unlinkSync } from "node:fs";
 import { open, rename, writeFile } from "node:fs/promises";
 import { traceHeaders } from "../../../packages/telemetry/index.mjs";
+import { fallbackConfiguration, directRpcAdmission, rpcRevocationRecord, validateRpcRevocation } from "./admission-fallback.mjs";
 
 const FIELDS = ["schemaVersion", "keyId", "decision", "releaseId", "artifactDigest", "toolSurfaceHash", "policyHash", "validatorSetVersion", "chainId", "registryContract", "observedBlock", "blockHash", "issuedAt", "expiresAt", "status", "operationClass", "tenantId", "reasonCode", "reportUrl"].sort();
 const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED", "EXPIRED"]);
@@ -67,12 +68,16 @@ export async function admissionFetch(url, options, fetchImpl, timeoutMs) {
   finally { clearTimeout(timer); void reader?.cancel().catch(() => {}); }
 }
 
-export function verifyAdmissionSnapshot(envelope, { identity, publicKey, keyId, policyHash, chainId, registryContract, validatorSetVersion, tenantId, operationClass, now = Date.now(), maxTtlMs = 60_000 }) {
-  const value = envelope?.snapshot;
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== FIELDS.join()) throw new Error("Invalid signed admission snapshot fields");
+function assertTrustContext({ publicKey, keyId, policyHash, chainId, registryContract, validatorSetVersion, tenantId, operationClass }) {
   if (!publicKey || !keyId || !/^0x[0-9a-f]{64}$/i.test(policyHash ?? "") || !Number.isSafeInteger(chainId) || chainId < 1 ||
     !/^0x[0-9a-f]{40}$/i.test(registryContract ?? "") || !Number.isSafeInteger(validatorSetVersion) || validatorSetVersion < 1 ||
     typeof tenantId !== "string" || !tenantId || !["READ_PUBLIC", "READ_PRIVATE", "WRITE_EXTERNAL", "DESTRUCTIVE", "FINANCIAL"].includes(operationClass)) throw new Error("Signed admission trust context is not configured");
+}
+
+export function verifyAdmissionSnapshot(envelope, { identity, publicKey, keyId, policyHash, chainId, registryContract, validatorSetVersion, tenantId, operationClass, now = Date.now(), maxTtlMs = 60_000 }) {
+  const value = envelope?.snapshot;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== FIELDS.join()) throw new Error("Invalid signed admission snapshot fields");
+  assertTrustContext({ publicKey, keyId, policyHash, chainId, registryContract, validatorSetVersion, tenantId, operationClass });
   if (value.schemaVersion !== "1.0.0" || value.keyId !== keyId || value.releaseId !== identity.releaseId ||
     value.artifactDigest !== identity.artifactDigest || value.toolSurfaceHash !== identity.toolSurfaceHash || value.policyHash !== policyHash ||
     value.chainId !== chainId || typeof value.registryContract !== "string" || value.registryContract.toLowerCase() !== registryContract.toLowerCase() || value.validatorSetVersion !== validatorSetVersion ||
@@ -101,7 +106,7 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
   policyHash = process.env.MCPSHIELD_POLICY_HASH, chainId = Number(process.env.MCPSHIELD_CHAIN_ID),
   registryContract = process.env.MCPSHIELD_REGISTRY_CONTRACT, validatorSetVersion = Number(process.env.MCPSHIELD_VALIDATOR_SET_VERSION),
   operationClass = "WRITE_EXTERNAL", cacheFile = process.env.MCPSHIELD_ADMISSION_CACHE_FILE, now = Date.now,
-  apiToken = process.env.MCPSHIELD_CONTROL_TOKEN, tenantId = process.env.MCPSHIELD_TENANT_ID, controlReleaseId = process.env.MCPSHIELD_CONTROL_RELEASE_ID }) {
+  apiToken = process.env.MCPSHIELD_CONTROL_TOKEN, tenantId = process.env.MCPSHIELD_TENANT_ID, controlReleaseId = process.env.MCPSHIELD_CONTROL_RELEASE_ID, indexer, rpc }) {
   let lock, lockClosed = false, retainLock = false;
   // The pathname retains exclusive ownership even after its descriptor closes.
   // Unknown owners are never reclaimed, including after process crashes.
@@ -119,107 +124,144 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
   identity = { ...identity, releaseId: controlReleaseId ?? identity.releaseId };
   if (!/^0x[0-9a-f]{64}$/i.test(identity.releaseId)) throw new Error("MCPSHIELD_CONTROL_RELEASE_ID must pin the exact /v1 release ID");
   const context = { identity, publicKey, keyId, policyHash, chainId, registryContract, validatorSetVersion, tenantId, operationClass };
+  assertTrustContext(context);
+  if (createPublicKey(publicKey).asymmetricKeyType !== "ed25519") throw new Error("Signed admission key must be Ed25519");
+  const fallback = fallbackConfiguration({ indexer, rpc }, context);
+  const issuerContext = (issuer = "API") => {
+    if (issuer === "API") return context;
+    if (issuer !== "ORG_INDEXER" || !fallback.indexer) throw new Error("Signed cache issuer is not locally trusted");
+    return { ...context, publicKey: fallback.indexer.publicKey, keyId: fallback.indexer.keyId };
+  };
   const terminalKey = revocationKey({ ...identity, policyHash, chainId, registryContract, tenantId });
   let storedRevocation;
   if (cacheFile) {
     storedRevocation = await readCacheJson(`${cacheFile}.revoked`, true);
     if (storedRevocation !== undefined) {
-      const value = storedRevocation?.envelope?.snapshot;
-      if (storedRevocation?.schemaVersion !== "mcpshield.revocation.v1" || revocationKey(value ?? {}) !== terminalKey || value.decision !== "BLOCK" || value.status !== "REVOKED") throw new Error("Signed revocation journal does not match this wrapper");
-      // Terminal chain revocation outlives the short ALLOW TTL and validator-set
-      // rotation. Authenticate the old proof at issuance; never reuse it to allow.
-      verifyAdmissionSnapshot(storedRevocation.envelope, { ...context, tenantId: value.tenantId, policyHash: value.policyHash, operationClass: value.operationClass,
-        validatorSetVersion: value.validatorSetVersion, now: Date.parse(value.issuedAt) + 1 });
-      rememberRevocation(terminalKey, storedRevocation.envelope);
+      if (storedRevocation?.schemaVersion === "mcpshield.rpc-revocation.v1") validateRpcRevocation(storedRevocation, context);
+      else {
+        const value = storedRevocation?.envelope?.snapshot;
+        if (storedRevocation?.schemaVersion !== "mcpshield.revocation.v1" || revocationKey(value ?? {}) !== terminalKey || value.decision !== "BLOCK" || value.status !== "REVOKED") throw new Error("Signed revocation journal does not match this wrapper");
+        // Historical proof is authenticated only to retain a denial, never to allow.
+        verifyAdmissionSnapshot(storedRevocation.envelope, { ...issuerContext(storedRevocation.issuer), tenantId: value.tenantId, policyHash: value.policyHash, operationClass: value.operationClass,
+          validatorSetVersion: value.validatorSetVersion, now: Date.parse(value.issuedAt) + 1 });
+      }
+      rememberRevocation(terminalKey, storedRevocation);
     }
   }
   const credentialFingerprint = createHash("sha256").update(apiToken ?? "").digest("hex");
-  const cacheKey = canonical({ apiBaseUrl, releaseId: identity.releaseId, artifactDigest: identity.artifactDigest, toolSurfaceHash: identity.toolSurfaceHash, policyHash, chainId, registryContract, validatorSetVersion, keyId, tenantId, operationClass, credentialFingerprint });
+  const cacheKey = canonical({ apiBaseUrl, releaseId: identity.releaseId, artifactDigest: identity.artifactDigest, toolSurfaceHash: identity.toolSurfaceHash, policyHash, chainId, registryContract, validatorSetVersion, keyId, tenantId, operationClass, credentialFingerprint, fallbackFingerprint: fallback.fingerprint });
   const pendingKey = canonical({ releaseId: identity.releaseId, tenantId });
   if (!pending.has(pendingKey) && pending.size >= 1024) throw new Error("Too many concurrent admission identities");
   const state = pending.get(pendingKey) ?? { epoch: 0, active: 0 };
   pending.set(pendingKey, state); state.active++;
   const epoch = state.epoch;
   try {
-  let envelope;
+  let envelope, snapshot, rpcState, expiredCache;
+  let issuer = "API", decisionSource = "API";
   let cacheHit = false;
-  let response;
   const forget = async (invalidatePending = false) => {
     if (invalidatePending) state.epoch++;
     for (const [key, value] of memory) {
-      if (value.snapshot.releaseId === identity.releaseId && value.snapshot.tenantId === tenantId) memory.delete(key);
+      if (value.envelope.snapshot.releaseId === identity.releaseId && value.envelope.snapshot.tenantId === tenantId) memory.delete(key);
     }
     if (cacheFile) await persistCache(() => writeFile(cacheFile, "null", { mode: 0o600 }));
   };
   const persistRevocation = async (proof = revoked.get(terminalKey)) => {
     if (cacheFile && !storedRevocation && proof) {
-      const record = { schemaVersion: "mcpshield.revocation.v1", envelope: proof };
-      await persistCache(() => writeFile(`${cacheFile}.revoked`, JSON.stringify(record), { mode: 0o600, flag: "wx" }));
-      storedRevocation = record;
+      await persistCache(() => writeFile(`${cacheFile}.revoked`, JSON.stringify(proof), { mode: 0o600, flag: "wx" }));
+      storedRevocation = proof;
     }
   };
-  try {
-    response = await admissionFetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/admission/check`, {
-      method: "POST", headers: { "content-type": "application/json", accept: "application/json", ...(apiToken ? { authorization: `Bearer ${apiToken}` } : {}) },
+  const remote = async (url, token) => {
+    let response;
+    try { response = await admissionFetch(`${url.replace(/\/$/, "")}/v1/admission/check`, {
+      method: "POST", headers: { "content-type": "application/json", accept: "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ releaseId: identity.releaseId, artifactDigest: identity.artifactDigest, toolSurfaceHash: identity.toolSurfaceHash, policyHash, mode: admissionMode, operationClass }),
-    }, fetchImpl, timeoutMs);
-  } catch (error) {
-    if (!error || !["TypeError", "TimeoutError", "AbortError"].includes(error.name)) { await forget(true); throw error; }
-  }
-  if (!response || response.status >= 500) {
-    if (admissionMode !== "balanced" || !["READ_PUBLIC", "READ_PRIVATE"].includes(operationClass)) throw new Error("Admission unavailable; strict or non-read-only calls fail closed");
-    // The locked file is authoritative across processes. A process-local copy
-    // must not resurrect an allow after another wrapper persisted a denial.
-    envelope = cacheFile ? undefined : memory.get(cacheKey);
-    if (!envelope && cacheFile) {
-      const saved = await readCacheJson(cacheFile);
-      if (saved?.cacheKey === cacheKey) envelope = saved.envelope;
-    }
-    if (!envelope) throw new Error("Admission unavailable and no matching signed cache exists");
-    cacheHit = true;
-  } else {
+    }, fetchImpl, timeoutMs); }
+    catch (error) { if (!error || !["TypeError", "TimeoutError", "AbortError"].includes(error.name)) { await forget(true); throw error; } }
+    if (!response || response.status >= 500) return undefined;
     if (!response.ok) { await forget(true); throw new Error(`Admission API returned ${response.status}`); }
-    // Remove the previous allow before parsing: an invalid/new deny response must never resurrect it.
     await forget();
-    try { envelope = await response.json(); }
+    try {
+      const value = await response.json();
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid signed admission response");
+      return value;
+    }
     catch (error) { await forget(true); throw error; }
+  };
+  envelope = await remote(apiBaseUrl, apiToken);
+  if (!envelope) {
+    if (admissionMode === "balanced" && ["READ_PUBLIC", "READ_PRIVATE"].includes(operationClass)) {
+      const saved = cacheFile ? await readCacheJson(cacheFile, true) : memory.get(cacheKey);
+      if (saved?.cacheKey === cacheKey && saved.envelope) {
+        try { snapshot = verifyAdmissionSnapshot(saved.envelope, { ...issuerContext(saved.issuer), now: now() }); }
+        catch (error) {
+          // Only a genuinely expired, still-authentic old ALLOW is a miss.
+          // A forged expired signature must not escape into another trust tier.
+          if (Date.parse(saved.envelope.snapshot?.expiresAt) <= now()) {
+            let historical;
+            try { historical = verifyAdmissionSnapshot(saved.envelope, { ...issuerContext(saved.issuer), now: Date.parse(saved.envelope.snapshot.issuedAt) + 1 }); }
+            catch (invalid) { await forget(true); throw invalid; }
+            if (historical.decision === "BLOCK") snapshot = historical;
+            else { await forget(); expiredCache = error; }
+          } else { await forget(true); throw error; }
+        }
+        if (snapshot) { envelope = saved.envelope; issuer = saved.issuer ?? "API"; cacheHit = true; decisionSource = "CACHE"; }
+      }
+    }
+    if (!envelope && fallback.indexer) {
+      issuer = "ORG_INDEXER"; decisionSource = "ORG_INDEXER";
+      envelope = await remote(fallback.indexer.url, fallback.indexer.token);
+    }
+    if (!envelope && fallback.rpc) {
+      const result = await directRpcAdmission(identity, context, fallback.rpc, now);
+      snapshot = result.snapshot; rpcState = result.state; decisionSource = "DIRECT_RPC";
+      // Publish a validated RPC revocation to the shared fence before any disk await.
+      if (snapshot.decision === "ALLOW") await forget();
+    }
+    if (!envelope && !rpcState) throw expiredCache ?? new Error(admissionMode !== "balanced" || !["READ_PUBLIC", "READ_PRIVATE"].includes(operationClass)
+      ? "Admission unavailable; strict or non-read-only calls fail closed" : "Admission unavailable and no matching signed cache exists");
   }
-  let snapshot;
-  try { snapshot = verifyAdmissionSnapshot(envelope, { ...context, now: now() }); }
+  try { if (!snapshot) snapshot = verifyAdmissionSnapshot(envelope, { ...issuerContext(issuer), now: now() }); }
   catch (error) { await forget(true); throw error; }
   if (snapshot.decision === "ALLOW" && (storedRevocation || revoked.has(terminalKey) || revocationCapacityExceeded)) {
     await persistRevocation(); await forget(true);
     throw Object.assign(new Error("Release was previously revoked or terminal journal is full; admission fails closed"), { cacheWriteFailed: Boolean(cacheFile && revocationCapacityExceeded) });
   }
-  if (cacheHit && snapshot.decision !== "ALLOW") throw new Error("Cached admission does not allow execution");
   if (snapshot.decision === "BLOCK" && snapshot.status === "REVOKED") {
     // ponytail: 4096 terminal identities per process. Never evict a revocation
     // to gain capacity; use separate wrappers/private journals at larger scale.
-    rememberRevocation(terminalKey, envelope);
-    await persistRevocation(envelope);
+    const proof = rpcState ? rpcRevocationRecord(identity, rpcState, now()) : { schemaVersion: "mcpshield.revocation.v1", envelope, ...(issuer === "ORG_INDEXER" ? { issuer } : {}) };
+    rememberRevocation(terminalKey, proof);
+    await persistRevocation(proof);
   }
   if (snapshot.decision === "BLOCK") await forget(true);
+  if (cacheHit && snapshot.decision !== "ALLOW") throw new Error("Cached admission does not allow execution");
   const superseded = () => snapshot.decision === "ALLOW" && (state.epoch !== epoch || storedRevocation || revoked.has(terminalKey) || revocationCapacityExceeded);
   const rejectSuperseded = async () => {
     await persistRevocation(); await forget();
     throw Object.assign(new Error("Admission superseded by a newer denial or invalid response"), { cacheWriteFailed: Boolean(cacheFile && revocationCapacityExceeded) });
   };
   if (superseded()) return await rejectSuperseded();
-  if (!cacheHit && snapshot.decision === "ALLOW") {
+  if (!cacheHit && !rpcState && snapshot.decision === "ALLOW") {
     // ponytail: bounded process cache; persistent single-release snapshots cover one wrapper per MCP.
     if (memory.size >= 1_024) memory.delete(memory.keys().next().value);
-    if (!cacheFile) memory.set(cacheKey, envelope);
+    const saved = { cacheKey, envelope, ...(issuer === "ORG_INDEXER" ? { issuer } : {}) };
+    if (!cacheFile) memory.set(cacheKey, saved);
     if (cacheFile) {
       const temporary = `${cacheFile}.${process.pid}.tmp`;
       await persistCache(async () => {
-        await writeFile(temporary, JSON.stringify({ cacheKey, envelope }), { mode: 0o600 });
+        await writeFile(temporary, JSON.stringify(saved), { mode: 0o600 });
         await rename(temporary, cacheFile);
       });
     }
   }
   if (lock) { await persistCache(() => lock.close()); lockClosed = true; }
   if (snapshot.decision === "ALLOW") {
-    try { verifyAdmissionSnapshot(envelope, { ...context, now: now() }); }
+    try {
+      if (rpcState) { if (Date.parse(snapshot.expiresAt) <= now()) throw new Error("Direct RPC admission expired"); }
+      else verifyAdmissionSnapshot(envelope, { ...issuerContext(issuer), now: now() });
+    }
     catch (error) { await forget(true); throw error; }
   }
   // Closing the handle can race a denial too. Keep pathname ownership through
@@ -227,7 +269,7 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
   if (superseded()) return await rejectSuperseded();
   return { schemaVersion: "1.0.0", releaseId: snapshot.releaseId, decision: snapshot.decision, releaseStatus: snapshot.status,
     reasonCode: snapshot.reasonCode, reportUrl: snapshot.reportUrl,
-    checkedAt: snapshot.issuedAt, source: "LIVE", cacheHit, expiresAt: snapshot.expiresAt, policyHash: snapshot.policyHash };
+    checkedAt: snapshot.issuedAt, source: "LIVE", decisionSource, cacheHit, expiresAt: snapshot.expiresAt, policyHash: snapshot.policyHash };
   } finally {
     state.active--; if (!state.active) pending.delete(pendingKey);
   }

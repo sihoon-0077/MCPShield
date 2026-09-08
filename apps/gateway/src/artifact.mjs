@@ -78,7 +78,8 @@ export async function createArtifactSnapshot(sourceDirectory) {
   }
   const manifestFile = files.find(({ path }) => path === "manifest.json");
   if (!manifestFile) throw new TypeError("artifact manifest.json is required");
-  const manifest = validateManifest(JSON.parse(manifestFile.content.toString("utf8")), new Set(files.map(({ path }) => path)));
+  const rawManifest = JSON.parse(manifestFile.content.toString("utf8"));
+  const manifest = validateManifest(rawManifest, new Set(files.map(({ path }) => path)));
   const policyFiles = files.map(({ path, content }) => ({ path, content: content.toString("utf8") }));
   assertImportPolicy(policyFiles);
 
@@ -96,6 +97,8 @@ export async function createArtifactSnapshot(sourceDirectory) {
     return {
       releaseId: `${manifest.name}@${manifest.version}`,
       artifactDigest: `sha256:${digest.digest("hex")}`,
+      // Resolver hashes the parsed original manifest, not the normalized runtime entrypoint.
+      manifestDigest: `sha256:${createHash("sha256").update(canonicalJson(rawManifest)).digest("hex")}`,
       toolSurfaceHash: toolSurfaceHash(manifest.tools),
       tools: manifest.tools,
       runtimePolicyIssues: runtimeEgressIssues(policyFiles),

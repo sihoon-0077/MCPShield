@@ -30,7 +30,7 @@ export function v2ChainReader(config) {
         try {
           const network = await provider.getNetwork(); if (network.chainId !== BigInt(chainId)) throw new Error("CHAIN_ID_MISMATCH");
           const head = await provider.getBlock("latest");
-          if (!head?.hash || !hash.test(head.hash) || !Number.isSafeInteger(head.number) || head.number < confirmations) throw new Error("BLOCK_UNAVAILABLE");
+          if (!head?.hash || !hash.test(head.hash) || /^0x0+$/.test(head.hash) || !Number.isSafeInteger(head.number) || head.number < confirmations) throw new Error("BLOCK_UNAVAILABLE");
           const confirmedNumber = head.number - confirmations + 1;
           const [latest, confirmed, identity, block, validatorAddress] = await Promise.all([
             registry.getDecision(release.releaseId, policyHash, { blockTag: head.number }),
@@ -41,7 +41,7 @@ export function v2ChainReader(config) {
           if (!identity.exists || identity.artifactDigest !== bytes32(release.artifactDigest)
             || identity.manifestDigest !== bytes32(release.manifestDigest) || identity.toolSurfaceDigest !== bytes32(release.toolSurfaceHash)
             || exactReleaseIdentity({ toolId: identity.toolId, ...release }).releaseId !== release.releaseId) throw new Error("CHAIN_IDENTITY_MISMATCH");
-          if (!block?.hash || !hash.test(block.hash)) throw new Error("BLOCK_UNAVAILABLE");
+          if (!block?.hash || !hash.test(block.hash) || /^0x0+$/.test(block.hash)) throw new Error("BLOCK_UNAVAILABLE");
           const validators = new Contract(validatorAddress, ["function version() view returns(uint32)"], provider);
           const version = Number(await validators.version({ blockTag: head.number }));
           if (!Number.isSafeInteger(version) || version < 1) throw new Error("VALIDATOR_SET_UNAVAILABLE");
@@ -53,6 +53,9 @@ export function v2ChainReader(config) {
           let decision = latest, observed = head;
           // Optimistic denial wins. Allow needs the same confirmed/current attestation.
           if (currentStatus === "VERIFIED") {
+            const now = Date.now(), headTime = head.timestamp * 1000;
+            if (!Number.isFinite(headTime) || headTime < now - 30_000 || headTime > now + 5_000
+              || Number(latest.validFrom) * 1000 > now || Number(latest.validUntil) * 1000 <= now) throw new Error("STALE_OR_EXPIRED_CHAIN_ALLOW");
             if (confirmedStatus !== "VERIFIED" || confirmed.reportRoot !== latest.reportRoot || confirmed.validatorSetVersion !== latest.validatorSetVersion
               || confirmed.validFrom !== latest.validFrom || confirmed.validUntil !== latest.validUntil || Number(latest.validatorSetVersion) !== version)
               return { status: "UNVERIFIED", source: "EVM", unavailable: true };

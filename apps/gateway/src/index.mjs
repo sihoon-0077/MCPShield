@@ -53,6 +53,7 @@ export async function getAdmission(options) {
     try {
       const result = await checkAdmission(options);
       decision = result.decision; source = result.cacheHit ? "CACHE" : result.source;
+      if (result.decisionSource) log("admission_path", { decision, decisionSource: result.decisionSource });
       return result;
     } finally {
       recordAdmission({ decision, source, riskTier: ["READ_PUBLIC", "READ_PRIVATE"].includes(options.operationClass) ? "READ_ONLY" : "WRITE", durationSeconds: (performance.now() - started) / 1000 });

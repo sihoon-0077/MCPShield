@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.mjs stdio",
     "serve": "node src/index.mjs serve",
-    "test": "node --test"
+    "test": "node --test test/*.test.mjs"
   },
   "engines": {
     "node": ">=22 <25"
