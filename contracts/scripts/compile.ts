@@ -11,8 +11,8 @@ export interface CompiledContract {
 
 export function compileReleaseRegistry(contractName = "ReleaseRegistry"): CompiledContract {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const sourceName = contractName === "ReleaseRegistry" ? "ReleaseRegistry.sol" : "ReleaseRegistryV2.sol";
-  if (!["ReleaseRegistry", "ReleaseRegistryV2", "ValidatorRegistry", "PolicyRegistry"].includes(contractName)) throw new Error("Unknown contract");
+  const sourceName = ["ReleaseRegistry", "ReceiptAnchorRegistry"].includes(contractName) ? `${contractName}.sol` : "ReleaseRegistryV2.sol";
+  if (!["ReleaseRegistry", "ReleaseRegistryV2", "ValidatorRegistry", "PolicyRegistry", "ReceiptAnchorRegistry"].includes(contractName)) throw new Error("Unknown contract");
   const sourcePath = path.resolve(here, "../src", sourceName);
   const source = fs.readFileSync(sourcePath, "utf8");
   const input = {
