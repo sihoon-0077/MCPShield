@@ -19,6 +19,7 @@ COPY --from=builder --chown=node:node /app/apps/dashboard/.next/standalone ./
 COPY --from=builder --chown=node:node /app/apps/dashboard/.next/static ./apps/dashboard/.next/static
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/package.json ./package.json
+COPY --from=builder --chown=node:node /app/package-lock.json ./package-lock.json
 COPY --from=builder --chown=node:node /app/apps/api ./apps/api
 COPY --from=builder --chown=node:node /app/apps/gateway/src ./apps/gateway/src
 COPY --from=builder --chown=node:node /app/packages ./packages

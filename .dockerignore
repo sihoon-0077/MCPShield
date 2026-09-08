@@ -16,6 +16,7 @@
 data
 release-artifact
 trivy-cache
+trivy-temp
 .codex
 .railway
 .env
