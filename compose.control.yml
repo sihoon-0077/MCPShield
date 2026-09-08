@@ -1,0 +1,83 @@
+# Authenticated persistent control plane overlay. The old chain/demo stack stays intact.
+# node scripts/ops/init-control.mjs
+# docker compose --env-file .env.master.local -f docker-compose.yml -f compose.control.yml up --build --wait
+x-control: &control
+  CONTROL_PLANE_ENABLED: "true"
+  CONTROL_PLANE_CREDENTIALS: ${CONTROL_PLANE_CREDENTIALS:?Generate private local configuration first}
+  CONTROL_EVIDENCE_KEY: ${CONTROL_EVIDENCE_KEY:?Evidence encryption key required}
+  CONTROL_SIGNING_KEY: ${CONTROL_SIGNING_KEY:?Admission signing key required}
+  CONTROL_SIGNING_KEY_ID: ${CONTROL_SIGNING_KEY_ID:-local-demo-v1}
+  CONTROL_DATABASE_URL: postgresql://mcpshield:${POSTGRES_PASSWORD:?Database password required}@control-postgres:5432/mcpshield
+  CONTROL_ARTIFACT_PATH: /control-artifacts
+  CONTROL_EVIDENCE_PATH: /control-evidence
+
+services:
+  control-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mcpshield
+      POSTGRES_DB: mcpshield
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Database password required}
+    volumes:
+      - control-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcpshield -d mcpshield"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    mem_limit: 256m
+    pids_limit: 128
+    restart: unless-stopped
+  control-init:
+    build:
+      context: .
+      dockerfile: scripts/demo/Dockerfile.backend
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
+    command: ["sh", "-c", "chown node:node /control-artifacts /control-evidence && exec su node -s /bin/sh -c 'chmod 0700 /control-artifacts /control-evidence'"]
+    volumes:
+      - control-artifacts:/control-artifacts
+      - control-evidence:/control-evidence
+    restart: "no"
+  backend:
+    environment:
+      <<: *control
+    volumes:
+      - control-artifacts:/control-artifacts
+      - control-evidence:/control-evidence
+    depends_on:
+      control-postgres:
+        condition: service_healthy
+      control-init:
+        condition: service_completed_successfully
+  control-worker:
+    build:
+      context: .
+      dockerfile: scripts/demo/Dockerfile.backend
+    # No Docker socket mount. Public/API containers cannot create host containers.
+    # Static-only worker is intentional; isolated dynamic workers run on a separate Linux host.
+    command: ["node", "--import", "tsx", "apps/api/src/control-worker-cli.ts"]
+    environment:
+      <<: *control
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,mode=1777
+    volumes:
+      - control-artifacts:/control-artifacts:ro
+      - control-evidence:/control-evidence
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 128
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  control-db:
+  control-artifacts:
+  control-evidence:

@@ -3,6 +3,37 @@
 현재 확장 구현 단계의 runbook이다. 명령 성공과 실제 외부 배포 완료를 구분한다.
 최신 수용 결과는 `master-implementation-plan.md`를 함께 확인한다.
 
+## 운영 콘솔 로컬 실행
+
+기존 공개 데모를 건드리지 않는 포트 `3300/3301`을 사용한다.
+먼저 `node scripts/ops/init-control.mjs`로 `.env.master.local`을 만든다.
+매번 다른 admin/operator/reader 토큰, 증거 암호화 키, 서명 키를 만들며 값을 출력하지 않는다.
+기존 파일은 덮어쓰지 않는다. Windows에서는 파일 ACL도 본인 계정으로 제한한다.
+
+각 터미널에서 저장소 루트를 작업 디렉터리로 사용한다.
+
+```sh
+node --env-file=.env.master.local --import tsx apps/api/src/server.ts
+node --env-file=.env.master.local --import tsx apps/api/src/control-worker-cli.ts
+node --env-file=.env.master.local node_modules/next/dist/bin/next dev apps/dashboard --port 3300
+```
+
+`http://127.0.0.1:3300/console`에서 비공개 설정 파일의 해당 역할 토큰으로 로그인한다.
+토큰을 채팅·스크린샷·Git에 올리지 않는다. API와 worker는 동일한 영속 control DB와
+artifact/evidence 경로를 사용한다. 기본 스캔은 정적 전용으로 `INCONCLUSIVE`이며,
+서명 키가 있다는 이유만으로 `VERIFIED`를 만들지 않는다.
+
+Docker가 있는 Linux에서는 PostgreSQL과 worker를 분리한 실제 persistent stack을 실행할 수 있다.
+
+```sh
+docker compose --env-file .env.master.local -f docker-compose.yml -f compose.control.yml up --build --wait
+```
+
+DB 포트는 공개하지 않으며, worker/API에 Docker socket을 마운트하지 않는다.
+이 구성의 worker도 정적 전용이다. 동적 검사는 별도 신뢰된 Linux worker 호스트에서
+`CONTROL_SANDBOX_MODE=docker`와 동일 DB·비공개 artifact/evidence 저장소를 설정한다.
+테스트넷과 외부 AI는 이 명령으로 생성되지 않는다.
+
 ## 추적과 알림
 
 기본값은 외부 telemetry 전송 없음이다. 추적 ID는 항상 생성·전파한다.

@@ -30,7 +30,7 @@
     "test:backend": "node --import tsx --test \"tests/**/*.test.ts\"",
     "test:security": "node --import tsx --test tests/security/*.test.mjs",
     "test:gateway": "npm test --workspace @mcpshield/gateway",
-    "test:dashboard": "node --import tsx --test apps/dashboard/test/*.test.ts",
+    "test:dashboard": "node --import tsx --test apps/dashboard/test/*.test.*",
     "test:contracts": "node --import tsx --test tests/contracts/*.test.ts",
     "test:api": "node --import tsx --test tests/api/*.test.ts",
     "demo:evm-smoke": "node --import tsx --test tests/integration/evm-smoke.test.ts",
