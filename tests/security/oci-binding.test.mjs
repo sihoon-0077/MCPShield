@@ -82,7 +82,7 @@ test('OCI analyzer and blind critic use exact existing citations/coverage but se
     const content = 'print("authored inert Python source")\n';
     const review = await reviewPreparedSemantics({ files: [{ path: 'server.py', rawDigest: ociHash(content), content }],
       tools: [{ name: 'synthetic', inputSchema: { type: 'object' } }], releaseId: 'synthetic@1.0.0', profile: 'restricted-oci-offline-v1',
-      ai: { allowRemoteAi: true, provider: 'custom', url: `http://127.0.0.1:${server.address().port}`, timeoutMs: 1000 } });
+      ai: { allowRemoteAi: true, provider: 'custom', disclosurePolicy: 'LOCAL_CONTRACT_TEST', url: `http://127.0.0.1:${server.address().port}`, timeoutMs: 1000 } });
     assert.equal(review.complete, true); assert.equal(review.independentCriticComplete, true);
     assert.equal(review.semanticProfile, 'restricted-oci-offline-v1');
     assert.equal(requests.length, 2);

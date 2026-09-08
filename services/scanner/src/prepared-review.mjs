@@ -7,6 +7,17 @@ import { closureManifest } from '../../resolver/src/closure-files.mjs';
 
 const sha = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const packagePath = /^(?:node_modules\/(?:@[^/]+\/)?[^/]+\/)*package.json$/;
+export const LOCAL_CONTRACT_DISCLOSURE = Object.freeze({ policy: 'LOCAL_CONTRACT_TEST',
+  destination: 'NUMERIC_LOOPBACK_ONLY', providerQuality: 'PROVIDER_QUALITY_NOT_MEASURED', remoteFullSource: 'FORBIDDEN' });
+
+function localContractEndpoint(config) {
+  try {
+    const endpoint = new URL(config.url);
+    return config.disclosurePolicy === 'LOCAL_CONTRACT_TEST' && config.provider === 'custom' &&
+      ['127.0.0.1', '[::1]'].includes(endpoint.hostname) && ['http:', 'https:'].includes(endpoint.protocol) &&
+      !endpoint.username && !endpoint.password && !endpoint.hash;
+  } catch { return false; }
+}
 
 // Full closure input, not the legacy source list that deliberately excludes node_modules.
 export function inspectPreparedSources(closure) {
@@ -96,6 +107,15 @@ export async function reviewPreparedSemantics({ files, tools, releaseId, ai, pro
     files.some((file) => typeof file.path !== 'string' || file.path === 'MCP_TOOLS_COMPLETE.json' || typeof file.content !== 'string'))) throw Error('OCI_SEMANTIC_SOURCES_INVALID');
   if (!ai?.allowRemoteAi) return { reviews: [], complete: false, independentCriticComplete: false,
     noUnresolvedRisk: false, issues: [code('EXPLICIT_AI_AND_CRITIC_REQUIRED')], findings: [], ...attribution };
+  // Master 2.5.4.3 forbids sending whole source to a provider. Redaction and
+  // allowRemoteAi alone do not authorize it. Check BOTH roles before any request.
+  // Loopback is not proof of a synthetic model; the operator must explicitly
+  // declare this contract-test-only configuration, never a provider-quality run.
+  const configs = { analyzer: ai, critic: { ...ai, ...ai.critic } };
+  if (!Object.values(configs).every(localContractEndpoint)) return { reviews: [], complete: false,
+    independentCriticComplete: false, noUnresolvedRisk: false, findings: [], ...attribution,
+    disclosure: { policy: 'FULL_SOURCE_REMOTE_FORBIDDEN', providerQuality: 'PROVIDER_QUALITY_NOT_MEASURED' },
+    issues: [code('FULL_SOURCE_DISCLOSURE_FORBIDDEN')] };
   const maxBatches = ai.maxBatches ?? 32;
   const totalTimeoutMs = ai.totalTimeoutMs ?? 120_000;
   if (!Number.isSafeInteger(maxBatches) || maxBatches < 1 || maxBatches > 128 ||
@@ -137,11 +157,11 @@ export async function reviewPreparedSemantics({ files, tools, releaseId, ai, pro
       // The critic is a separate blind context: it sees complete source, never the analyzer's answer.
       const prompt = preparedSemanticPrompt(candidate, role, profile);
       try {
-        const config = role === 'critic' ? { ...ai, ...ai.critic } : ai;
+        const config = configs[role];
         const response = await requestAiJson({ ...config, prompt, responseSchema: semanticOutputSchema, schemaName: `mcpshield_${oci ? 'oci' : 'prepared'}_${role}`,
           timeoutMs: Math.min(config.timeoutMs ?? 15_000, deadline - Date.now()) });
         const report = validateSemanticReport(response.payload, promptSources(prompt), citations);
-        pair[role] = { report: redactEvidenceDocument(report), execution: response.metadata };
+        pair[role] = { report: redactEvidenceDocument(report), execution: { ...response.metadata, disclosure: LOCAL_CONTRACT_DISCLOSURE } };
         findings.push(...claimsToFindings(report).map((finding) => redactEvidenceDocument(finding)));
       } catch { issues.push(code(`${role.toUpperCase()}_REVIEW_INCOMPLETE`)); break; }
     }
@@ -154,6 +174,7 @@ export async function reviewPreparedSemantics({ files, tools, releaseId, ai, pro
   const noUnresolvedRisk = complete && independentCriticComplete && reviews.every(({ analyzer, critic }) => [analyzer, critic].every(({ report }) =>
     !report.needsHumanReview && !report.riskClaims.length && !Object.values(report.semanticDiff).some(Boolean)));
   return { reviews, sources, complete, independentCriticComplete, noUnresolvedRisk, findings, ...attribution,
+    disclosure: LOCAL_CONTRACT_DISCLOSURE,
     expectedBatches: batches.length, coverage: 'ALL_REDACTED_INSTALLED_TEXT_NO_TRUNCATION',
     criticIndependence: 'SEPARATE_BLIND_CONTEXT_NOT_INDEPENDENT_ORGANIZATION', issues: [...new Set(issues)] };
 }

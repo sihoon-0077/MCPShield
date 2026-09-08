@@ -491,9 +491,25 @@ candidate. All installed UTF-8 files, including `node_modules`, enter static
 review and the actual-installed CycloneDX SBOM. Opaque/binary files require
 unsupported review and therefore cannot receive PASS from this profile.
 
-Explicitly opted-in AI reviews every redacted source character in batches, with
-an independent blind-context critic for every batch even when no risks were
-claimed. Both outputs use the strict citation schema. Missing provider access,
+The full-source semantic path is currently **local contract testing only**.
+Master 2.5.4.3 forbids disclosing entire source or environment values to a remote
+LLM provider; redaction and `allowRemoteAi:true` do not override that requirement.
+The full-source engine requires `ai.disclosurePolicy:'LOCAL_CONTRACT_TEST'`,
+`provider:'custom'` and a numeric-loopback HTTP(S) URL (`127.0.0.1` or `::1`) for
+both analyzer and critic. It checks both configurations before either request.
+Missing markers, external endpoints or OpenAI mode return INCONCLUSIVE/ABSTAIN
+without sending source. Loopback alone does not prove a synthetic provider: the
+operator is explicitly declaring a local fixture-only contract test.
+
+That declared local test reviews every redacted character in batches, with an
+independent blind-context critic for each batch. Evidence and every role's
+provenance retain `LOCAL_CONTRACT_TEST` and `PROVIDER_QUALITY_NOT_MEASURED`;
+pure policy verification rejects stripped labels. A synthetic PASS exercises
+the contract, not commercial model quality or production semantic approval.
+The required real-provider path (metadata/schema, redacted security diff and
+bounded risk snippets) remains implementation work, separate from complete local
+raw-byte/static coverage; omitted areas must not silently become PASS.
+Both local-test outputs use the strict citation schema. Missing provider access,
 timeouts, truncated coverage, uncertain conclusions and unreviewed dependency
 bytes produce INCONCLUSIVE/ABSTAIN. Default budgets are 32 batches and 120 seconds
 (operator maximum 128 batches/300 seconds); these are not full-program formal
@@ -666,5 +682,7 @@ default `restricted-node-docker-v1` (unchanged prompt/provenance) and
 citations, bounded transport and a separate blind critic, but its prompt does
 not apply Node-only permissions to native processes. OCI outputs use
 `mcpshield_oci_analyzer`/`mcpshield_oci_critic` provenance and an explicit
-`semanticProfile`; absent opted-in provider access remains incomplete. Neither
+`semanticProfile`. The same explicit local-contract-only disclosure fence applies
+to OCI; raw image environment and whole new source cannot be sent externally.
+Absent permitted local test configuration remains incomplete. Neither
 a successful model contract test nor creating this binding enables OCI signing.
