@@ -718,11 +718,13 @@ Docker's [image removal semantics](https://docs.docker.com/reference/cli/docker/
 delete the underlying image when its last tag is removed; `--no-prune` does not
 provide an untag-only primitive.
 
-The result is `{result,binding,analysis,bundle}`. Missing discovery/catalogue
-returns `result:null,binding:null`. A deterministic observed canary effect can
-make the canonical scan result FAILED; **analysis.verdict remains ABSTAIN and
-ready remains false** until the separate independent OCI signing policy and
-Gateway consumer are implemented. `COMPLETED_RESTRICTED_SCAN` means phase checks
+The result is `{result,binding,analysis,bundle,localTrust}`. `localTrust` is private
+operational metadata from the worker's own actual operations, never an API-supplied
+proof or a context for another validator to trust. Missing discovery/catalogue
+returns `result:null,binding:null`. `assessOciPolicy` now returns FAIL for supported
+bound deterministic effects, PASS only when every restricted-scope check passes,
+and ABSTAIN otherwise. **ready remains false**: a scan verdict is not a quorum's
+VERIFIED/admission decision. `COMPLETED_RESTRICTED_SCAN` means phase checks
 completed, not approval. Unknown binaries, new directory/link metadata, omitted
 source, incomplete Trivy package inventory and absent filesystem syscall tracing
 are not excused by a successful model response. Existing npm policy is not reused.
@@ -756,10 +758,52 @@ node --import tsx --test tests/security/oci-sources.test.mjs
 
 The opt-in composed Linux regression reuses the authored non-Node OCI scenario,
 actual trusted builder/Trivy/DB and a local synthetic model. It verifies repeated
-MCP pagination/calls/canary effects and Merkle/raw-source reconstruction while
-requiring ABSTAIN for deliberately opaque padding/native coverage gaps. It is
+MCP pagination/calls/canary effects and Merkle/raw-source reconstruction. Bound
+canary evidence supports FAIL despite other coverage gaps; opaque padding/native
+coverage gaps can never yield PASS. It is
 not a live provider-quality test; not running it is NOT_RUN, not success:
 
 ```sh
 MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_OCI_FULLSCAN_TESTS=1 MCPSHIELD_RUNTIME_BUILDER_IMAGE=sha256:... MCPSHIELD_TRIVY_IMAGE=sha256:... MCPSHIELD_TRIVY_DATABASE_DIR=/absolute/cache/db node --import tsx --test --test-name-pattern="actual Linux OCI scan binds" tests/security/oci-runtime.test.mjs
 ```
+
+### Restricted OCI policy and validator-local trust
+
+`src/oci-policy.mjs` exports `assessOciPolicy(bundle,result,binding,trusted)` and
+`OCI_POLICY_CHECKS`. It recomputes the complete raw tool hash, exact runtime and
+observer commitments, per-stage image identity, bounded synthetic plan/results,
+original source/structural reconstruction, trusted base provenance, both native
+Trivy/CycloneDX target documents and both semantic contexts. It reconstructs
+deterministic findings from observed effects via `ociSandboxFindings`, also used
+by the scanner; advertised finding/check booleans are not trusted. An early
+deterministic FAIL may leave unrelated policy checks false (not assessed); actual
+step-completion facts remain separately in `oci/observation.json`.
+
+This first policy's `semanticEvidenceMode:'LOCAL_CONTRACT_TEST'` and
+`providerQuality:'PROVIDER_QUALITY_NOT_MEASURED'` must remain visible in analysis,
+independent comparison, API/UI and the **versioned on-chain policy hash**. A
+local synthetic semantic contract PASS must not be presented as commercial-model
+quality approval. The privacy-scoped real-provider path requires a separate
+explicit version/profile. Neither this test-only policy nor a model result proves
+arbitrary native safety or filesystem syscall completeness.
+
+`src/oci-trust.mjs` exports `readTrustedOciRuntime({descriptor,
+expectedDescriptorDigest,trust,timeoutMs:120000})`. It obtains the base and
+candidate's native never-started exports, checks tool/sink CIDs/platform, hashes
+a stable fresh DB snapshot and reads the actual observer/sink implementation
+bytes. There is no public input, mock flag or supplied-true shortcut. It returns:
+
+```js
+{ anchors: { baseImageDigest, baseCatalogueDigest, trivyImageDigest,
+    databaseDigest, observerDigest, sinkImageDigest, sinkCodeDigest },
+  descriptorDigest, finalImageDigest, rootfsDigest, platform,
+  observationPolicy, database: { updatedAt, nextUpdate, maxAgeHours: 24 } }
+```
+
+No local DB path or credential appears in this context. A signing validator must
+obtain it itself, reject original ABSTAIN before paid/expensive work, then execute
+its own fresh `scanOciRuntime` with local settings (never scanner/API probe config).
+Both strict verdicts and deterministic code/scope sets must match. Different
+random canaries/scan IDs make roots different; preserve a local receipt linking
+both roots and the semantic evidence mode. Pure bundle verification alone cannot
+authenticate Trivy/provider/observer execution and must never sign by itself.

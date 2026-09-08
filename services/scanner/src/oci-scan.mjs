@@ -9,10 +9,10 @@ import { assertScanResult } from './schema.mjs';
 import { redactEvidenceDocument } from './redaction.mjs';
 import { importOciRuntime } from '../../resolver/src/oci-runtime.mjs';
 import { hashOciRuntimeDescriptor, ociHash } from '../../resolver/src/oci-runtime-descriptor.mjs';
+import { assessOciPolicy, ociSandboxFindings } from './oci-policy.mjs';
 
 const sha = /^sha256:[a-f0-9]{64}$/;
-const limitation = 'Restricted OCI image inspection and synthetic MCP observation; no filesystem syscall trace or arbitrary native binary safety proof. Independent OCI signing policy and Gateway binding are not yet enabled.';
-const pending = ['OCI_INDEPENDENT_SIGNING_POLICY', 'OCI_GATEWAY_BINDING', 'OCI_FILESYSTEM_SYSCALL_OBSERVATION', 'OCI_STRUCTURE_POLICY_REVIEW'];
+const limitation = 'Restricted OCI image inspection and synthetic MCP observation, with LOCAL_CONTRACT_TEST semantic evidence only. No filesystem syscall trace or arbitrary native binary safety proof; signing requires independent validator replay and the test-only versioned policy.';
 
 // No command/image/path is accepted from public API bodies. All runtime/trust
 // input belongs to a server-owned job; raw source/tools live only in its encrypted bundle.
@@ -63,24 +63,29 @@ export async function scanOciRuntime({ descriptor, expectedDescriptorDigest, sou
     documents['runtime/oci-descriptor.json'] = binding.descriptor;
     documents['oci/binding.json'] = binding;
   } else issues.push('OCI_DISCOVERY_AND_LOCAL_CATALOGUE_REQUIRED');
-  const findings = redactEvidenceDocument([...semantic.findings, ...observed.report.findings.map(({ code, severity, stage, observer, canaryHashes }) => ({
-    code, severity, stage: 'SANDBOX', deterministic: true, message: 'The isolated external OCI collector observed a synthetic scope violation.',
-    evidence: { observationStage: stage, ...(observer ? { observer } : {}), ...(canaryHashes ? { canaryHashes } : {}) } }))]);
+  const findings = redactEvidenceDocument([...semantic.findings, ...ociSandboxFindings(observed.report)]);
   const checks = { originalImageInventoryVerified: Boolean(reconstructed), sourceClassificationComplete: reconstructed?.coverage.sourceClassificationComplete === true,
     vulnerabilityAndSbomComplete: reviewed.vulnerability?.status === 'COMPLETE', ...semanticChecks, ...observed.report.checks };
   const phaseComplete = Object.values(checks).every((value) => value === true) && !issues.length;
-  // This phase is intentionally not a signer. The next independent-policy module
-  // must rerun export/Trivy/observer/providers locally before enabling PASS/FAIL votes.
-  const analysis = { profile: 'restricted-oci-offline-v1', verdict: 'ABSTAIN', ready: false,
-    scanPhase: phaseComplete ? 'COMPLETED_RESTRICTED_SCAN' : 'INCOMPLETE', checks, issues: [...new Set([...issues, ...pending])],
-    fullBehaviorCoverage: false, limitation };
   const result = binding ? assertScanResult({ schemaVersion: '1.0.0', scanId, releaseId, artifactDigest: binding.artifactDigest,
-    toolSurfaceHash: binding.toolSurfaceHash, scanStatus: findings.some(({ deterministic, severity }) => deterministic && ['HIGH', 'CRITICAL'].includes(severity)) ? 'FAILED' : 'INCONCLUSIVE',
+    toolSurfaceHash: binding.toolSurfaceHash, scanStatus: findings.some(({ deterministic, severity }) => deterministic && ['HIGH', 'CRITICAL'].includes(severity)) ? 'FAILED' :
+      phaseComplete && !findings.length ? 'PASSED' : 'INCONCLUSIVE',
     findings, evidenceHash: '0x' + ociHash(canonicalJson(findings)).slice(7), source: 'LIVE' }) : null;
-  documents['oci/policy-review.json'] = analysis;
   documents['report.json'] = result ? { ...result, scope: 'RESTRICTED_OCI_OFFLINE_V1', scannerVersion: 'oci-security-v1' } :
-    { schemaVersion: 'mcpshield.oci-incomplete-scan.v1', scanId, preparationDescriptorDigest: preparationDigest, scanStatus: 'INCONCLUSIVE', issues: analysis.issues };
-  return { result, binding, analysis, bundle: createEvidenceBundle(documents) };
+    { schemaVersion: 'mcpshield.oci-incomplete-scan.v1', scanId, preparationDescriptorDigest: preparationDigest, scanStatus: 'INCONCLUSIVE', issues: [...new Set(issues)] };
+  // The worker may use this private context from its own actual local operations.
+  // A signing validator MUST discard it and call readTrustedOciRuntime itself,
+  // followed by an independent full scan and deterministic-scope comparison.
+  const localTrust = binding && privateEvidence ? { anchors: binding.executionPolicy.trust, descriptorDigest: binding.descriptorDigest,
+    finalImageDigest: binding.finalImageDigest, rootfsDigest: privateEvidence.inventory.digest, platform: binding.platform,
+    observationPolicy, database: reviewed.vulnerability?.database ?? null } : null;
+  const assessed = binding ? assessOciPolicy(createEvidenceBundle(documents), result, binding, localTrust) :
+    { profile: 'restricted-oci-offline-v1', verdict: 'ABSTAIN', checks, issues: ['OCI_DISCOVERY_AND_LOCAL_CATALOGUE_REQUIRED'],
+      semanticEvidenceMode: 'LOCAL_CONTRACT_TEST', providerQuality: 'PROVIDER_QUALITY_NOT_MEASURED', fullBehaviorCoverage: false };
+  const analysis = { ...assessed, ready: false, scanPhase: phaseComplete ? 'COMPLETED_RESTRICTED_SCAN' : 'INCOMPLETE',
+    issues: [...new Set([...issues, ...assessed.issues])], limitation };
+  documents['oci/policy-review.json'] = analysis;
+  return { result, binding, analysis, bundle: createEvidenceBundle(documents), localTrust };
 }
 
 export async function prepareAndScanOciRuntime({ preparation, ...scan }) {
