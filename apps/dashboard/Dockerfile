@@ -21,6 +21,10 @@ COPY services/resolver/src/runtime-descriptor.mjs ./services/resolver/src/runtim
 RUN npm run build --workspace @mcpshield/dashboard
 
 FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runner
+# Match the root runtime's existing OpenSSL fix; standalone runs without npm/Yarn.
+RUN apk upgrade --no-cache libcrypto3 libssl3 \
+    && rm -rf /usr/local/lib/node_modules/npm /opt/yarn-v1.22.22 \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 MCPSHIELD_REPLAY_FILE=/app/replay.json
 COPY --from=builder --chown=node:node /app/apps/dashboard/.next/standalone ./
