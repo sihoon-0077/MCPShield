@@ -3,6 +3,7 @@ import { unlinkSync } from "node:fs";
 import { open, rename, writeFile } from "node:fs/promises";
 import { traceHeaders } from "../../../packages/telemetry/index.mjs";
 import { fallbackConfiguration, directRpcAdmission, rpcRevocationRecord, validateRpcRevocation } from "./admission-fallback.mjs";
+import { V2ChainUnavailableError } from "../../../packages/contracts-sdk/src/v2-chain-reader.mjs";
 
 const FIELDS = ["schemaVersion", "keyId", "decision", "releaseId", "artifactDigest", "toolSurfaceHash", "policyHash", "validatorSetVersion", "chainId", "registryContract", "observedBlock", "blockHash", "issuedAt", "expiresAt", "status", "operationClass", "tenantId", "reasonCode", "reportUrl"].sort();
 const STATUSES = new Set(["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED", "EXPIRED"]);
@@ -223,7 +224,13 @@ async function signedAdmission({ identity, apiBaseUrl, timeoutMs, fetchImpl, adm
       envelope = await remote(fallback.indexer.url, fallback.indexer.token);
     }
     if (!envelope && fallback.rpc) {
-      const result = await directRpcAdmission(identity, context, fallback.rpc, now);
+      let result;
+      try { result = await directRpcAdmission(identity, context, fallback.rpc, now); }
+      catch (error) {
+        if (definiteTransportOutage && !expiredCache && error instanceof V2ChainUnavailableError && error.failureKind === "TRANSPORT_UNAVAILABLE")
+          throw new AdmissionTransportUnavailableError("Admission unavailable; all configured RPC providers reported transport failure");
+        throw error;
+      }
       snapshot = result.snapshot; rpcState = result.state; decisionSource = "DIRECT_RPC";
       // Publish a validated RPC revocation to the shared fence before any disk await.
       if (snapshot.decision === "ALLOW") await forget();

@@ -195,9 +195,9 @@ test("direct RPC alternatives share one total deadline and a fixed process quota
   try {
     rpc.mode = "timeout";
     const start = performance.now();
-    await assert.rejects(getSignedAdmission({ ...options, rpc: { rpcUrls: [1, 2, 3].map(number => `${rpc.rpcUrls[0]}/${number}`), confirmations: 2, timeoutMs: 100 } }), /STATUS_UNAVAILABLE/);
+    await assert.rejects(getSignedAdmission({ ...options, rpc: { rpcUrls: [1, 2, 3].map(number => `${rpc.rpcUrls[0]}/${number}`), confirmations: 2, timeoutMs: 300 } }), /STATUS_UNAVAILABLE/);
     assert.ok(performance.now() - start < 800, "Three providers must not each restart the total deadline");
-    assert.ok(rpc.requests.length > 0 && rpc.requests.every(request => request.path === "/1"), "Deadline consumed by provider one must stop before providers two and three");
+    assert.deepEqual([...new Set(rpc.requests.map(request => request.path))], ["/1", "/2", "/3"], "Fair shares must try every provider without restarting the total deadline");
     rpc.mode = "valid";
     const frozen = performance.now() + 10000;
     t.mock.method(performance, "now", () => frozen); // Monotonic-clock double confined to this test process.

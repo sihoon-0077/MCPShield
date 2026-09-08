@@ -1,1 +1,1 @@
-export { checkedServiceUrl, boundedServiceRequest, v2RpcRequest } from "./transport.mjs";
+export { checkedServiceUrl, boundedServiceRequest, v2RpcRequest, TransportUnavailableError } from "./transport.mjs";

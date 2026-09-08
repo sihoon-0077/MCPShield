@@ -1,3 +1,4 @@
 export type V2ChainConfig = { rpcUrls: string[]; registryContract: string; chainId: number; confirmations: number; timeoutMs?: number; allowedHttpHosts?: string[] };
+export class V2ChainUnavailableError extends Error { readonly failureKind: "TRUST_REJECTED" | "TRANSPORT_UNAVAILABLE"; constructor(failureKind?: "TRUST_REJECTED" | "TRANSPORT_UNAVAILABLE"); }
 export type V2ChainDecision = { status: string; source: "EVM"; unavailable?: boolean; policyHash?: string; reportRoot?: string; validFrom?: string; validUntil?: string; validatorSetVersion?: number; chainId?: number; registryContract?: string; observedBlock?: number; blockHash?: string; headBlock?: number; headBlockHash?: string; headTimestamp?: string };
 export function v2ChainReader(config: V2ChainConfig): ((release: Record<string, any>, policy: Record<string, any>) => Promise<V2ChainDecision>) & { close(): void };

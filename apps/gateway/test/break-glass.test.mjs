@@ -13,6 +13,7 @@ import { breakGlassDigest, openBreakGlassSession, signBreakGlassGrant, verifyBre
 import { createGatewayHttpServer, createRemoteMcpServer, runArtifact } from "../src/index.mjs";
 import { getSignedAdmission, AdmissionTransportUnavailableError } from "../src/signed-admission.mjs";
 import { runtimeSurfaceGuards } from "../src/protocol-guard.mjs";
+import { V2ChainUnavailableError } from "../../../packages/contracts-sdk/src/v2-chain-reader.mjs";
 
 const fixture = fileURLToPath(new URL("../../../demo/fixtures/mail-mcp-1.0.0", import.meta.url));
 const moduleUrl = new URL("../src/break-glass.mjs", import.meta.url).href;
@@ -208,6 +209,26 @@ test("only a definite transport outage is emergency eligible; arbitrary errors a
     const result = await x.run({ fetchImpl: async () => new Response(null, { status: 503 }) });
     assert.equal(result.code, 0); assert.equal(result.decision.decision, "BLOCK"); assert.equal(result.decision.reasonCode, "STATUS_UNAVAILABLE");
   } finally { await x.cleanup(); }
+});
+
+test("full configured RPC outage permits only explicit one-call grant, while RPC trust rejection cannot", async () => {
+  const x = await setup(); let reject = true; const calls = [];
+  const server = createServer((request, response) => {
+    calls.push(request.url); assert.equal(request.headers.authorization, undefined);
+    response.writeHead(reject ? 403 : 503); response.end();
+  });
+  try {
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const options = { fetchImpl: async () => new Response(null, { status: 503 }), rpc: { rpcUrls: [1, 2, 3].map(n => `${base}/${n}`), confirmations: 2, timeoutMs: 500 } };
+    await assert.rejects(x.run(options), error => error instanceof V2ChainUnavailableError && error.failureKind === "TRUST_REJECTED");
+    assert.deepEqual(calls, ["/1"]); assert.equal(verifyBreakGlassAudit(x.paths.configPath).count, 0);
+    reject = false; calls.length = 0;
+    const result = await x.run(options);
+    assert.equal(result.code, 0); assert.equal(result.executionAuthorization, "BREAK_GLASS_OVERRIDE"); assert.equal(result.decision.decision, "BLOCK");
+    assert.equal(result.decision.reasonCode, "STATUS_UNAVAILABLE"); assert.equal(verifyBreakGlassAudit(x.paths.configPath).count, 2);
+    assert.deepEqual(calls, ["/1", "/2", "/3", "/1", "/2", "/3", "/1", "/2", "/3"]);
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await x.cleanup(); }
 });
 
 test("final synchronous protocol fence rejects expiry after the async authorization without forwarding a call", async () => {
