@@ -31,6 +31,25 @@ import { prepareAndScanRuntime } from "../../services/scanner/src/prepared-scan.
 // @ts-expect-error Shared actual Gateway implementation.
 import { AdmissionBlockedError, runArtifact } from "../../apps/gateway/src/index.mjs";
 
+const preparedMailInput = [
+  { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "prepared-fullcycle", version: "1" } } },
+  { jsonrpc: "2.0", method: "notifications/initialized" },
+  { jsonrpc: "2.0", id: 2, method: "tools/list" },
+  { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_messages", arguments: {} } },
+].map(message => JSON.stringify(message)).join("\n") + "\n";
+
+test("prepared fullcycle supplies MCP framing before testing admission denial", async () => {
+  assert.deepEqual(preparedMailInput.trim().split("\n").map(line => JSON.parse(line).method), ["initialize", "notifications/initialized", "tools/list", "tools/call"]);
+  const directory = await mkdtemp(join(tmpdir(), "mcpshield-prepared-input-"));
+  try {
+    const options = { mode: "live", policyHash: `0x${"1".repeat(64)}`, preparedIdentityPath: join(directory, "deliberately-missing.json") };
+    await assert.rejects(runArtifact(options), /PREPARED_MCP_INPUT_REQUIRED/);
+    // With framing present we reach actual identity validation, not the earlier
+    // missing-input guard. This portable regression makes no Docker/chain claim.
+    await assert.rejects(runArtifact({ ...options, input: preparedMailInput }), /PREPARED_IDENTITY_FILE_INVALID/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 // Actual Linux Docker + local EVM + signed admission. AI is a deterministic loopback
 // contract stub, sources are local mail fixtures, validators belong to one institution.
 // No production provider quality, public npm provenance or independent organization claim.
@@ -165,8 +184,14 @@ test("prepared source → actual Docker/AI-stub scans → independent validators
     assert.deepEqual({ decision: finalDenied.decision, status: finalDenied.status, reasonCode: finalDenied.reasonCode, snapshotStatus: finalDenied.snapshot?.status },
       { decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED", snapshotStatus: "REVOKED" });
     assert.equal((await store.get(tenantId, "release", bad.release.releaseId))?.status, "REVOKED");
-    for (const agentId of ["Gateway-A", "Gateway-B"]) await assert.rejects(runArtifact({ ...gatewayContext, agentId, preparedIdentityPath: bad.file, capture: true }),
-      (error: any) => error instanceof AdmissionBlockedError && error.decision.releaseStatus === "REVOKED");
+    for (const agentId of ["Gateway-A", "Gateway-B"]) await assert.rejects(runArtifact({ ...gatewayContext, agentId, preparedIdentityPath: bad.file, capture: true, input: preparedMailInput }),
+      (error: any) => {
+        assert.ok(error instanceof AdmissionBlockedError);
+        assert.deepEqual({ releaseId: error.decision.releaseId, decision: error.decision.decision, status: error.decision.releaseStatus,
+          reasonCode: error.decision.reasonCode, source: error.decision.source, cacheHit: error.decision.cacheHit },
+        { releaseId: bad.release.releaseId, decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED", source: "LIVE", cacheHit: false });
+        return true;
+      });
     const receipts = (await readFile(join(dir, "local-verifications.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(receipts.length, 4); assert.equal(new Set(receipts.map((receipt) => receipt.independentReportRoot)).size, 4);
     assert.ok(receipts.every((receipt) => receipt.originalReportRoot !== receipt.independentReportRoot && receipt.state === "LOCAL_VERIFICATION_ONLY"));
