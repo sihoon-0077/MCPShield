@@ -168,7 +168,7 @@ async function waitForSink(containerName, timeoutMs = 5_000) {
   throw new Error('Docker exfil sink startup timed out');
 }
 
-async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId, egressAllowHosts = ['mail-api.local', 'exfil-sink.local'] }) {
+async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId, egressAllowHosts = ['mail-api.local', 'exfil-sink.local'], mcpProbe = false, probeCalls = [] }) {
   if (!await dockerAvailable()) throw new Error('Docker sandbox requested but Docker is unavailable');
   const uid = process.getuid?.() ?? 1000;
   const gid = process.getgid?.() ?? 1000;
@@ -205,11 +205,18 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId, egressAllo
       '-v', `${resolve(fixtureDir)}:/fixture:ro`, '-v', `${fakeHome}:/home/test:ro`,
       '-v', `${OBSERVER_DIR}:/observer:ro`,
       '-e', 'MCP_EXFIL_URL=http://exfil-sink:8080/events', '-e', 'MCP_CANARY_PATH=/home/test/.env', '-e', 'HOME=/home/test', '-e', 'MCP_CANARY_ROOT=/home/test',
-      '-e', `MCP_SINK_TOKEN=${token}`, 'node:22-alpine', 'node', '--require', '/observer/observer-preload.cjs', `/fixture/${entrypoint}`,
+      '-e', `MCP_SINK_TOKEN=${token}`, '-e', `MCP_PROBE_CALLS=${JSON.stringify(probeCalls)}`, 'node:22-alpine', 'node',
+      ...(mcpProbe ? ['/observer/mcp-probe.cjs'] : ['--require', '/observer/observer-preload.cjs']), `/fixture/${entrypoint}`,
     ], { timeoutMs });
     let events = '';
     try { events = await readFile(eventsPath, 'utf8'); } catch { /* no exfil event */ }
     const parsedEvents = events.split(/\r?\n/).filter(Boolean).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
+    let mcpReport;
+    if (mcpProbe) {
+      const reportLine = fixture.stdout.split(/\r?\n/).find((line) => line.startsWith('MCPSHIELD_MCP_REPORT '));
+      try { mcpReport = JSON.parse(reportLine?.slice('MCPSHIELD_MCP_REPORT '.length)); }
+      catch { mcpReport = { complete: false, error: 'MCP_REPORT_MISSING' }; }
+    }
     return {
       mode: 'DOCKER',
       timedOut: fixture.timedOut,
@@ -219,6 +226,7 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId, egressAllo
       canaryHash,
       observations: observationsFrom(fixture.stderr),
       egressEvents: parsedEvents.filter((event) => event.type),
+      ...(mcpProbe ? { mcpReport } : {}),
     };
   } finally {
     await dockerCleanup([fixtureName, sinkName], networkName);
@@ -228,6 +236,8 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId, egressAllo
 
 export async function runSandbox(options) {
   if (options.egressAllowHosts && (!Array.isArray(options.egressAllowHosts) || options.egressAllowHosts.length > 32 || options.egressAllowHosts.some((name) => !/^[a-z0-9][a-z0-9.-]*\.(?:local|test)$/.test(name)))) throw new TypeError('proxy allowlist only accepts synthetic hosts');
+  if (options.mcpProbe && options.mode !== 'docker') throw new TypeError('ingested MCP discovery requires Docker isolation');
+  if (options.probeCalls && (!Array.isArray(options.probeCalls) || options.probeCalls.length > 8 || JSON.stringify(options.probeCalls).length > 16_384)) throw new TypeError('MCP probe calls exceed limit');
   if (options.mode === 'local') return runLocal(options);
   if (options.mode === 'docker') return runDocker(options);
   throw new TypeError(`unknown sandbox mode: ${options.mode}`);

@@ -335,6 +335,8 @@ async function scanSnapshotRelease({
   detailed = false,
   allowMissingManifest = false,
   egressAllowHosts,
+  mcpProbe = sandbox === 'docker',
+  probeCalls = [],
   logger = (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
 } = {}) {
   if (!fixtureDir) throw new TypeError('fixtureDir is required');
@@ -381,7 +383,7 @@ async function scanSnapshotRelease({
     : Promise.resolve(analyzeSemanticsFallback(fallbackInput));
   const sandboxPromise = staticOnly || manifest.surfaceUnknown
     ? Promise.resolve({ mode: 'NOT_EXECUTED', error: 'dynamic analysis not performed', timedOut: false, canaryObserved: false, observations: [] })
-    : withSpan('sandbox.execute', spanAttributes, () => runSandbox({ mode: sandbox, fixtureDir: fixtureRoot, entrypoint: manifest.entrypoint, timeoutMs: sandboxTimeoutMs, scanId, egressAllowHosts }))
+    : withSpan('sandbox.execute', spanAttributes, () => runSandbox({ mode: sandbox, fixtureDir: fixtureRoot, entrypoint: manifest.entrypoint, timeoutMs: sandboxTimeoutMs, scanId, egressAllowHosts, mcpProbe, probeCalls }))
     .catch((error) => ({ error: error.message, timedOut: false, canaryObserved: false, mode: sandbox.toUpperCase(), observations: [] }));
   const [aiFindings, sandboxResult] = await Promise.all([aiPromise, sandboxPromise]);
   findings.push(...aiFindings);
@@ -407,6 +409,15 @@ async function scanSnapshotRelease({
     evidence: { canarySha256: sandboxResult.canaryHash, sink: 'CONTROLLED_LOCAL', sandbox: sandboxResult.mode },
   });
   let sandboxIncomplete = sandboxResult.timedOut || Boolean(sandboxResult.error);
+  if (mcpProbe && !staticOnly && !manifest.surfaceUnknown) {
+    const report = sandboxResult.mcpReport;
+    if (!report?.complete || !Array.isArray(report.tools)) sandboxIncomplete = true;
+    else if (toolSurfaceHash(report.tools) !== surfaceHash) findings.push({
+      code: 'TOOL_SURFACE_CHANGED', severity: 'HIGH', deterministic: true, stage: 'SANDBOX',
+      message: 'The complete runtime MCP tools/list differs from the pinned manifest.',
+      evidence: { expectedToolSurfaceHash: surfaceHash, observedToolSurfaceHash: toolSurfaceHash(report.tools), pages: report.pages },
+    });
+  }
   try {
     const digestAfterExecution = await artifactDigest(fixtureRoot);
     if (digestAfterExecution !== digest) {
@@ -457,6 +468,7 @@ async function scanSnapshotRelease({
     'semantic/evidence-spans.json': analysis.metadataSignals,
     'sandbox/scenarios.json': analysis.scenarios,
     'sandbox/events.json': { scanId: result.scanId, mode: sandboxResult.mode, complete: !sandboxIncomplete, observations: sanitizeUntrustedEvidence(observations), egressEvents: sandboxResult.egressEvents ?? [] },
+    'sandbox/mcp.json': sandboxResult.mcpReport ?? { complete: false, execution: 'NOT_COLLECTED' },
   };
   return { result, analysis, bundle: await withSpan('evidence.bundle', spanAttributes, () => createEvidenceBundle(redactEvidenceDocument(documents))) };
 }
