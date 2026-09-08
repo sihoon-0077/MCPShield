@@ -13,7 +13,7 @@ COPY package.json ./package.json
 COPY apps/dashboard ./apps/dashboard
 # The Control BFF verifies prepared downloads with these shared pure modules.
 # Their external dependency (ethers) is installed from the root lock above.
-COPY packages/contracts-sdk/src/v2-identity.mjs ./packages/contracts-sdk/src/v2-identity.mjs
+COPY packages/contracts-sdk/src/v2-identity.mjs packages/contracts-sdk/src/v2-identity.d.mts ./packages/contracts-sdk/src/
 COPY packages/artifact-policy/import-policy.mjs ./packages/artifact-policy/import-policy.mjs
 COPY apps/gateway/src/artifact.mjs ./apps/gateway/src/artifact.mjs
 COPY services/scanner/src/prepared-binding.mjs services/scanner/src/evidence.mjs ./services/scanner/src/
