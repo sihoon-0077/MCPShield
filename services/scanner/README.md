@@ -622,3 +622,48 @@ MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_RUNTIME_BUILDER_IMAGE=sha256:... MCPSHIELD_TR
 Native CLI references: [Trivy image](https://trivy.dev/docs/latest/references/configuration/cli/trivy_image/),
 [offline scanning](https://trivy.dev/docs/latest/advanced/air-gap/),
 [native conversion](https://trivy.dev/docs/latest/references/configuration/cli/trivy_convert/).
+
+### Pure OCI consumer binding and shared semantic engine
+
+`src/oci-binding.mjs` exports `ociExecutionPolicy`, `validateOciExecutionPolicy`,
+`createOciReleaseBinding` and `validateOciReleaseBinding`. These helpers perform
+only strict, self-consistent identity validation: they do not run Docker, obtain
+operator trust, issue a PASS or authorize Gateway admission. Supply the exact
+seven trust fields `baseImageDigest`, `baseCatalogueDigest`, `trivyImageDigest`,
+`databaseDigest`, `observerDigest`, `sinkImageDigest`, `sinkCodeDigest` to create
+the fixed `restricted-oci-offline-v1` execution policy. The observer includes the
+external MCP collector; its whole module is committed by `observerDigest`.
+
+`createOciReleaseBinding({sourceReleaseId, descriptor, executionPolicy})` requires
+the strict existing OCI descriptor in OBSERVED state with its full raw tool
+surface hash. The manifest hashes exactly these six fields:
+
+```js
+{ schemaVersion: 'mcpshield.prepared-release.v1', profile: 'oci-container-v1',
+  sourceReleaseId, sourceArtifactDigest: descriptor.sourceTreeDigest,
+  descriptorDigest, executionPolicyDigest }
+```
+
+The new artifact digest is the observed descriptor digest. The original source
+V2 tree/release remains unchanged. The binding additionally contains the exact
+descriptor, execution policy, manifest hash, full tool hash, config CID/platform.
+No API-controlled host path, tag, command override or extra key is accepted.
+
+The Gateway policy is stricter than synthetic observation: no network, no host
+mounts or socket, descriptor-exact argv/workdir, read-only non-root Docker,
+default seccomp, no capabilities/escalation, no healthcheck, fixed resource caps
+and bounded noexec tmpfs. It preserves the validated inert image environment,
+never forwards host variables, and forces HOME=/nonexistent and
+PYTHONDONTWRITEBYTECODE=1. This policy supports packaged-data access/compute only;
+it does not imply unrestricted file/API-connected native MCP support. Unknown
+binaries, unreviewed structure or missing syscall observation remain explicit
+scope limitations, not a fabricated native behavior proof.
+
+The existing `reviewPreparedSemantics` engine accepts exactly two profiles:
+default `restricted-node-docker-v1` (unchanged prompt/provenance) and
+`restricted-oci-offline-v1`. OCI reuses full excerpt coverage, precomputed exact
+citations, bounded transport and a separate blind critic, but its prompt does
+not apply Node-only permissions to native processes. OCI outputs use
+`mcpshield_oci_analyzer`/`mcpshield_oci_critic` provenance and an explicit
+`semanticProfile`; absent opted-in provider access remains incomplete. Neither
+a successful model contract test nor creating this binding enables OCI signing.
