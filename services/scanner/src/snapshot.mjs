@@ -5,12 +5,14 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 export const SNAPSHOT_LIMITS = Object.freeze({ files: 1_024, bytes: 16 * 1024 * 1024 });
 export const OCI_SOURCE_BUDGET_PROFILE = 'oci-100m-512m-v1';
 const OCI_SOURCE_LIMITS = Object.freeze({ files: 50_000, bytes: 100 * 1024 * 1024 });
-export const TRIVY_DATABASE_BUDGET_PROFILE = 'trivy-db-1g-v1';
-const TRIVY_DATABASE_LIMITS = Object.freeze({ files: 2, bytes: 1024 * 1024 * 1024 });
+export const TRIVY_DATABASE_BUDGET_PROFILE = 'trivy-db-2g-v1';
+const TRIVY_DATABASE_LIMITS = Object.freeze({ files: 2, bytes: 2 * 1024 * 1024 * 1024 });
+const LEGACY_TRIVY_DATABASE_LIMITS = Object.freeze({ files: 2, bytes: 1024 * 1024 * 1024 });
 export function snapshotLimits(profile = 'fixture-v1') {
   if (profile === 'fixture-v1') return SNAPSHOT_LIMITS;
   if (profile === OCI_SOURCE_BUDGET_PROFILE) return OCI_SOURCE_LIMITS;
   if (profile === TRIVY_DATABASE_BUDGET_PROFILE) return TRIVY_DATABASE_LIMITS;
+  if (profile === 'trivy-db-1g-v1') return LEGACY_TRIVY_DATABASE_LIMITS;
   throw Error('ARTIFACT_BUDGET_PROFILE_UNSUPPORTED');
 }
 

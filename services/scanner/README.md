@@ -582,7 +582,8 @@ new source bytes are retained. Static inventory is not filesystem syscall tracin
 
 `readTrivyDatabaseIdentity` makes a stable, private two-file snapshot of an
 already acquired `metadata.json` and `trivy.db`, streaming copy/hash with the
-fixed `trivy-db-1g-v1` 1 GiB ceiling. Metadata is bounded to 64 KiB before reading
+fixed `trivy-db-2g-v1` 2 GiB ceiling. The older explicit `trivy-db-1g-v1`
+profile remains 1 GiB; candidate artifact limits are unchanged. Metadata is bounded to 64 KiB before reading
 and must be DB schema v2, no more than 24 hours old, not future-dated. It never
 downloads a DB or accepts a candidate configuration. The global review budget is
 180 seconds (including both exports and DB/scan work), with bounded cleanup grace.
