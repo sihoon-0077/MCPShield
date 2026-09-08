@@ -1,5 +1,75 @@
 # MCPShield Security Scanner
 
+## Master implementation additions
+
+`scanRelease()` and ScanResult v1 remain compatible. `scanReleaseDetailed(options)`
+adds `{ result, analysis, bundle }`. `analysis` includes tool/schema/annotation
+changes, dependency and lifecycle diff, a CycloneDX 1.5 SBOM, review-only metadata
+signals with source spans, and bounded synthetic probe descriptions.
+
+```powershell
+node services/scanner/src/cli.mjs --fixture demo/fixtures/mail-mcp-1.0.1 --baseline demo/fixtures/mail-mcp-1.0.0 --detailed true
+node services/scanner/src/cli.mjs --npm is-number@7.0.0 --detailed true
+node benchmarks/evaluate-metadata.mjs
+```
+
+Resolver `services/resolver/src/resolver.mjs` exports `resolveArtifact({source})`
+where source is `{type:'local',path}`, `{type:'npm',spec}`, or
+`{type:'tarball',url,integrity?}`. The compatibility input
+`{sourceType,locator}` is also accepted. Returned `artifactDir` is an owned
+temporary snapshot: copy it into your content-addressed store if needed, then
+call `cleanup()`. Registry package scripts are never installed or executed.
+Only HTTPS npm-registry sources are fetched; redirects and private/custom URLs
+are rejected. Archive bytes have an independent SHA-256 and verified registry
+integrity. Legacy artifactDigest retains its documented sorted path/NUL/bytes/NUL
+tree algorithm. Tar extraction uses current node-tar in a new owned directory,
+rejects links, traversal, duplicate/case-colliding names and Windows path aliases,
+and caps downloaded/expanded bytes, file count and compression ratio.
+
+Workers must call `scanResolvedArtifact({artifactDir,...options})`, which defaults
+to static inspection and cannot yield PASSED without dynamic analysis. Explicit
+`sandbox:'docker'` is the only dynamic route for ingested artifacts. Packages
+without a declared MCP manifest remain `INCONCLUSIVE`; an empty tool list is
+not a discovered surface. `scanSource({source,...options})` resolves, scans and
+cleans up in one call. Network, integrity and archive failures throw typed-message
+errors before admission; callers should record the failed job rather than retry
+unsafe artifacts indefinitely.
+
+Evidence `bundle.files` contains canonical JSON strings and `bundle.manifest`
+has algorithm `sha256-path-merkle-v1`, root and inclusion proofs. Sorted paths
+define leaves. `contentHash=SHA256(UTF8(content))`,
+`leaf=SHA256(0x00 || UTF8(path) || 0x00 || contentHash)` and
+`parent=SHA256(0x01 || left32 || right32)`; odd nodes duplicate themselves.
+`verifyEvidenceBundle(bundle, expectedRoot)` checks all paths and proofs and
+rebuilds the root; `verifyEvidenceLeaf` supports selective disclosure. The root
+must come from a trusted attestation, not the supplied bundle itself. v1
+`evidenceHash` still commits to findings; the full bundle root is a separate
+`reportRoot` for the new backend. Source strings retain original Unicode bytes;
+semantic normalization never silently rewrites artifact identity.
+
+Each sandbox now creates eight unique synthetic credential/data canaries under
+a disposable fake home. Reports contain hashes and event metadata only. Docker
+adds a bounded noexec tmpfs. Linux isolation acceptance runs with:
+
+```sh
+MCPSHIELD_DOCKER_TESTS=1 node --test tests/security/docker-sandbox.test.mjs
+```
+
+This suite must run on Linux with Docker and node:22-alpine available; ordinary
+Windows runs explicitly skip it. It checks read-only mounts/rootfs, dropped
+capabilities, no-new-privileges, cgroup limits, outside-network denial, canary
+exfiltration and timeout cleanup. Do not describe skipped checks as passed.
+Optional OpenTelemetry spans correlate static/AI/sandbox/evidence stages with
+the worker traceparent; source content is excluded from span attributes.
+
+Current limits: no OCI image ingestion yet; SBOM is declared/lockfile based,
+not a vulnerability database; probes are bounded deterministic templates, not
+a measured LLM agent ASR benchmark. Metadata corpus is 16 synthetic author-labeled
+cases and intentionally reports the implicit-scope false negative. Real agent
+providers, independently labeled external datasets and kernel-level syscall
+coverage remain separate validation work. Disable the additions by continuing
+to use `scanRelease()` and the existing fixture CLI; existing hashes stay valid.
+
 The scanner produces a canonical MCPShield `ScanResult` v1 from a controlled
 fixture. It combines reproducible artifact/tool hashes, static rules, a
 structured semantic analysis, and observed sandbox behavior. Raw canary data,
