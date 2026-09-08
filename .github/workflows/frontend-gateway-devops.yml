@@ -97,6 +97,7 @@ jobs:
           export MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)"
           export MCPSHIELD_TRIVY_IMAGE="$(docker image inspect aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 --format '{{.Id}}')"
           export MCPSHIELD_TRIVY_DATABASE_DIR="$PWD/runtime-builder-cache/db"
+          stat --printf='Trusted Trivy DB %n: %s bytes\n' "$MCPSHIELD_TRIVY_DATABASE_DIR/metadata.json" "$MCPSHIELD_TRIVY_DATABASE_DIR/trivy.db"
           node --import tsx --test tests/security/oci-review.test.mjs
       - name: Exercise prepared Docker scans and single-key validators through V2 and both Gateways
         if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
@@ -205,7 +206,9 @@ jobs:
           test "$(docker exec "$PG_CONTAINER" psql -U mcpshield -d mcpshield_restore_drill -tAc "SELECT count(*) FROM cp_records WHERE tenant_id='restore-test' AND id='backup-check'")" = "1"
 
   repeat-demo:
-    if: github.event_name == 'workflow_dispatch' && inputs.repeat_demo
+    # Independent diagnostics still run when a different verification stage fails.
+    # This job never signs or publishes a release.
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.repeat_demo }}
     needs: [verify, postgres]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -231,7 +234,9 @@ jobs:
   signed-image:
     # Explicit workflow dispatch only: do not accumulate large images on every push.
     # This creates a downloadable CI artifact, not a public container registry/release.
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master/main'
+    # Build/smoke/scan diagnostics are independent; signature and image retention
+    # below additionally require every upstream verification gate to succeed.
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master/main' }}
     needs: [verify, postgres]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -271,19 +276,23 @@ jobs:
           sha256sum -c release-artifact/SHA256SUMS
           node scripts/ops/check-image-report.mjs release-artifact/reports/image-scan.json release-artifact/image-id.txt "$GITHUB_SHA" release-artifact/reports/sbom.cdx.json
       - name: Sign build provenance for the actual image archive
+        if: needs.verify.result == 'success' && needs.postgres.result == 'success'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: release-artifact/mcpshield-image.tar.gz
       - name: Sign image SBOM attestation
+        if: needs.verify.result == 'success' && needs.postgres.result == 'success'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: release-artifact/mcpshield-image.tar.gz
           sbom-path: release-artifact/reports/sbom.cdx.json
       - name: Verify build signature against this repository identity
+        if: needs.verify.result == 'success' && needs.postgres.result == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh attestation verify release-artifact/mcpshield-image.tar.gz --repo "$GITHUB_REPOSITORY"
       - name: Retain bounded downloadable image and evidence
+        if: needs.verify.result == 'success' && needs.postgres.result == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mcpshield-${{ github.sha }}
