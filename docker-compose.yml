@@ -76,7 +76,7 @@ services:
     build:
       context: .
       dockerfile: scripts/demo/Dockerfile.backend
-    command: ["sh", "-c", "chown node:node /deployment /data /evidence-a /evidence-b && chmod 0750 /deployment /data /evidence-a /evidence-b && exec su node -s /bin/sh -c 'umask 027 && npm run chain:deploy'"]
+    command: ["sh", "-c", "chmod 0750 /deployment /data /evidence-a /evidence-b && chown node:node /deployment /data /evidence-a /evidence-b && exec su node -s /bin/sh -c 'umask 027 && npm run chain:deploy'"]
     environment:
       RPC_URL: http://local-chain:8545
       DEPLOYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"

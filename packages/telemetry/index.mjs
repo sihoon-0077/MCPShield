@@ -101,8 +101,9 @@ export async function withSpan(name, attributes, fn, { traceparent } = {}) {
 export function recordAdmission({ decision, riskTier, source, durationSeconds }) {
   const labels = {
     decision: ['ALLOW', 'BLOCK', 'DENY'].includes(decision) ? decision : 'UNKNOWN',
-    risk_tier: ['READ_ONLY', 'WRITE', 'WRITE_EXTERNAL', 'FINANCIAL'].includes(riskTier) ? riskTier : 'UNKNOWN',
-    source: ['LIVE', 'CACHE', 'REPLAY', 'MOCK'].includes(source) ? source : 'UNKNOWN',
+    risk_tier: ['READ_PUBLIC', 'READ_PRIVATE'].includes(riskTier) ? 'READ_ONLY'
+      : ['READ_ONLY', 'WRITE', 'WRITE_EXTERNAL', 'DESTRUCTIVE', 'FINANCIAL'].includes(riskTier) ? riskTier : 'UNKNOWN',
+    source: source === 'EVM' ? 'LIVE' : ['LIVE', 'LOCAL_DEMO', 'CACHE', 'REPLAY', 'MOCK'].includes(source) ? source : 'UNKNOWN',
   };
   admissionDecisions.add(1, labels);
   if (Number.isFinite(durationSeconds) && durationSeconds >= 0) admissionLatency.record(durationSeconds, labels);
