@@ -43,6 +43,12 @@ export async function inspectImportedOciRuntime({ descriptor, expectedDescriptor
   return inspectImage(descriptor.finalImageDigest, descriptor.platform, descriptor, descriptor.layerArchiveBytes, { trustedEntries, retainReviewSources, timeoutMs });
 }
 
+export async function cleanupOciExport(container, run = runRuntimeDocker) {
+  if (!/^mcpshield-oci-inspect-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(container)) throw Error('OCI_EXPORT_CLEANUP_TARGET_INVALID');
+  try { await run(['rm', '-f', '-v', container], 5000); }
+  catch { throw Error('OCI_EXPORT_CLEANUP_FAILED'); }
+}
+
 // Native export only: the fixed command is never started and no candidate argv
 // is interpreted. Also used to independently catalogue an operator-approved base.
 export async function exportOciFilesystem({ imageDigest, platform, archiveBudget = OCI_RUNTIME_LIMITS.archiveBytes, trustedEntries, retainReviewSources = false, timeoutMs = 40_000 }) {
@@ -56,16 +62,22 @@ export async function exportOciFilesystem({ imageDigest, platform, archiveBudget
     return runRuntimeDocker(args, Math.min(cap, deadline - Date.now()), max);
   };
   const container = `mcpshield-oci-inspect-${randomUUID()}`;
+  let creationAttempted = false;
   try {
     const image = JSON.parse(await run(['image', 'inspect', imageDigest, '--format', '{{json .}}'], 5000));
     if (image.Id !== imageDigest || image.Os !== platform.os || image.Architecture !== platform.architecture) throw Error('OCI_IMPORTED_IMAGE_IDENTITY_MISMATCH');
+    creationAttempted = true;
     await run(['create', '--pull=never', '--name', container, '--network=none', '--read-only', '--user=1000:1000',
       '--cap-drop=ALL', '--security-opt=no-new-privileges', '--no-healthcheck', '--entrypoint=/bin/false', imageDigest], 5000);
     const archive = await run(['export', container], 30_000, archiveBudget);
     const filesystem = inspectOciFilesystem(archive, { trustedEntries, retainReviewSources });
     if (Date.now() >= deadline) throw Error('OCI_EXPORT_TIMEOUT');
     return { image, filesystem, exportArchiveBytes: archive.length, candidateExecutionPerformed: false };
-  } finally { try { await runRuntimeDocker(['rm', '-f', '-v', container], 5000); } catch { /* exact never-started container and its anonymous volumes */ } }
+  } finally {
+    // Never return a successful proof while the exact owned never-started
+    // container/anonymous-volume cleanup is unconfirmed (including create timeout).
+    if (creationAttempted) await cleanupOciExport(container);
+  }
 }
 
 async function inspectImage(imageDigest, platform, expected, layerArchiveBytes = expected?.layerArchiveBytes ?? 0, reviewOptions = {}) {
