@@ -1,7 +1,7 @@
 import { id } from "ethers";
 import type { FastifyInstance } from "fastify";
 import { attestationV2Types, bytes32, quarantineV2Types } from "../../../packages/contracts-sdk/src/v2.js";
-import { chainActions, enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
+import { chainActionId, chainActions, enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
 import { ControlStore } from "./control-store.js";
 import { hash, loadEvidence, type ControlOptions, type Credential } from "./control-plane.js";
 import { policyVerdict } from "./control-policy.js";
@@ -58,7 +58,7 @@ export async function registerChainRoutes(api: FastifyInstance, store: ControlSt
     const body = request.body as any, client = enabled();
     if (!body || typeof body.scanId !== "string" || !body.payload || typeof body.signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(body.signature)) throw failure("INVALID_ATTESTATION");
     const actionPayload = { attestation: body.payload, signature: body.signature };
-    const previous = await chainActions(store, user.tenantId, hash({ tenantId: user.tenantId, kind: "ATTEST", payload: actionPayload }));
+    const previous = await chainActions(store, user.tenantId, chainActionId(client, user.tenantId, "ATTEST", actionPayload));
     if (previous[0]) return reply.code(202).send({ action: previous[0], idempotent: true });
     const validator = await client.validateSignature(body.payload, body.signature);
     const prepared = await prepare(user.tenantId, body.scanId, validator);
@@ -87,7 +87,7 @@ export async function registerChainRoutes(api: FastifyInstance, store: ControlSt
     if (!body?.payload || typeof body.scanId !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(body.signature ?? "")) throw failure("INVALID_QUARANTINE");
     if (Object.keys(body.payload).sort().join() !== quarantineV2Types.Quarantine.map((field) => field.name).sort().join()) throw failure("INVALID_QUARANTINE");
     const actionPayload = { quarantine: body.payload, signature: body.signature };
-    const previous = await chainActions(store, user.tenantId, hash({ tenantId: user.tenantId, kind: "QUARANTINE", payload: actionPayload }));
+    const previous = await chainActions(store, user.tenantId, chainActionId(client, user.tenantId, "QUARANTINE", actionPayload));
     if (previous[0]) return reply.code(202).send({ action: previous[0], idempotent: true });
     const validator = await client.validateSignature(body.payload, body.signature, true), prepared = await prepare(user.tenantId, body.scanId, validator);
     const q = body.payload, now = Math.floor(Date.now() / 1000);

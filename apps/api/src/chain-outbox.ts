@@ -6,6 +6,8 @@ import { hash } from "./control-plane.js";
 import { traceHeaders, withSpan } from "../../../packages/telemetry/index.mjs";
 
 export type ChainActionKind = "REGISTER_RELEASE" | "PUBLISH_POLICY" | "DEPRECATE_POLICY" | "ATTEST" | "QUARANTINE" | "SYNC_EXPIRY";
+export const chainActionId = (relayer: V2Relayer, tenantId: string, kind: ChainActionKind, payload: Record<string, any>) =>
+  hash({ tenantId, kind, payload, chainId: relayer.chainId, registryAddress: relayer.registryAddress.toLowerCase() });
 export class V2Relayer {
   readonly provider: JsonRpcProvider;
   readonly signer: Wallet;
@@ -64,14 +66,14 @@ export class V2Relayer {
 }
 
 export async function enqueueChainAction(store: ControlStore, relayer: V2Relayer, tenantId: string, kind: ChainActionKind, payload: Record<string, any>, traceparent = traceHeaders().traceparent) {
-  const actionId = hash({ tenantId, kind, payload }), now = new Date().toISOString();
-  await store.query(`INSERT INTO cp_chain_actions(action_id,tenant_id,release_id,kind,payload,chain_id,relayer_address,created_at,updated_at,trace_parent)
-    VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(action_id) DO NOTHING`, [actionId, tenantId, payload.releaseId ?? payload.attestation?.releaseId ?? payload.quarantine?.releaseId ?? null,
-    kind, JSON.stringify(payload), relayer.chainId, relayer.signer.address.toLowerCase(), now, now, traceparent ?? null]);
+  const actionId = chainActionId(relayer, tenantId, kind, payload), now = new Date().toISOString();
+  await store.query(`INSERT INTO cp_chain_actions(action_id,tenant_id,release_id,kind,payload,chain_id,relayer_address,created_at,updated_at,trace_parent,registry_address)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(action_id) DO NOTHING`, [actionId, tenantId, payload.releaseId ?? payload.attestation?.releaseId ?? payload.quarantine?.releaseId ?? null,
+    kind, JSON.stringify(payload), relayer.chainId, relayer.signer.address.toLowerCase(), now, now, traceparent ?? null, relayer.registryAddress.toLowerCase()]);
   return (await chainActions(store, tenantId, actionId))[0];
 }
 export async function chainActions(store: ControlStore, tenantId: string, actionId?: string) {
-  return (await store.query(`SELECT action_id,release_id,kind,state,tx_hash,error_code,created_at,updated_at FROM cp_chain_actions WHERE tenant_id = ?${actionId ? " AND action_id = ?" : ""} ORDER BY created_at DESC LIMIT 250`, [tenantId, ...(actionId ? [actionId] : [])])).map((row) => ({ actionId: row.action_id, releaseId: row.release_id, kind: row.kind, status: row.state, txHash: row.tx_hash, errorCode: row.error_code, createdAt: row.created_at, updatedAt: row.updated_at }));
+  return (await store.query(`SELECT action_id,release_id,kind,state,tx_hash,error_code,created_at,updated_at,chain_id,registry_address FROM cp_chain_actions WHERE tenant_id = ?${actionId ? " AND action_id = ?" : ""} ORDER BY created_at DESC LIMIT 250`, [tenantId, ...(actionId ? [actionId] : [])])).map((row) => ({ actionId: row.action_id, releaseId: row.release_id, kind: row.kind, status: row.state, txHash: row.tx_hash, errorCode: row.error_code, createdAt: row.created_at, updatedAt: row.updated_at, chainId: row.chain_id, registryAddress: row.registry_address }));
 }
 export async function runChainActionOnce(store: ControlStore, relayer: V2Relayer) {
   const owner = randomUUID(), now = new Date().toISOString();
@@ -83,9 +85,9 @@ export async function runChainActionOnce(store: ControlStore, relayer: V2Relayer
   if (!lease.length) return false;
   const releaseLease = () => store.query("UPDATE cp_relayer_leases SET lease_owner = NULL, lease_expires_at = NULL WHERE chain_id = ? AND relayer_address = ? AND lease_owner = ?", [relayer.chainId, address, owner]);
   const [action] = await store.query(`UPDATE cp_chain_actions SET lease_owner = ?, lease_expires_at = ? WHERE action_id = (
-    SELECT action_id FROM cp_chain_actions WHERE chain_id = ? AND relayer_address = ? AND state IN ('NEW','PREPARED','SUBMITTED')
+    SELECT action_id FROM cp_chain_actions WHERE chain_id = ? AND relayer_address = ? AND registry_address = ? AND state IN ('NEW','PREPARED','SUBMITTED')
       AND (lease_expires_at IS NULL OR lease_expires_at <= ?) ORDER BY created_at LIMIT 1${store.driver === "POSTGRESQL" ? " FOR UPDATE SKIP LOCKED" : ""}) RETURNING *`,
-    [owner, expires, relayer.chainId, relayer.signer.address.toLowerCase(), now]);
+    [owner, expires, relayer.chainId, relayer.signer.address.toLowerCase(), relayer.registryAddress.toLowerCase(), now]);
   if (!action) { await releaseLease(); return false; }
   const payload = JSON.parse(action.payload);
   try {
@@ -141,7 +143,7 @@ export async function runChainActionOnce(store: ControlStore, relayer: V2Relayer
 }
 
 export async function reconcileV2Actions(store: ControlStore, relayer: V2Relayer) {
-  const completed = await store.query("SELECT action_id,tx_hash FROM cp_chain_actions WHERE chain_id = ? AND relayer_address = ? AND state = 'COMPLETED' AND tx_hash IS NOT NULL ORDER BY updated_at DESC LIMIT 100", [relayer.chainId, relayer.signer.address.toLowerCase()]);
+  const completed = await store.query("SELECT action_id,tx_hash FROM cp_chain_actions WHERE chain_id = ? AND relayer_address = ? AND registry_address = ? AND state = 'COMPLETED' AND tx_hash IS NOT NULL ORDER BY updated_at DESC LIMIT 100", [relayer.chainId, relayer.signer.address.toLowerCase(), relayer.registryAddress.toLowerCase()]);
   let rewound = 0;
   for (const action of completed) {
     const receipt = await relayer.provider.getTransactionReceipt(action.tx_hash);

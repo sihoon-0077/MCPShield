@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -152,6 +154,24 @@ test("AES-GCM evidence rejects tenant crossing and modified bytes", async () => 
   } finally { await f.close(); }
 });
 
+test("existing chain outbox upgrades without guessing its historical registry and reopens idempotently", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "mcpshield-migration-")), path = join(directory, "old.sqlite");
+  const previous = new DatabaseSync(path);
+  previous.exec(readFileSync(new URL("../../database/migrations/004_chain_outbox.sql", import.meta.url), "utf8"));
+  previous.prepare("INSERT INTO cp_chain_actions(action_id,tenant_id,kind,payload,chain_id,relayer_address,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)")
+    .run("legacy-action", tenant, "REGISTER_RELEASE", "{}", 1337, "historical-relayer", "2026-01-01", "2026-01-01");
+  previous.close();
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const upgraded = await ControlStore.open(path);
+      try {
+        const [action] = await upgraded.query("SELECT registry_address,state FROM cp_chain_actions WHERE action_id = ?", ["legacy-action"]);
+        assert.equal(action.registry_address, null); assert.equal(action.state, "NEW");
+      } finally { await upgraded.close(); }
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("real resolver to durable worker yields verified evidence without host execution", async () => {
   const f = await setup();
   try {
@@ -172,6 +192,8 @@ test("real resolver to durable worker yields verified evidence without host exec
 });
 
 test("PostgreSQL real adapter persists and atomically dequeues", { skip: !process.env.MCPSHIELD_POSTGRES_TEST_URL }, async () => {
+  const opening = await Promise.all([ControlStore.open(process.env.MCPSHIELD_POSTGRES_TEST_URL), ControlStore.open(process.env.MCPSHIELD_POSTGRES_TEST_URL)]);
+  await Promise.all(opening.map((connection) => connection.close()));
   const store = await ControlStore.open(process.env.MCPSHIELD_POSTGRES_TEST_URL);
   const tenantId = `pg-${randomUUID()}`;
   try {

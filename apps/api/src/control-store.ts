@@ -36,12 +36,27 @@ export class ControlStore {
       store.sqlite = new DatabaseSync(location);
       store.sqlite.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;");
     }
-    const sql = readFileSync(fileURLToPath(new URL("../../../database/migrations/002_control_plane.sql", import.meta.url)), "utf8");
-    if (store.sqlite) store.sqlite.exec(sql); else await store.pool!.query(sql);
-    const audit = readFileSync(fileURLToPath(new URL(`../../../database/migrations/003_scan_audit.${store.pool ? "pg" : "sqlite"}.sql`, import.meta.url)), "utf8");
-    if (store.sqlite) store.sqlite.exec(audit); else await store.pool!.query(audit);
-    const chain = readFileSync(fileURLToPath(new URL("../../../database/migrations/004_chain_outbox.sql", import.meta.url)), "utf8");
-    if (store.sqlite) store.sqlite.exec(chain); else await store.pool!.query(chain);
+    const migration = (name: string) => readFileSync(fileURLToPath(new URL(`../../../database/migrations/${name}.sql`, import.meta.url)), "utf8");
+    const schema = [migration("002_control_plane"), migration(`003_scan_audit.${store.pool ? "pg" : "sqlite"}`), migration("004_chain_outbox")].join("\n");
+    const domain = migration("005_chain_action_domain");
+    if (store.sqlite) {
+      store.sqlite.exec("BEGIN IMMEDIATE");
+      try {
+        store.sqlite.exec(schema);
+        if (!store.sqlite.prepare("PRAGMA table_info(cp_chain_actions)").all().some((column) => column.name === "registry_address")) store.sqlite.exec(domain);
+        store.sqlite.exec("COMMIT");
+      } catch (error) { store.sqlite.exec("ROLLBACK"); store.sqlite.close(); throw error; }
+    } else {
+      const client = await store.pool!.connect();
+      try {
+        await client.query("BEGIN"); await client.query("SELECT pg_advisory_xact_lock(hashtext('mcpshield-control-migrations'))");
+        await client.query(schema);
+        const columns = (await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'cp_chain_actions'")).rows;
+        if (!columns.some((column) => column.column_name === "registry_address")) await client.query(domain);
+        await client.query("COMMIT");
+      } catch (error) { await client.query("ROLLBACK"); throw error; }
+      finally { client.release(); }
+    }
     return store;
   }
   get driver() { return this.pool ? "POSTGRESQL" : "SQLITE"; }

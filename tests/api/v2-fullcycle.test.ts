@@ -14,7 +14,7 @@ import { deployV2 } from "../../contracts/scripts/deploy-v2.js";
 import { ControlStore } from "../../apps/api/src/control-store.js";
 import { buildApp } from "../../apps/api/src/app.js";
 import { runControlWorkerOnce } from "../../apps/api/src/control-worker.js";
-import { V2Relayer, runChainActionOnce, reconcileV2Actions } from "../../apps/api/src/chain-outbox.js";
+import { V2Relayer, enqueueChainAction, runChainActionOnce, reconcileV2Actions } from "../../apps/api/src/chain-outbox.js";
 import { v2ChainReader } from "../../apps/api/src/registry-v2-client.js";
 import { indexV2 } from "../../apps/indexer/src/v2-indexer.js";
 import { defaultPolicy, hash, type ControlOptions } from "../../apps/api/src/control-plane.js";
@@ -139,6 +139,20 @@ async function fullCycle(realDocker: boolean) {
     assert.equal(parallel.filter(Boolean).length, 1);
     const [recovered] = await store.query("SELECT * FROM cp_chain_actions WHERE action_id = ?", [last.action_id]);
     assert.equal(recovered.state, "COMPLETED"); assert.equal(recovered.raw_tx, last.raw_tx); assert.equal(recovered.tx_hash, last.tx_hash);
+    const secondDeployment = await deployV2(rpc, accounts[0].secretKey, validators.map((v) => v.address), 1337);
+    const otherRegistry = new V2Relayer(rpc, secondDeployment.releaseRegistry.address, 1337, accounts[0].secretKey);
+    try {
+      const [registration] = await store.query("SELECT * FROM cp_chain_actions WHERE kind = 'REGISTER_RELEASE' AND release_id = ?", [safe.release.releaseId]);
+      const anotherAction = await enqueueChainAction(store, otherRegistry, "test-team", "REGISTER_RELEASE", JSON.parse(registration.payload));
+      assert.notEqual(anotherAction.actionId, registration.action_id);
+      assert.equal(anotherAction.registryAddress, secondDeployment.releaseRegistry.address.toLowerCase());
+      assert.equal(await runChainActionOnce(store, relayer), false, "old registry must not claim a new registry action");
+      await runChainActionOnce(store, otherRegistry);
+      assert.equal((await otherRegistry.registry.releases(safe.release.releaseId)).exists, true);
+      await pause(300); await runChainActionOnce(store, otherRegistry);
+      const [scoped] = await store.query("SELECT state FROM cp_chain_actions WHERE action_id = ?", [anotherAction.actionId]);
+      assert.equal(scoped.state, "COMPLETED");
+    } finally { otherRegistry.close(); }
     await chain.provider.request({ method: "evm_revert", params: [snapshot] });
     await pause(300); // ethers' bounded request cache must expire before observing the changed canonical head.
     assert.ok(await reconcileV2Actions(store, relayer) > 0);

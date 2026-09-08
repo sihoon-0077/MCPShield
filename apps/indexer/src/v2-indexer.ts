@@ -4,8 +4,10 @@ import { v2ChainReader } from "../../api/src/registry-v2-client.js";
 
 export async function indexV2(store: ControlStore, client: V2Relayer, { deploymentBlock = 0, confirmations = 2 } = {}) {
   const chainId = client.chainId, registry = client.registryAddress.toLowerCase();
-  let checkpoints = await store.query("SELECT block_number,block_hash FROM cp_v2_blocks WHERE chain_id = ? AND registry_address = ? ORDER BY block_number DESC", [chainId, registry]);
-  for (const saved of checkpoints) {
+  let checkpoints;
+  while (true) {
+    const [saved] = await store.query("SELECT block_number,block_hash FROM cp_v2_blocks WHERE chain_id = ? AND registry_address = ? ORDER BY block_number DESC LIMIT 1", [chainId, registry]);
+    if (!saved) break;
     const canonical = await client.provider.getBlock(saved.block_number);
     if (canonical?.hash === saved.block_hash) break;
     const orphaned = await store.query("SELECT release_id,transaction_hash,block_hash FROM cp_v2_events WHERE chain_id = ? AND registry_address = ? AND block_number >= ?", [chainId, registry, saved.block_number]);
