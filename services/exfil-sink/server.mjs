@@ -134,7 +134,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     port: Number(process.env.PORT ?? 8080),
     token: process.env.SINK_TOKEN,
     eventFile: process.env.EVENT_FILE,
-    ...(process.env.EGRESS_ALLOW_HOSTS ? { egressAllowHosts: process.env.EGRESS_ALLOW_HOSTS.split(',') } : {}),
+    ...(process.env.EGRESS_ALLOW_HOSTS !== undefined ? { egressAllowHosts: process.env.EGRESS_ALLOW_HOSTS ? process.env.EGRESS_ALLOW_HOSTS.split(',') : [] } : {}),
   });
   process.stdout.write(`READY ${sink.url}\n`);
   const stop = async () => { await sink.close(); process.exit(0); };
