@@ -456,3 +456,87 @@ distribution binding (manifest/layers/config), never an implicit tag pull.
 Generic OCI execution still requires a language-neutral collector and a stronger
 observation strategy; this Node-only checkpoint does not implement it. Lockless
 npm resolution also remains a separate required isolated solver/broker stage.
+
+### Prepared scan and independent restricted-profile policy
+
+`src/prepared-scan.mjs` now exports `scanPreparedRuntime`,
+`prepareAndScanRuntime`, `readTrustedPreparedIdentity` (synchronous local code
+hashes), `readTrustedPreparedRuntime` (asynchronous validator-local image export),
+and `assessPreparedPolicy`. The pure policy implementation is also directly
+importable from `src/prepared-policy.mjs`.
+
+```js
+const output = await prepareAndScanRuntime({
+  preparation, // server-owned root/sourceDigest/sourceTreeDigest/bin/platform/builder config
+  sourceReleaseId, // exact original V2 bytes32 ID
+  releaseId, // original name@version display label, not the new V2 ID
+  scanId, ai, probePlan, timeoutMs,
+});
+// output: {result, bundle, analysis, binding, runtimeTag?, cleanup?}
+```
+
+`scanPreparedRuntime` instead accepts `descriptor`, `expectedDescriptorDigest`,
+the same scan fields and independent operator `trusted` anchors. An already
+observed descriptor can be rescanned but its registered identity must remain
+unchanged. Failed preparation/discovery returns `result:null`, `binding:null`
+and explicit ABSTAIN analysis; no fake empty tool hash is substituted. The
+successful runtime image's private `runtimeTag`/`cleanup` ownership transfers to
+the API worker. Store the durable binding before retaining the image; clean it
+on failed/stale jobs, not immediately after registering a release.
+
+The scanner exports `/app` from a **never-started** digest-pinned Docker
+container. It checks the complete installed closure manifest, entrypoint and
+installer report; host code only parses those bounded bytes, never imports a
+candidate. All installed UTF-8 files, including `node_modules`, enter static
+review and the actual-installed CycloneDX SBOM. Opaque/binary files require
+unsupported review and therefore cannot receive PASS from this profile.
+
+Explicitly opted-in AI reviews every redacted source character in batches, with
+an independent blind-context critic for every batch even when no risks were
+claimed. Both outputs use the strict citation schema. Missing provider access,
+timeouts, truncated coverage, uncertain conclusions and unreviewed dependency
+bytes produce INCONCLUSIVE/ABSTAIN. Default budgets are 32 batches and 120 seconds
+(operator maximum 128 batches/300 seconds); these are not full-program formal
+verification or independent-organization review. Local HTTP contract tests do
+not constitute live commercial-model benchmark results.
+
+The encrypted evidence contains `runtime/tools.json` (raw complete surface),
+`runtime/descriptor.json`, `runtime/execution-policy.json`,
+`prepared/binding.json`, `prepared/observation.json`, `prepared/policy-review.json`,
+`static/closure-inventory.json`, `static/closure-report.json`,
+`static/closure-source.json` (base64 original bytes), `static/sbom.json`,
+`static/findings.json`, and `semantic/reviews.json` (redacted actual inputs and
+per-role response provenance). **Raw tools/source/descriptor are operator-only
+encrypted evidence, never public API/log data.** Raw-source evidence has an 8 MiB
+ceiling; larger closures remain explicit ABSTAIN, despite the preparer's 100 MiB
+acquisition limit. This bounded profile does not claim unrestricted npm support.
+
+Validators must independently call:
+
+```js
+const trusted = await readTrustedPreparedRuntime({
+  descriptor: binding.descriptor,
+  expectedDescriptorDigest: binding.descriptorDigest,
+  builderImageDigest: operatorApprovedBuilder,
+});
+const review = assessPreparedPolicy(bundle, result, binding, trusted);
+```
+
+This inspects the validator-local actual image CID/platform and exports its
+closure/entrypoint bytes. A missing local image/Docker service is not approval.
+Never copy `trusted` from scanner output, binding or an API body. The pure policy
+then checks image-to-closure identity, raw-byte hashes, exact redaction and full
+excerpt reconstruction, actual SBOM, both AI contexts, all-page MCP hashes and
+normal/adversarial calls. It does not trust advertised PASS/check booleans.
+Independent adverse sink/proxy effects may support FAIL even if semantic review
+is incomplete; missing evidence cannot support PASS. Source-identity and new V2
+release-ID verification remain the API/validator contract owner's responsibility.
+
+`src/prepared-binding.mjs` and `services/resolver/src/runtime-descriptor.mjs`
+contain shared side-effect-free identity/policy helpers. The manifest hashes
+exactly `schemaVersion`, `profile`, `sourceReleaseId`, `sourceArtifactDigest`,
+`descriptorDigest`, `executionPolicyDigest`; sourceArtifactDigest is the original
+V2 tree hash, while descriptor.sourceDigest is archive provenance. Gateway uses
+the stricter no-network profile with exactly `--permission`,
+`--allow-fs-read=/app`, `--disallow-code-generation-from-strings`, no custom
+preload/host-data mount. This preserves the separate original fixture identity.

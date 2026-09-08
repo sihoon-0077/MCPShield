@@ -9,7 +9,13 @@ export function closurePath(path) {
     !/[\\:\x00-\x1f\x7f]/.test(part) && !/[. ]$/.test(part) && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part));
 }
 export function closureManifest(entries) {
-  const sorted = [...entries].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  // Restore the versioned field order after canonical JSON evidence round trips.
+  const sorted = entries.map((entry) => {
+    if (!entry || Object.keys(entry).sort().join(',') !== 'digest,mode,path,type' || !closurePath(entry.path) ||
+      !['File', 'Directory'].includes(entry.type) || ![0o444, 0o555].includes(entry.mode) ||
+      (entry.type === 'Directory' ? entry.digest !== null || entry.mode !== 0o555 : !/^sha256:[a-f0-9]{64}$/.test(entry.digest))) throw Error('CLOSURE_MANIFEST_ENTRY_INVALID');
+    return { path: entry.path, type: entry.type, mode: entry.mode, digest: entry.digest };
+  }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   return { algorithm: 'sha256-path-type-mode-content-v2', entries: sorted,
     digest: sha256(`mcpshield-closure-v2\0${JSON.stringify(sorted)}`) };
 }
