@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { receiptEvidenceSummary, validReceiptWriter } from "../../../../lib/receipt-summary";
+import { controlEventStream } from "../../../../lib/control-events";
+import { preparedDownload } from "../../../../lib/prepared-download";
 
 export const dynamic = "force-dynamic";
 const COOKIE = "mcpshield_control";
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
 const routes = {
-  GET: [/^session$/, /^operations$/, /^releases$/, /^releases\/[^/]+\/(history|appeals)$/, /^scans$/, /^scans\/[^/]+(?:\/evidence)?$/, /^policies$/, /^chain\/actions(?:\/[^/]+)?$/, /^receipt-ledgers(?:\/[^/]+(?:\/batches)?)?$/, /^receipt-batches\/[^/]+(?:\/evidence)?$/],
-  POST: [/^releases\/resolve$/, /^releases\/[^/]+\/(appeals|register)$/, /^appeals\/[^/]+\/resolve$/, /^scans$/, /^scans\/[^/]+\/retry$/, /^policies$/, /^policies\/[^/]+\/(deprecate|publish)$/, /^admission\/check$/, /^receipt-ledgers$/],
+  GET: [/^session$/, /^operations$/, /^releases$/, /^releases\/[^/]+\/(history|appeals|gateway-config)$/, /^scans$/, /^scans\/[^/]+(?:\/evidence)?$/, /^policies$/, /^chain\/actions(?:\/[^/]+)?$/, /^receipt-ledgers(?:\/[^/]+(?:\/batches)?)?$/, /^receipt-batches\/[^/]+(?:\/evidence)?$/, /^preparations(?:\/[^/]+(?:\/evidence)?)?$/, /^events\/stream$/],
+  POST: [/^releases\/resolve$/, /^releases\/[^/]+\/(appeals|register|prepare)$/, /^appeals\/[^/]+\/resolve$/, /^scans$/, /^scans\/[^/]+\/retry$/, /^policies$/, /^policies\/[^/]+\/(deprecate|publish)$/, /^admission\/check$/, /^receipt-ledgers$/, /^preparations\/[^/]+\/retry$/],
 };
 
 type Context = { params: Promise<{ path: string[] }> };
@@ -71,11 +73,17 @@ async function handle(request: NextRequest, context: Context) {
         const key = request.headers.get("idempotency-key");
         if (Object.keys(parsed).length !== 1 || !validReceiptWriter((parsed as { writer?: unknown }).writer) || !key?.trim() || key.length > 256) return json({ error: "0이 아닌 공개 writer 주소(0x + 40자리 hex)와 재시도 식별키가 필요합니다. 개인키는 입력하지 마세요." }, 400);
       }
+      if (/^releases\/[^/]+\/prepare$/.test(route)) {
+        const key = request.headers.get("idempotency-key");
+        if (!/^0x[a-f0-9]{64}$/.test(path[1]) || Object.keys(parsed).join() !== "policyHash" || !/^0x[a-f0-9]{64}$/.test((parsed as { policyHash?: string }).policyHash ?? "") || !key?.trim() || key.length > 256) return json({ error: "원본 릴리스와 준비 전용 정책 해시, 재시도 식별키만 전달할 수 있습니다." }, 400);
+      }
+      if (/^preparations\/[^/]+\/retry$/.test(route) && Object.keys(parsed).length) return json({ error: "재시도에서 실행 이미지·경로·비밀값을 지정할 수 없습니다." }, 400);
       body = JSON.stringify(parsed);
     } catch (error) { return json({ error: "요청 JSON이 잘못되었거나 제한 크기·시간을 초과했습니다." }, error instanceof Error && error.message === "BODY_TOO_LARGE" ? 413 : 400); }
   }
   if (typeof token !== "string" || !/^[\x21-\x7e]{16,2048}$/.test(token)) return json({ error: "운영 액세스 토큰으로 로그인하세요." }, 401);
   const url = new URL(`/v1/${path.map(encodeURIComponent).join("/")}`, origins.api);
+  if (route === "events/stream") return controlEventStream(request, url, token);
   for (const key of ["q", "status", "releaseId", "cursor", "limit"]) {
     const value = request.nextUrl.searchParams.get(key);
     if (value && value.length <= 512) url.searchParams.set(key, value);
@@ -89,7 +97,9 @@ async function handle(request: NextRequest, context: Context) {
       body: login ? undefined : body, cache: "no-store", signal: controller.signal, redirect: "error",
     });
     const payload = await boundedJson(upstream.body, 4 * 1024 * 1024);
-    const response = json(upstream.ok && /^receipt-batches\/[^/]+\/evidence$/.test(route) ? receiptEvidenceSummary(payload) : payload, upstream.status);
+    if (upstream.ok && /^releases\/[^/]+\/gateway-config$/.test(route)) return preparedDownload(payload, path[1]);
+    const preparedScanEvidence = /^scans\/[^/]+\/evidence$/.test(route) && Object.keys((payload as { bundle?: { files?: object } })?.bundle?.files ?? {}).some(path => path.startsWith("prepared/"));
+    const response = json(upstream.ok && (/^(receipt-batches|preparations)\/[^/]+\/evidence$/.test(route) || preparedScanEvidence) ? receiptEvidenceSummary(payload) : payload, upstream.status);
     if (login && upstream.ok) response.cookies.set(COOKIE, token, cookieOptions);
     if (upstream.status === 401) response.cookies.set(COOKIE, "", { ...cookieOptions, maxAge: 0 });
     return response;

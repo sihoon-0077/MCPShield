@@ -1,3 +1,5 @@
+import React from "react";
+
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 const text = (value: unknown) => typeof value === "string" || typeof value === "number" ? String(value) : "—";
@@ -5,6 +7,7 @@ const rows = (value: unknown) => Array.isArray(value) ? value.map(object) : [];
 
 export function EvidenceView({ evidence }: { evidence: unknown }) {
   const data = object(evidence);
+  if (data.verification === "API_VERIFIED") return <div className="ops-message"><b>API가 증거 루트를 검증함</b><p>파일 {text(data.leafCount)}개 · {text(data.checkedAt)}</p><code>{text(data.root)}</code><p>브라우저 독립 검증이 아닙니다. 준비 실행의 원문 도구·파일·호출 인자는 화면으로 전달하지 않습니다.</p></div>;
   const bundle = object(data.bundle);
   const files = object(bundle.files);
   const document = (path: string): Json => {
