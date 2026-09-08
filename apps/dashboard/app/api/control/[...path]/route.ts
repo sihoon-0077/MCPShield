@@ -96,9 +96,13 @@ async function handle(request: NextRequest, context: Context) {
       headers: { accept: "application/json", authorization: `Bearer ${token}`, ...(mutating && !login ? { "content-type": "application/json", "idempotency-key": request.headers.get("idempotency-key") ?? crypto.randomUUID() } : {}) },
       body: login ? undefined : body, cache: "no-store", signal: controller.signal, redirect: "error",
     });
-    const payload = await boundedJson(upstream.body, 4 * 1024 * 1024);
+    // Prepared closure evidence is privately stored up to 32 MiB; allow only
+    // these authenticated evidence routes that budget plus a small JSON envelope.
+    const evidenceRoute = /^(preparations|scans)\/[^/]+\/evidence$/.test(route);
+    const payload = await boundedJson(upstream.body, upstream.ok && evidenceRoute ? 32 * 1024 * 1024 + 1024 : 4 * 1024 * 1024);
     if (upstream.ok && /^releases\/[^/]+\/gateway-config$/.test(route)) return preparedDownload(payload, path[1]);
     const preparedScanEvidence = /^scans\/[^/]+\/evidence$/.test(route) && Object.keys((payload as { bundle?: { files?: object } })?.bundle?.files ?? {}).some(path => path.startsWith("prepared/"));
+    if (upstream.ok && route.startsWith("scans/") && evidenceRoute && !preparedScanEvidence && Buffer.byteLength(JSON.stringify(payload)) > 4 * 1024 * 1024) throw new Error("LEGACY_EVIDENCE_TOO_LARGE");
     const response = json(upstream.ok && (/^(receipt-batches|preparations)\/[^/]+\/evidence$/.test(route) || preparedScanEvidence) ? receiptEvidenceSummary(payload) : payload, upstream.status);
     if (login && upstream.ok) response.cookies.set(COOKIE, token, cookieOptions);
     if (upstream.status === 401) response.cookies.set(COOKIE, "", { ...cookieOptions, maxAge: 0 });

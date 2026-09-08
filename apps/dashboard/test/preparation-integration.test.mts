@@ -17,42 +17,33 @@ import { hash, type ControlOptions } from "../../api/src/control-plane.js";
 import { preparedPolicy } from "../../api/src/control-policy.js";
 import { runPreparationWorkerOnce } from "../../api/src/preparation-worker.js";
 import { claimPreparation, failPreparation } from "../../api/src/preparation-store.js";
-import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2.js";
-// @ts-expect-error Shared pure Security helper.
-import { createPreparedReleaseBinding, preparedExecutionPolicy } from "../../../services/scanner/src/prepared-binding.mjs";
+import { syntheticPreparedFixture } from "../../../tests/api/prepared-fixture.js";
 // @ts-expect-error Shared Merkle helper.
 import { createEvidenceBundle } from "../../../services/scanner/src/evidence.mjs";
-// @ts-expect-error Shared canonical tool hash.
-import { toolSurfaceHash } from "../../gateway/src/artifact.mjs";
 
-const sha = (letter: string) => `sha256:${letter.repeat(64)}`;
-const source = { ...exactReleaseIdentity({ toolId: "npm:console-prepared", artifactDigest: sha("a"), manifestDigest: sha("b"), toolSurfaceHash: `0x${"c".repeat(64)}` }),
-  artifactDigest: sha("a"), manifestDigest: sha("b"), toolSurfaceHash: `0x${"c".repeat(64)}`, sourceType: "npm", artifactDir: "SYNTHETIC_PRIVATE_PATH_NOT_FOR_BROWSER",
-  legacyReleaseId: "console-prepared@1.0.0", version: "1.0.0", status: "UNVERIFIED", policyHash: null, reportRoot: null, validUntil: null, chain: null };
 const policy = { policyHash: hash(preparedPolicy), alias: "prepared-test", version: "1.0.0", document: preparedPolicy, deprecatedAt: null };
 
 test("real preparation API/BFF keeps source identity, roles, evidence privacy and SSE resync separate from approval", { timeout: 20000 }, async () => {
+  const fixture = await syntheticPreparedFixture();
+  const source = { ...fixture.source, sourceType: "npm", artifactDir: "SYNTHETIC_PRIVATE_PATH_NOT_FOR_BROWSER",
+    legacyReleaseId: fixture.result.releaseId, version: "1.0.0", status: "UNVERIFIED", policyHash: null, reportRoot: null, validUntil: null, chain: null };
   const directory = await mkdtemp(join(tmpdir(), "mcpshield-console-preparation-"));
   const store = await ControlStore.open(join(directory, "control.sqlite"));
   const credentials = ["operator", "reader", "admin"].map(role => ({ tenantId: "prepared-console", token: `synthetic-prepared-${role}-token`, role: role as "operator" | "reader" | "admin" }));
   credentials.push({ tenantId: "foreign", token: "synthetic-foreign-operator-token", role: "operator" });
   const options: ControlOptions = { store, credentials, artifactPath: "unused", evidencePath: join(directory, "evidence"), evidenceKey: "1".repeat(64),
-    scannerOptions: { sandbox: "docker", allowRemoteAi: false }, preparedRuntime: { builderImageDigest: sha("d"), platform: { os: "linux", architecture: "amd64" } } };
+    scannerOptions: { sandbox: "docker", allowRemoteAi: false }, preparedRuntime: fixture.config,
+    // Explicit test-only daemon double; the production inspector and strict policy are unchanged.
+    inspectPreparedRuntime: async () => fixture.trusted };
   let noDiscovery = false;
   options.prepareRuntime = async input => {
     if (noDiscovery) return { binding: null, result: null, analysis: { issues: ["PREPARED_DISCOVERY_REQUIRED"] }, cleanup: async () => {} };
-    const tools = [{ name: "private_synthetic_tool", description: "SYNTHETIC_PRIVATE_METADATA", inputSchema: { type: "object" } }];
-    const descriptor = { schemaVersion: "mcpshield.prepared-runtime.v1", stage: "CLOSURE_PREPARED", profile: "npm-closure-v1", sourceDigest: source.artifactDigest,
-      sourceTreeDigest: source.artifactDigest, lockDigest: sha("2"), lockOrigin: "SUPPLIED", builderImageDigest: input.trusted.builderImageDigest, platform: input.preparation.platform,
-      finalImageDigest: sha("e"), toolSurfaceHash: toolSurfaceHash(tools), entrypoint: { path: "server.mjs", digest: sha("f") }, argv: ["/usr/local/bin/node", "/app/server.mjs"],
-      policy: { acquisitionNetwork: "REGISTRY_ONLY_SEPARATE", installNetwork: "NONE", installScripts: "DISABLED", executionNetwork: "INTERNAL_SYNTHETIC_PROXY", user: "NON_ROOT", rootFilesystem: "READ_ONLY" } };
-    const binding = createPreparedReleaseBinding({ sourceReleaseId: source.releaseId, descriptor, executionPolicy: preparedExecutionPolicy({ collectorDigest: input.trusted.collectorDigest, observerDigest: input.trusted.observerDigest, egressAllowHosts: [] }) });
-    const result = { schemaVersion: "1.0.0", scanId: input.scanId, releaseId: source.legacyReleaseId, artifactDigest: binding.artifactDigest, toolSurfaceHash: binding.toolSurfaceHash,
-      scanStatus: "INCONCLUSIVE", findings: [], evidenceHash: `0x${"1".repeat(64)}`, source: "MOCK" };
+    const result = { ...fixture.result, scanId: input.scanId, releaseId: source.legacyReleaseId, scanStatus: "INCONCLUSIVE", source: "MOCK" };
     const analysis = { profile: preparedPolicy.profile, verdict: "ABSTAIN", issues: ["SYNTHETIC_CONTRACT_TEST_NOT_LIVE_DOCKER"] };
-    return { binding, result, analysis, cleanup: async () => {}, runtimeTag: `mcpshield-runtime-${randomUUID()}:local`,
-      bundle: createEvidenceBundle({ "report.json": { ...result, scope: "RESTRICTED_NODE_DOCKER_V1" }, "prepared/binding.json": binding, "runtime/tools.json": tools,
-        "runtime/descriptor.json": descriptor, "runtime/execution-policy.json": binding.executionPolicy, "prepared/policy-review.json": analysis }) };
+    const bundle = createEvidenceBundle({ ...fixture.documents, "report.json": { ...result, scope: "RESTRICTED_NODE_DOCKER_V1" },
+      "prepared/policy-review.json": analysis, "prepared/private-test.json": { value: "SYNTHETIC_PRIVATE_METADATA", padding: "x".repeat(5 * 1024 * 1024) } });
+    assert.ok(Buffer.byteLength(JSON.stringify(bundle)) > 4 * 1024 * 1024, "Exercise actual private evidence beyond the ordinary BFF response limit");
+    return { binding: fixture.binding, result, analysis, cleanup: async () => {}, runtimeTag: `mcpshield-runtime-${randomUUID()}:local`, bundle };
   };
   const app = await buildApp({ adminApiToken: "synthetic-legacy-admin-token", scannerApiToken: "synthetic-legacy-scanner-token", controlPlane: options });
   await app.listen({ host: "127.0.0.1", port: 0 }); await store.put(credentials[0].tenantId, "release", source.releaseId, source);
@@ -100,7 +91,7 @@ test("real preparation API/BFF keeps source identity, roles, evidence privacy an
     assert.equal((await request(exportPath, reader)).status, 403); assert.equal((await request(exportPath, foreign)).status, 404);
     const download = await request(exportPath, operator); assert.equal(download.status, 200); assert.match(download.headers.get("content-disposition")!, /^attachment; filename="mcpshield-0x[a-f0-9]{64}\.json"$/);
     assert.equal(download.headers.get("content-type"), "application/octet-stream"); assert.equal(download.headers.get("cache-control"), "no-store");
-    const config = JSON.parse(await download.text()); assert.equal(config.releaseId, derived.releaseId); assert.equal(config.tools[0].description, "SYNTHETIC_PRIVATE_METADATA");
+    const config = JSON.parse(await download.text()); assert.equal(config.releaseId, derived.releaseId); assert.deepEqual(config.tools, fixture.documents["runtime/tools.json"]);
     assert.doesNotMatch(JSON.stringify(config), /SYNTHETIC_PRIVATE_PATH_NOT_FOR_BROWSER|synthetic-prepared-operator-token|privateKey|apiToken/);
     for (const mutated of [{ ...config, privateKey: "forbidden" }, { ...config, releaseId: source.releaseId }, { ...config, binding: { ...config.binding, finalImageDigest: "image:latest" } }]) assert.throws(() => preparedDownload(mutated, derived.releaseId), /PREPARED_EXPORT_INVALID/);
     const html = renderToStaticMarkup(React.createElement(PreparationRecords, { jobs: [queued, completed], releases, operator: false }));
