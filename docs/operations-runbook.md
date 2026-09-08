@@ -60,7 +60,8 @@ Prometheus: `http://127.0.0.1:9090`. 알림은 Prometheus Alerts 화면에서 �
 실제 알림 수신자를 연결하려면 운영 Alertmanager를 설정한다. 수신자가 없는 상태를
 “사람에게 알림이 전달됨”으로 표현하지 않는다.
 
-`traceparent`를 scan 작업에 보존하고 worker→validator→chain/admission으로 전달한다.
+`traceparent`를 scan 작업에 보존하고 worker·chain outbox·Gateway→admission에 전달한다.
+validator·indexer까지의 전체 분산 trace 연결은 추가 통합 작업 중이다.
 단계명·판정·상태만 metric label로 사용한다. 릴리스·스캔 식별자는 trace attribute다.
 원문 도구 호출·메일·DB query·예외 메시지·환경변수는 자동 수집하지 않는다.
 
@@ -88,9 +89,7 @@ node --import tsx --test tests/integration/telemetry.test.ts
 4. 입력/정책을 수정해야 하는 경우 새 요청과 이의제기 이력을 연결한다.
 5. 기존 scan ID의 evidence/reportRoot를 덮어쓰지 않는다. retry 시 중복 체인 제출을 확인한다.
 
-## PostgreSQL 백업·복원
-
-### 비공개 S3 증거 저장소
+## 비공개 S3 증거 저장소
 
 기본 저장소는 로컬 암호화 파일이다. 소유한 비공개 bucket을 준비한 경우에만
 `CONTROL_S3_BUCKET`, `CONTROL_S3_REGION`을 설정한다. AWS SDK의 표준 서버 역할/IAM
@@ -111,6 +110,8 @@ bucket 관리 권한을 주지 않는다. 조건부 생성은 기존 bytes를 �
 운영 기본값으로 자동 설치하지 않는다. S3 API 호환 경계를 유지한다.
 근거: [조건부 생성](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html),
 [MinIO 공식 저장소](https://github.com/minio/minio).
+
+## PostgreSQL 백업·복원
 
 운영 플랫폼의 암호화 백업/PITR을 우선 사용한다. 접속 비밀번호를 CLI 인자·로그에 넣지 않는다.
 `PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE`, `PGPASSFILE`을 비공개 실행 환경에 설정한다.
@@ -151,6 +152,21 @@ shrinkwrap이 npm install 때 root lock에 끼워 넣은 `extraneous` 항목만 
 공개 `/mcp`와 `/try`는 합성 데이터 데모를 유지한다. 운영 credential·evidence API를 익명 데모에 노출하지 않는다.
 DB migration은 추가 방식으로 적용하고, 백업을 확인한 후 새 버전을 배포한다.
 실패 시 이전 이미지로 롤백한다. 데이터 삭제나 기존 schema 재설계는 롤백 수단으로 쓰지 않는다.
+
+## 재현 가능한 성능·장애 측정
+
+```sh
+node --import tsx scripts/ops/evaluate-admission.ts --requests 40 --concurrency 4 --identities 4
+```
+
+실제 로컬 Ganache EVM·SQLite WAL·loopback HTTP·Ed25519 검증의 hot/uniform 분포,
+명시적 API/RPC 장애 주입, 읽기 전용 signed cache·만료·폐기 후 재허용 거부,
+실제 거래의 gas 및 receipt 후 다음 확인까지 차단 시간을 측정한다.
+매 실행은 새 임시 DB/로컬 체인에서 시작하며 외부 체인·운영 DB·지갑을 사용하지 않는다.
+스캔 보고서는 합성 입력이므로 탐지율, 독립 기관 합의, 테스트넷 성능을 측정하는 명령이 아니다.
+샘플 수·동시성·플랫폼·source commit·dirty 여부가 JSON에 포함된다. 작은 smoke 표본의 p99를
+운영 SLO로 인용하지 않는다. Windows Ganache가 native μWS 대신 JS fallback을 쓰는 경고도
+측정 환경의 한계다. close-listener 경고는 해당 fallback 경로에서 관찰되며 숨기지 않는다.
 
 ### 서명 이미지·SBOM 검증
 
