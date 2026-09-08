@@ -7,7 +7,9 @@ let nextId = 0;
 let input = '';
 let bytes = 0;
 const events = [];
-const child = spawn(process.execPath, ['--require', path.join(__dirname, 'observer-preload.cjs'), process.argv[2]], {
+const restrictedNode = process.env.MCP_PREPARED_NODE_RESTRICTIONS === '1';
+const child = spawn(process.execPath, [...(restrictedNode ? ['--permission', '--allow-fs-read=/app',
+  '--allow-fs-read=/observer', '--allow-fs-read=/home/test'] : []), '--require', path.join(__dirname, 'observer-preload.cjs'), process.argv[2]], {
   cwd: path.dirname(process.argv[2]), env: process.env, stdio: ['pipe', 'pipe', 'pipe'],
 });
 function fail(error) { for (const task of pending.values()) task.reject(error); pending.clear(); }
@@ -72,7 +74,8 @@ async function main() {
     const result = await request('tools/call', call);
     callResults.push({ name: call.name, isError: result.isError === true, contentHash: require('node:crypto').createHash('sha256').update(JSON.stringify(result)).digest('hex') });
   }
-  const report = { complete: true, protocolVersion: initialized.protocolVersion, pages: cursors.size + 1, tools, events, callResults };
+  const report = { complete: true, protocolVersion: initialized.protocolVersion, pages: cursors.size + 1, tools, events, callResults,
+    ...(restrictedNode ? { permissionProfile: 'NODE_PERMISSION_READ_ONLY_V1', fullBehaviorCoverage: false } : {}) };
   if (Buffer.byteLength(JSON.stringify(report)) > 60 * 1024) throw new Error('MCP_SURFACE_SIZE_LIMIT');
   process.stdout.write(`MCPSHIELD_MCP_REPORT ${JSON.stringify(report)}\n`);
 }
