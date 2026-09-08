@@ -5,6 +5,7 @@ import { V2Relayer } from "./chain-outbox.js";
 import { createS3EvidenceStore } from "../../../packages/object-storage/index.mjs";
 import { ReceiptRelayer } from "./receipt-relayer.js";
 import { checkedPreparedConfig, checkedAiDisclosurePolicy } from "./prepared-config.js";
+import { checkedOciConfig } from "./oci-config.js";
 
 export function controlConfig(env = process.env): ControlOptions | undefined {
   if (env.CONTROL_PLANE_ENABLED !== "true") return undefined;
@@ -17,6 +18,11 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
   const preparedRuntime = env.CONTROL_PREPARED_ENABLED === "true" ? checkedPreparedConfig({ builderImageDigest: env.CONTROL_PREPARED_BUILDER_DIGEST ?? "",
     platform: { os: "linux", architecture: env.CONTROL_PREPARED_ARCHITECTURE as "amd64" | "arm64" },
     ...(env.CONTROL_PREPARED_BIN_NAME ? { binName: env.CONTROL_PREPARED_BIN_NAME } : {}) }) : undefined;
+  if (env.CONTROL_OCI_ENABLED === "true" && env.CONTROL_SANDBOX_MODE !== "docker") throw new Error("OCI_DOCKER_REQUIRED");
+  const ociRuntime = env.CONTROL_OCI_ENABLED === "true" ? checkedOciConfig({ baseImageDigest: env.CONTROL_OCI_BASE_DIGEST ?? "",
+    baseCatalogueDigest: env.CONTROL_OCI_BASE_CATALOGUE_DIGEST ?? "", trivyImageDigest: env.CONTROL_OCI_TRIVY_DIGEST ?? "",
+    databaseDir: env.CONTROL_OCI_DATABASE_DIR ?? "", databaseDigest: env.CONTROL_OCI_DATABASE_DIGEST ?? "", sinkImageDigest: env.CONTROL_OCI_SINK_DIGEST ?? "",
+    platform: { os: "linux", architecture: env.CONTROL_OCI_ARCHITECTURE as "amd64" | "arm64" } }) : undefined;
   if ([env.CONTROL_RECEIPT_RPC_URL, env.CONTROL_RECEIPT_REGISTRY_ADDRESS, env.CONTROL_RECEIPT_CHAIN_ID, env.CONTROL_RECEIPT_RELAYER_KEY].some(Boolean)
     && ![env.CONTROL_RECEIPT_RPC_URL, env.CONTROL_RECEIPT_REGISTRY_ADDRESS, env.CONTROL_RECEIPT_CHAIN_ID, env.CONTROL_RECEIPT_RELAYER_KEY].every(Boolean)) throw new Error("INCOMPLETE_RECEIPT_CHAIN_CONFIG");
   const aiProvider = env.CONTROL_AI_PROVIDER ?? "custom", aiTimeoutMs = Number(env.CONTROL_AI_TIMEOUT_MS ?? 45000);
@@ -31,7 +37,7 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
   }
   return {
     credentials,
-    preparedRuntime,
+    preparedRuntime, ociRuntime,
     databaseUrl: env.CONTROL_DATABASE_URL ?? resolve("data/control-plane.sqlite"),
     artifactPath: env.CONTROL_ARTIFACT_PATH ?? resolve("data/control-artifacts"),
     evidencePath: env.CONTROL_EVIDENCE_PATH ?? resolve("data/control-evidence"),

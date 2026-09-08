@@ -376,3 +376,26 @@ validator evidence downloads alone allow 32 MiB with a 15-second total deadline.
 Synthetic worker/signing tests prove contracts and failure handling, not actual
 Docker execution or real AI quality. PostgreSQL concurrency coverage runs only
 when `MCPSHIELD_POSTGRES_TEST_URL` is explicitly configured.
+
+### OCI preparation policy and configuration
+
+The same protected prepare/retry endpoints accept immutable OCI source releases
+only under `restricted-oci-offline-v1`. This exact policy commits
+`semanticEvidenceMode: LOCAL_CONTRACT_TEST`; it never represents production-model
+quality. The source resolver/importer still limits acquisition/snapshot bytes to
+100 MiB. `maxExpandedBytes` limits the sum of layer archives and native export to
+512 MiB; it is not a larger download allowance. Node/default policies remain 16 MiB.
+
+OCI is disabled by default. Operator configuration requires `CONTROL_OCI_ENABLED=true`,
+`CONTROL_SANDBOX_MODE=docker`, `CONTROL_OCI_ARCHITECTURE=amd64` (or `arm64`),
+`CONTROL_OCI_BASE_DIGEST`, `CONTROL_OCI_BASE_CATALOGUE_DIGEST`,
+`CONTROL_OCI_TRIVY_DIGEST`, `CONTROL_OCI_DATABASE_DIR` (absolute local directory),
+`CONTROL_OCI_DATABASE_DIGEST`, and `CONTROL_OCI_SINK_DIGEST`. Image/catalogue/database
+digests must be immutable `sha256:` values. Installed observer/sink bytes are also
+frozen into the job configuration; changing configuration never silently retries
+with different authority. API callers supply only `policyHash`, never these paths,
+images, probes or AI credentials. No Docker socket is needed by the API process.
+
+The additive OCI policy/configuration checkpoint remains fail-closed (`ABSTAIN`)
+until the strict scanner policy and independent validator rerun are connected.
+Binding, image preparation and job completion alone are not PASS or VERIFIED.
