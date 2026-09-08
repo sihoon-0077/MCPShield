@@ -69,5 +69,6 @@ async function main() {
     return values.profile === "matrix" ? measureAdmissionMatrix(options) : measureAdmission(options);
   });
   console.log(JSON.stringify(result, null, 2));
+  if (result.status === "PARTIAL_FAILED") process.exitCode = 1;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error) => { console.error(error.message); process.exitCode = 1; });

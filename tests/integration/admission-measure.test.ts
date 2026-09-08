@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import ganache from "ganache";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createServer } from "node:http";
-import { latencySummary, measureAdmission, measuredDecision, assertFreshRevocation, admissionMatrixPlan, cacheAttemptAt, benchmarkProxy, benchmarkRpcBatch, measureAdmissionMatrix, assertUnavailableAdmission } from "./admission-measure.js";
+import { latencySummary, measureAdmission, measuredDecision, assertFreshRevocation, admissionMatrixPlan, cacheAttemptAt, benchmarkProxy, benchmarkRpcBatch, measureAdmissionMatrix, assertUnavailableAdmission, safeMatrixFailure, matrixProxyFailureCode } from "./admission-measure.js";
 import { sourceSnapshot, withSourceProvenance } from "../../scripts/ops/evaluate-admission.js";
 test("load report uses nearest-rank quantiles, all samples, and bounded opt-in inputs", async () => {
   assert.deepEqual(latencySummary([100, 1, 3, 2]), { samples: 4, p50Ms: 2, p95Ms: 100, p99Ms: 100, maxMs: 100 });
@@ -62,10 +63,48 @@ test("matrix uses actual bounded HTTP proxies for delayed RPC and outages, with 
     const delayed = await post(rpc.url); assert.equal(delayed.status, 200); await delayed.body?.cancel(); assert.ok(performance.now() - began >= 45); assert.equal(upstreamCalls, 2);
     rpc.state.mode = "HTTP_503"; const fault = await post(rpc.url); assert.equal(fault.status, 503); await fault.body?.cancel(); assert.equal(upstreamCalls, 2);
     assert.equal(api.state.rejected, 1); assert.equal(rpc.state.rejected, 1); assert.equal(rpc.state.forwarded, 1);
-    assert.deepEqual(api.state.errors, []); assert.deepEqual(rpc.state.errors, []);
+    assert.equal(api.state.errors, 0); assert.equal(rpc.state.errors, 0);
   } finally {
     controller.abort(); await api?.close(); await rpc?.close(); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve()));
   }
+});
+
+test("matrix failures keep only fixed codes, numeric counts and relative code frames, never raw errors or payloads", () => {
+  let actualError: any;
+  try { assert.equal(48, 0, "BENCHMARK_RPC_PROXY_FAULT_COUNT"); } catch (error) { actualError = error; }
+  actualError.stack = "AssertionError: private-token-and-tool-body\n    at run (C:\\Users\\private-user\\repo\\tests\\integration\\admission-measure.ts:274:7)";
+  const failure = safeMatrixFailure(actualError, "INVARIANTS");
+  assert.deepEqual(failure, { code: "BENCHMARK_RPC_PROXY_FAULT_COUNT", stage: "INVARIANTS", frame: "tests/integration/admission-measure.ts:274:7", actual: 48, expected: 0 });
+  assert.deepEqual(safeMatrixFailure({ message: "secret-token", actual: { password: "secret" }, stack: "remote/private/file:1:2" }, "secret-stage"), { code: "BENCHMARK_UNCLASSIFIED_FAILURE", stage: "UNKNOWN" });
+  assert.equal(matrixProxyFailureCode(Error("SERVICE_TIMEOUT")), "SERVICE_TIMEOUT");
+  assert.equal(matrixProxyFailureCode({ cause: { code: "ECONNRESET" }, message: "secret" }), "ECONNRESET");
+  assert.equal(matrixProxyFailureCode(Error("secret-token")), "UNCLASSIFIED_PROXY_FAULT");
+  assert.equal(safeMatrixFailure(Error("BENCHMARK_SECRET_TOKEN"), "SETUP").code, "BENCHMARK_UNCLASSIFIED_FAILURE");
+});
+
+test("a real failed HTTP proxy request records bounded codes rather than raw transport errors", async () => {
+  const upstream = createServer((request) => request.socket.destroy());
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  const proxy = await benchmarkProxy(`http://127.0.0.1:${(upstream.address() as any).port}`, "RPC", new AbortController().signal);
+  try {
+    const response = await fetch(proxy.url, { method: "POST", body: "{}", signal: AbortSignal.timeout(3000) });
+    assert.equal(response.status, 502); await response.body?.cancel(); assert.equal(proxy.state.errors, 1);
+    assert.equal(Object.values(proxy.state.errorCodes).reduce((sum, count) => sum + count, 0), 1);
+    assert.equal(JSON.stringify(proxy.state).includes("stack"), false);
+  } finally { await proxy.close(); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
+});
+
+test("an injected setup failure returns partial JSON with source boundaries and safe cleanup diagnostics", async () => {
+  let closed = false;
+  const original = Object.getOwnPropertyDescriptor(ganache, "server")!;
+  Object.defineProperty(ganache, "server", { configurable: true, value: () => ({ listen: async () => { throw Error("secret-injected-setup-failure"); },
+    close: async () => { closed = true; throw Error("secret-injected-cleanup-failure"); } }) });
+  try {
+    const result = await withSourceProvenance(() => measureAdmissionMatrix({ identities: 1, requests: 1, concurrency: 1 }));
+    assert.equal(result.status, "PARTIAL_FAILED"); assert.equal(result.failure.stage, "SETUP"); assert.equal(result.cleanupFailure.stage, "CLEANUP");
+    assert.equal(result.setup.confirmedTransactions, 0); assert.deepEqual(result.cells, []); assert.equal(closed, true);
+    assert.deepEqual(result.provenance.start, result.provenance.end); assert.equal(JSON.stringify(result).includes("secret-injected"), false);
+  } finally { Object.defineProperty(ganache, "server", original); }
 });
 
 test("native RPC batch matches out-of-order IDs and rejects missing, duplicate or error responses", async () => {

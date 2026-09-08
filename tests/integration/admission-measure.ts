@@ -71,11 +71,32 @@ export function assertUnavailableAdmission(body: any, releaseId: string, policyH
   assert.ok(typeof body.checkedAt === "string" && Number.isFinite(Date.parse(body.checkedAt)) && typeof body.traceId === "string" && /^[0-9a-f-]{32,36}$/i.test(body.traceId));
 }
 
+export function matrixProxyFailureCode(error: any) {
+  if (error?.message === "SERVICE_TIMEOUT") return "SERVICE_TIMEOUT";
+  if (["SERVICE_RESPONSE_TOO_LARGE", "BENCHMARK_PROXY_BODY_LIMIT"].includes(error?.message)) return "BODY_LIMIT";
+  const code = error?.cause?.code ?? error?.code;
+  if (["ECONNRESET", "ECONNREFUSED", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "ABORT_ERR"].includes(code)) return code as string;
+  return "UNCLASSIFIED_PROXY_FAULT";
+}
+
+// Never serialize error.message, raw assertion values, response bodies or absolute stack paths.
+export function safeMatrixFailure(error: any, stage: string) {
+  // Node AssertionError appends numeric details after the caller's fixed message.
+  const firstLine = String(error?.message ?? "").split(/\r?\n/, 1)[0];
+  const code = ["BENCHMARK_API_CACHE_ATTEMPT_COUNT", "BENCHMARK_API_REQUEST_COUNT", "BENCHMARK_UNSIGNED_RESPONSE_COUNT", "BENCHMARK_KEYSPACE_COVERAGE",
+    "BENCHMARK_FULL_KEYSPACE_COVERAGE", "BENCHMARK_API_PROXY_FAULT_COUNT", "BENCHMARK_RPC_PROXY_FAULT_COUNT", "BENCHMARK_TOTAL_BUDGET_EXCEEDED",
+    "BENCHMARK_SETUP_BUDGET_EXCEEDED"].includes(firstLine) ? firstLine : "BENCHMARK_UNCLASSIFIED_FAILURE";
+  const frame = String(error?.stack ?? "").match(/(?:^|[\\/])(admission-measure\.ts):(\d+):(\d+)/m);
+  return { code, stage: ["SETUP", "WARMUP", "REQUESTS", "INVARIANTS", "CLEANUP"].includes(stage) ? stage : "UNKNOWN",
+    ...(frame ? { frame: `tests/integration/${frame[1]}:${frame[2]}:${frame[3]}` } : {}),
+    ...(Number.isFinite(error?.actual) ? { actual: error.actual } : {}), ...(Number.isFinite(error?.expected) ? { expected: error.expected } : {}) };
+}
+
 /** Actual HTTP fault boundary, never a replacement chainDecision or fabricated proof. */
 export async function benchmarkProxy(upstream: string, kind: "API" | "RPC", signal: AbortSignal) {
   const target = new URL(upstream);
   assert.ok(target.protocol === "http:" && target.hostname === "127.0.0.1" && !target.username && !target.password && target.pathname === "/" && !target.search && !target.hash);
-  const state = { mode: "NORMAL" as "NORMAL" | "DELAY_50MS" | "HTTP_503", received: 0, forwarded: 0, rejected: 0, errors: [] as Error[] };
+  const state = { mode: "NORMAL" as "NORMAL" | "DELAY_50MS" | "HTTP_503", received: 0, forwarded: 0, rejected: 0, errors: 0, errorCodes: {} as Record<string, number> };
   const closing = new AbortController();
   const joinedSignal = AbortSignal.any([signal, closing.signal]);
   const server = createServer(async (request, response) => {
@@ -95,7 +116,7 @@ export async function benchmarkProxy(upstream: string, kind: "API" | "RPC", sign
       response.writeHead(result.statusCode, { "content-type": "application/json" }).end(result.body);
     } catch (error) {
       // Unexpected proxy faults must fail the benchmark, not inflate the expected-outage count.
-      if (!joinedSignal.aborted) state.errors.push(error as Error);
+      if (!joinedSignal.aborted) { state.errors++; const code = matrixProxyFailureCode(error); state.errorCodes[code] = (state.errorCodes[code] ?? 0) + 1; }
       response.writeHead(502).end();
     }
   });
@@ -124,7 +145,7 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
   const plan = admissionMatrixPlan(options);
   assert.ok(plan.fullMatrix || plan.identities <= 64 && plan.requestsPerUniformCell <= 100, "PILOT_LIMIT: use explicit --full-matrix for the fixed 10,000-key / 99,000-request workload");
   const began = performance.now(), started = new Date().toISOString(), controller = new AbortController();
-  // CLI parent additionally kills its child at 180s, including synchronous compiler stalls.
+  // CLI parent also bounds synchronous compiler stalls using this profile's hard cap.
   const deadline = setTimeout(() => controller.abort(new Error("BENCHMARK_TOTAL_BUDGET_EXCEEDED")), plan.totalBudgetMs - 5000);
   const budget = (setup = false) => { controller.signal.throwIfAborted(); assert.ok(!setup || performance.now() - began < plan.setupBudgetMs, "BENCHMARK_SETUP_BUDGET_EXCEEDED"); };
   const resourceSamples: { benchmarkProgress: string; completed: number; total: number; elapsedMs: number; rssBytes: number; heapUsedBytes: number; cpuUserMicros: number; cpuSystemMicros: number }[] = [];
@@ -138,6 +159,9 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
   let provider: JsonRpcProvider | undefined, app: Awaited<ReturnType<typeof buildApp>> | undefined, store: ControlStore | undefined;
   let reader: ReturnType<typeof v2ChainReader> | undefined, rpcProxy: Awaited<ReturnType<typeof benchmarkProxy>> | undefined, apiProxy: Awaited<ReturnType<typeof benchmarkProxy>> | undefined;
   const gas: Record<string, number[]> = {}, cells: any[] = [];
+  let stage = "SETUP", currentCell: Record<string, any> | undefined, partialCell: (() => Record<string, any>) | undefined;
+  let setup: Record<string, any> = { status: "INCOMPLETE", confirmedTransactions: 0, registeredAndVerifiedOnChain: 0, validatorExecution: "EXPLICIT_TEST_ONLY_SIGNING" };
+  let result: Record<string, any> | undefined;
   const parallel = async (count: number, run: (index: number) => Promise<void>) => {
     let next = 0;
     await Promise.all(Array.from({ length: Math.min(plan.concurrency, count) }, async () => { while (next < count) { budget(); await run(next++); } }));
@@ -156,6 +180,7 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
     const published = await (await policy.publish(policyHash, policyHash)).wait(); assert.equal(published.status, 1);
     gas.publishPolicy = [Number(published.gasUsed)];
     const deploymentMs = performance.now() - deploymentStart;
+    setup = { ...setup, confirmedTransactions: 4, deploymentMs: Math.round(deploymentMs) };
     progress("DEPLOYMENT_CONFIRMED", 4, 4);
     const now = Number((await provider.getBlock("latest"))!.timestamp);
     let nonce = await provider.getTransactionCount(owner.address, "pending");
@@ -198,11 +223,14 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
       });
       const decisions = await batch(releases.slice(offset).map(release => ({ method: "eth_call", params: [{ to: deployment.releaseRegistry.address, data: registry.interface.encodeFunctionData("getDecision", [release.releaseId, policyHash]) }, "latest"] })));
       decisions.forEach(value => { const decision = registry.interface.decodeFunctionResult("getDecision", value)[0]; assert.equal(Number(decision.status), 1); assert.equal(Number(decision.approvals), 2); });
+      setup = { ...setup, confirmedTransactions: 4 + receiptHashes.length, registeredAndVerifiedOnChain: releases.length };
       if (releases.length >= nextSetupProgress || releases.length === plan.identities) { progress("ACTUAL_CHAIN_SETUP", releases.length, plan.identities); nextSetupProgress += 1000; }
     }
     await batch([{ method: "miner_start", params: [1] }]);
     assert.equal(receiptHashes.length, plan.identities * 3);
     const registrationMs = performance.now() - registrationStart, setupMs = performance.now() - began;
+    setup = { status: "COMPLETE", elapsedMs: Math.round(setupMs), deploymentMs: Math.round(deploymentMs), registrationsAndVotesMs: Math.round(registrationMs), confirmedTransactions: 4 + receiptHashes.length,
+      receiptDigest: hash(receiptHashes), registeredAndVerifiedOnChain: releases.length, validatorExecution: "EXPLICIT_TEST_ONLY_SIGNING", wallClockUnmodified: true, attestationLifetimeSeconds: 86400 };
     rpcProxy = await benchmarkProxy(rpc, "RPC", controller.signal);
     reader = v2ChainReader({ rpcUrls: [rpcProxy.url], registryContract: deployment.releaseRegistry.address, chainId: 1337, confirmations: 1 });
     const key = generateKeyPairSync("ed25519"), token = randomUUID();
@@ -218,6 +246,7 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
       // A fresh real loopback endpoint namespaces the native cache; no internal cache mutation.
       apiProxy = await benchmarkProxy(`http://127.0.0.1:${(app.server.address() as any).port}`, "API", controller.signal);
       const api = apiProxy, keyspace = distribution === "HOT" ? 1 : plan.identities, requests = distribution === "HOT" ? plan.requestsPerHotCell : plan.requestsPerUniformCell;
+      currentCell = { distribution, keyspace, requests, targetCacheAttemptRate, rpcCondition }; partialCell = undefined; stage = "WARMUP";
       const proxy: Awaited<ReturnType<typeof benchmarkProxy>> = rpcProxy;
       let verifiedUnsignedResponses = 0;
       const check = async (index: number, cacheAttempt: boolean, fault: boolean) => {
@@ -259,6 +288,12 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
       const latencies: number[] = [], failureCodes: Partial<Record<ExpectedFailure, number>> = {}; let allowed = 0, attempts = 0, cacheHits = 0, completed = 0;
       const visited = new Set<number>();
       const cellStart = performance.now();
+      partialCell = () => ({ ...currentCell, completed, allowed, failClosedErrors: completed - allowed, failureCodes: { ...failureCodes }, cacheHits,
+        actualCacheAttempts: attempts, uniqueKeysVisited: visited.size, verifiedUnsignedResponses,
+        ...(latencies.length ? latencySummary(latencies) : {}), postCellInvariantsAccepted: false,
+        warmup: { requests: warmupRequests, allowed: warmupAllowed, failClosedErrors: warmupRequests - warmupAllowed, failureCodes: { ...warmupFailureCodes }, elapsedMs: Math.round(warmupMs) },
+        proxyFaults: { api: api.state.errors, apiCodes: { ...api.state.errorCodes }, rpc: proxy.state.errors, rpcCodes: { ...proxy.state.errorCodes } } });
+      stage = "REQUESTS";
       await parallel(requests, async index => {
         visited.add(index % keyspace);
         const cacheAttempt = cacheAttemptAt(index, targetCacheAttemptRate); attempts += Number(cacheAttempt);
@@ -267,11 +302,14 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
         if (result.failureCode) failureCodes[result.failureCode] = (failureCodes[result.failureCode] ?? 0) + 1;
         completed++; if (completed % 1000 === 0) progress(`${distribution}:${targetCacheAttemptRate}:${rpcCondition}`, completed, requests);
       });
-      assert.equal(api.state.rejected - apiStart.rejected, attempts); assert.equal(api.state.received - apiStart.received, requests);
-      assert.equal(verifiedUnsignedResponses, rpcCondition === "HTTP_503" ? requests - attempts : failureCodes.FRESH_VIEW_UNAVAILABLE_UNSIGNED ?? 0);
-      assert.equal(visited.size, Math.min(keyspace, requests));
-      if (plan.fullMatrix && distribution === "UNIFORM_CYCLIC") assert.equal(visited.size, 10_000);
-      assert.equal(api.state.errors.length, 0); assert.equal(proxy.state.errors.length, 0);
+      stage = "INVARIANTS";
+      assert.equal(api.state.rejected - apiStart.rejected, attempts, "BENCHMARK_API_CACHE_ATTEMPT_COUNT");
+      assert.equal(api.state.received - apiStart.received, requests, "BENCHMARK_API_REQUEST_COUNT");
+      assert.equal(verifiedUnsignedResponses, rpcCondition === "HTTP_503" ? requests - attempts : failureCodes.FRESH_VIEW_UNAVAILABLE_UNSIGNED ?? 0, "BENCHMARK_UNSIGNED_RESPONSE_COUNT");
+      assert.equal(visited.size, Math.min(keyspace, requests), "BENCHMARK_KEYSPACE_COVERAGE");
+      if (plan.fullMatrix && distribution === "UNIFORM_CYCLIC") assert.equal(visited.size, 10_000, "BENCHMARK_FULL_KEYSPACE_COVERAGE");
+      assert.equal(api.state.errors, 0, "BENCHMARK_API_PROXY_FAULT_COUNT");
+      assert.equal(proxy.state.errors, 0, "BENCHMARK_RPC_PROXY_FAULT_COUNT");
       const elapsedMs = performance.now() - cellStart;
       cells.push({ distribution, keyspace, uniqueKeysVisited: visited.size, keyspaceCoverage: visited.size / keyspace,
         targetCacheAttemptRate, actualCacheAttempts: attempts, actualCacheAttemptRate: 100 * attempts / requests, observedCacheHitRate: 100 * cacheHits / requests,
@@ -282,12 +320,13 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
         transport: { apiForwarded: api.state.forwarded - apiStart.forwarded, api503: api.state.rejected - apiStart.rejected,
           rpcRequests: proxy.state.received - rpcStart.received, rpcForwarded: proxy.state.forwarded - rpcStart.forwarded, rpc503: proxy.state.rejected - rpcStart.rejected, verifiedUnsignedResponses } });
       await api.close(); apiProxy = undefined;
+      // Persist each completed aggregate in the captured stream before a later cell/fatal exit can lose it.
+      process.stderr.write(`${JSON.stringify({ benchmarkCell: cells.at(-1) })}\n`);
       progress("CELLS_COMPLETED", cells.length, plan.cells);
     }
-    return { status: "MEASURED", profile: plan.fullMatrix ? "10000_KEY_OPT_IN_MATRIX" : "64_KEY_BOUNDED_PILOT", measuredAt: started, inputs: plan,
+    result = { status: "MEASURED", profile: plan.fullMatrix ? "10000_KEY_OPT_IN_MATRIX" : "64_KEY_BOUNDED_PILOT", measuredAt: started, inputs: plan,
       environment: { hostClass: "SHARED_DEVELOPMENT_HOST", chain: "LOCAL_GANACHE_EVM", blockTimeSeconds: 1, setupMining: "NATIVE_MANUAL_BATCH_THEN_PERIODIC", database: "SQLITE_WAL", http: "LOOPBACK_ACTUAL_HTTP_PROXIES", node: process.version, platform: process.platform, logicalProcessors: availableParallelism() },
-      setup: { elapsedMs: Math.round(setupMs), deploymentMs: Math.round(deploymentMs), registrationsAndVotesMs: Math.round(registrationMs), confirmedTransactions: 4 + receiptHashes.length,
-        receiptDigest: hash(receiptHashes), registeredAndVerifiedOnChain: releases.length, validatorExecution: "EXPLICIT_TEST_ONLY_SIGNING", wallClockUnmodified: true, attestationLifetimeSeconds: 86400 },
+      setup,
       totalElapsedMs: Math.round(performance.now() - began), warmupElapsedMs: cells.reduce((sum, cell) => sum + cell.warmup.elapsedMs, 0), cells, resourceSamples,
       gas: Object.fromEntries(Object.entries(gas).map(([kind, values]) => [kind, { samples: values.length, min: Math.min(...values), max: Math.max(...values), mean: Math.round(values.reduce((a, b) => a + b, 0) / values.length) }])),
       limitations: ["Synthetic report roots are signed only by benchmark code; this does not run or bypass the production independent scanner/validator.",
@@ -301,11 +340,23 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
         "Warmup unavailability is counted without retrying until success; no clock freeze, cache TTL change, or forced hit rate is used.",
         "Shared development host, not an isolated idle lab; other local work may contend for CPU/memory. Resource samples are observations, not continuous peak-memory measurements.",
         "Local closed-loop samples are not production capacity or a production p99 SLO. Only the explicit full profile visits 10,000 keys; existing smoke separately measures fresh revocation."] };
+  } catch (error) {
+    result = { status: "PARTIAL_FAILED", profile: plan.fullMatrix ? "10000_KEY_OPT_IN_MATRIX" : "64_KEY_BOUNDED_PILOT", measuredAt: started, inputs: plan,
+      environment: { hostClass: "SHARED_DEVELOPMENT_HOST", chain: "LOCAL_GANACHE_EVM", node: process.version, platform: process.platform },
+      setup, cells: [...cells], partialCell: partialCell?.() ?? currentCell ?? null, failure: safeMatrixFailure(error, stage),
+      totalElapsedMs: Math.round(performance.now() - began), resourceSamples,
+      limitations: ["Failed partial attempt, not a complete benchmark or production SLO. Partial-cell counts and quantiles did not pass every post-cell invariant.",
+        "Completed cell aggregates are also streamed before proceeding. Fatal process termination still requires recovery from captured output."] };
   } finally {
     clearTimeout(deadline); controller.abort(); reader?.close();
-    if (apiProxy) await apiProxy.close(); if (app) await app.close(); else if (store) await store.close();
-    if (rpcProxy) await rpcProxy.close(); provider?.destroy(); await chain.close(); await rm(directory, { recursive: true, force: true });
+    const cleanups = [async () => { if (apiProxy) await apiProxy.close(); }, async () => { if (app) await app.close(); else if (store) await store.close(); },
+      async () => { if (rpcProxy) await rpcProxy.close(); }, async () => { provider?.destroy(); await chain.close(); }, async () => { await rm(directory, { recursive: true, force: true }); }];
+    for (const close of cleanups) try { await close(); } catch (error) {
+      // Keep already collected evidence and attempt the remaining exact-resource cleanup.
+      result = { ...result, status: "PARTIAL_FAILED", cleanupFailure: safeMatrixFailure(error, "CLEANUP") };
+    }
   }
+  return result!;
 }
 
 export function assertFreshRevocation(result: MeasuredDecision) {
