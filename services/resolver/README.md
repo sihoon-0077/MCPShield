@@ -82,9 +82,20 @@ runs as UID/GID 1000 with a read-only root filesystem, memory/pid/CPU limits,
 bounded tmpfs and a task-owned Docker volume. It does not load package `.npmrc`,
 uses offline npm cache data, disables lifecycle scripts and bin links, and hashes
 every installed file including node_modules. Candidate code is not invoked.
+Root `.npm-extension.cjs`/`.mjs` files are moved only within the task-owned
+private volume during npm installation, then restored byte-for-byte before
+closure hashing and source review. This matches the generator's no-extension
+graph without dropping those files from security analysis. npm 12 still checks
+extension hashes under `--ignore-extension`, so extension/patch-dependent locks
+and package extension/patch configuration are explicitly unsupported rather
+than executed or silently accepted. See [npm's native extension lock check](https://github.com/npm/cli/blob/v12.0.2/lib/utils/validate-lockfile.js).
 The returned Docker tar is validated again (paths, links, permissions, bytes and
 hashes) without host extraction/execution before native Docker ADD builds the
 final image. npm/daemon stderr is discarded, not exposed as evidence.
+The trusted build explicitly normalizes the ADD destination `/app` to 0555.
+Before returning CLOSURE_PREPARED, a never-started final-image export must match
+the original closure report, source/entrypoint commitment and strict permissions.
+Export failures return only fixed stage/code diagnostics, never private output.
 
 On success the result remains `status: INCONCLUSIVE`, `ready: false` and
 `phase: CLOSURE_PREPARED`. `imageDigestKind: DOCKER_IMAGE_CONFIG_ID` distinguishes

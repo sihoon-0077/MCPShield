@@ -60,7 +60,7 @@ function dependencyMap(value) {
 export function validateLocklessPackageDependencies(pkg) {
   if (!record(pkg)) fail('RUNTIME_PACKAGE_JSON_INVALID');
   for (const field of dependencyFields) dependencyMap(pkg[field]);
-  if (pkg.workspaces !== undefined || pkg.overrides !== undefined ||
+  if (pkg.workspaces !== undefined || pkg.overrides !== undefined || pkg.packageExtensions !== undefined || pkg.patchedDependencies !== undefined ||
     [pkg.bundleDependencies, pkg.bundledDependencies].some((value) => value !== undefined && (!Array.isArray(value) || value.length))) {
     fail('RUNTIME_DEPENDENCY_LAYOUT_UNSUPPORTED');
   }
@@ -73,6 +73,12 @@ function inspectLock(bytes, pkg) {
   if (!record(lock) || ![2, 3].includes(lock.lockfileVersion) || !record(lock.packages) ||
     Object.keys(lock.packages).length > 1024 || !record(lock.packages[''])) fail('RUNTIME_LOCK_FORMAT_UNSUPPORTED');
   const root = lock.packages[''];
+  // This fixed profile never evaluates extensions or applies patch files. Do
+  // not accept a graph whose provenance depends on either, even if SRI is valid.
+  if (lock.npmExtensionHash !== undefined || lock.packageExtensionsHash !== undefined ||
+    Object.values(lock.packages).some((entry) => record(entry) &&
+      ['npmExtensionApplied', 'packageExtensionsApplied', 'patched', 'npmExtensionHash', 'packageExtensionsHash', 'patchedDependencies', 'packageExtensions']
+        .some((key) => entry[key] !== undefined))) fail('RUNTIME_LOCK_EXTENSION_UNSUPPORTED');
   if (lock.name !== pkg.name || lock.version !== pkg.version || root.name !== pkg.name || root.version !== pkg.version) fail('RUNTIME_LOCK_IDENTITY_MISMATCH');
   for (const field of dependencyFields) {
     if (canonicalJson(dependencyMap(pkg[field])) !== canonicalJson(dependencyMap(root[field]))) fail('RUNTIME_LOCK_MANIFEST_MISMATCH');

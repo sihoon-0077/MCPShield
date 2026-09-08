@@ -2,6 +2,9 @@ ARG BUILDER_IMAGE
 FROM ${BUILDER_IMAGE}
 USER 0
 ADD closure.tar /app/
+# ADD creates its destination root separately from the normalized tar entries.
+# Only trusted chmod runs; candidate source remains data during image creation.
+RUN ["/bin/chmod", "0555", "/app"]
 COPY closure-report.json /mcpshield-closure-report.json
 USER 1000:1000
 WORKDIR /app
