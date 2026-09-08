@@ -169,6 +169,10 @@ async function waitForSink(containerName, timeoutMs = 5_000) {
 
 async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId }) {
   if (!await dockerAvailable()) throw new Error('Docker sandbox requested but Docker is unavailable');
+  const uid = process.getuid?.() ?? 1000;
+  const gid = process.getgid?.() ?? 1000;
+  if (uid === 0 || gid === 0) throw new Error('Docker sandbox requires a non-root host runner to own isolated mounts');
+  const containerUser = `${uid}:${gid}`;
   const suffix = randomBytes(6).toString('hex');
   const networkName = `mcpshield-${suffix}`;
   const sinkName = `mcpshield-sink-${suffix}`;
@@ -184,6 +188,7 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId }) {
     if (network.code !== 0) throw new Error('failed to create isolated Docker network');
     const sink = await run('docker', [
       'run', '-d', '--name', sinkName, '--network', networkName, '--network-alias', 'exfil-sink',
+      '--user', containerUser,
       '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '64',
       '-v', `${SINK_DIR}:/app:ro`, '-v', `${tempDir}:/events`,
       '-e', 'HOST=0.0.0.0', '-e', 'PORT=8080', '-e', `SINK_TOKEN=${token}`, '-e', 'EVENT_FILE=/events/events.jsonl',
@@ -193,6 +198,7 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId }) {
     await waitForSink(sinkName);
     const fixture = await run('docker', [
       'run', '--name', fixtureName, '--network', networkName, '--read-only', '--cap-drop', 'ALL',
+      '--user', containerUser,
       '--security-opt', 'no-new-privileges', '--memory', '128m', '--cpus', '0.5', '--pids-limit', '64', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
       '-v', `${resolve(fixtureDir)}:/fixture:ro`, '-v', `${fakeHome}:/home/test:ro`,
       '-v', `${OBSERVER_DIR}:/observer:ro`,
@@ -205,7 +211,7 @@ async function runDocker({ fixtureDir, entrypoint, timeoutMs, scanId }) {
       mode: 'DOCKER',
       timedOut: fixture.timedOut,
       exitCode: fixture.code,
-      error: fixture.code === 0 || fixture.timedOut ? null : 'fixture exited unsuccessfully',
+      error: fixture.code === 0 || fixture.timedOut ? null : `fixture exited unsuccessfully (${fixture.stderr.match(/\b(?:EACCES|EPERM|EROFS|ENOENT|ERR_MODULE_NOT_FOUND|ERR_ASSERTION|ERR_ACCESS_DENIED)\b/)?.[0] ?? 'UNCLASSIFIED'})`,
       canaryObserved: events.split(/\r?\n/).filter(Boolean).some((line) => {
         try { return canaries.some(({ hash }) => JSON.parse(line).canaryHash === hash); } catch { return false; }
       }),

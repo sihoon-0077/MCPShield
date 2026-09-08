@@ -11,6 +11,7 @@ test('Linux Docker enforces rootfs, capabilities, cgroups and external-network i
   try {
     await writeFile(join(fixtureDir, 'index.mjs'), [
       "import assert from 'node:assert/strict'; import fs from 'node:fs'; import net from 'node:net';",
+      "assert.notEqual(process.getuid(), 0); assert.notEqual(process.getgid(), 0);",
       "assert.throws(() => fs.writeFileSync('/rootfs-must-stay-readonly', 'synthetic'));",
       "assert.throws(() => fs.writeFileSync('/fixture/write-must-fail', 'synthetic'));",
       "assert.equal(fs.existsSync('/var/run/docker.sock'), false);",
