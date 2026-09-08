@@ -226,10 +226,10 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
           }
           return response;
         };
-        const expected: ExpectedFailure[] = cacheAttempt ? ["EMPTY_CACHE", "EXPIRED_CACHE", "SUPERSEDED_BY_DENIAL"] : [fault ? "RPC_UNAVAILABLE_UNSIGNED" : "FRESH_VIEW_UNAVAILABLE_UNSIGNED"];
+        const expected: ExpectedFailure[] = cacheAttempt ? ["EMPTY_CACHE", "EXPIRED_CACHE", "SUPERSEDED_BY_DENIAL"] : [fault ? "RPC_UNAVAILABLE_UNSIGNED" : "FRESH_VIEW_UNAVAILABLE_UNSIGNED", "SUPERSEDED_BY_DENIAL"];
         const result = await measuredDecision(() => getSignedAdmission({ ...base, apiBaseUrl: api.url, fetchImpl, identity: release, controlReleaseId: release.releaseId }), expected);
         if (result.failureCode === "SUPERSEDED_BY_DENIAL") assert.ok(verifiedUnsignedResponses > 0, "Supersession must follow an independently checked unsigned unavailable response");
-        if (!cacheAttempt && result.outcome === "FAIL_CLOSED_ERROR") assert.ok(verifiedUnsigned, "An unknown signature/protocol failure is never an expected unavailable sample");
+        else if (!cacheAttempt && result.outcome === "FAIL_CLOSED_ERROR") assert.ok(verifiedUnsigned, "An unknown signature/protocol failure is never an expected unavailable sample");
         if (!cacheAttempt && fault) assert.equal(result.outcome, "FAIL_CLOSED_ERROR");
         if (result.outcome === "ALLOW") assert.equal(result.cacheHit, cacheAttempt);
         assert.notEqual(result.outcome, "BLOCK", "Verified setup has no revocations; unexpected signed BLOCK is not an outage sample");
@@ -238,7 +238,11 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
       proxy.state.mode = "NORMAL";
       const warmupStarted = performance.now(), warmupRequests = Math.min(1024, keyspace), warmupRpcStart = proxy.state.received;
       let warmupAllowed = 0;
-      await parallel(warmupRequests, async index => { warmupAllowed += Number((await check(index, false, false)).outcome === "ALLOW"); });
+      const warmupFailureCodes: Partial<Record<ExpectedFailure, number>> = {};
+      await parallel(warmupRequests, async index => {
+        const result = await check(index, false, false); warmupAllowed += Number(result.outcome === "ALLOW");
+        if (result.failureCode) warmupFailureCodes[result.failureCode] = (warmupFailureCodes[result.failureCode] ?? 0) + 1;
+      });
       const warmupMs = performance.now() - warmupStarted, warmupRpcRequests = proxy.state.received - warmupRpcStart;
       const warmupUnavailable = verifiedUnsignedResponses; verifiedUnsignedResponses = 0;
       proxy.state.mode = rpcCondition as typeof proxy.state.mode;
@@ -265,7 +269,8 @@ export async function measureAdmissionMatrix(options: Parameters<typeof admissio
         targetCacheAttemptRate, actualCacheAttempts: attempts, actualCacheAttemptRate: 100 * attempts / requests, observedCacheHitRate: 100 * cacheHits / requests,
         rpcCondition, ...latencySummary(latencies), elapsedMs: Math.round(elapsedMs), throughputQps: Number((requests * 1000 / elapsedMs).toFixed(2)),
         allowed, failClosedErrors: requests - allowed, failClosedErrorRate: (requests - allowed) / requests, unexpectedErrors: 0, failureCodes, cacheHits,
-        warmup: { requests: warmupRequests, allowed: warmupAllowed, failClosedErrors: warmupUnavailable, elapsedMs: Math.round(warmupMs), rpcRequests: warmupRpcRequests, rpcCondition: "NORMAL", includedInRequestLatencies: false },
+        warmup: { requests: warmupRequests, allowed: warmupAllowed, failClosedErrors: warmupRequests - warmupAllowed, verifiedUnsignedResponses: warmupUnavailable, failureCodes: warmupFailureCodes,
+          elapsedMs: Math.round(warmupMs), rpcRequests: warmupRpcRequests, rpcCondition: "NORMAL", includedInRequestLatencies: false },
         transport: { apiForwarded: api.state.forwarded - apiStart.forwarded, api503: api.state.rejected - apiStart.rejected,
           rpcRequests: proxy.state.received - rpcStart.received, rpcForwarded: proxy.state.forwarded - rpcStart.forwarded, rpc503: proxy.state.rejected - rpcStart.rejected, verifiedUnsignedResponses } });
       await api.close(); apiProxy = undefined;
