@@ -431,3 +431,13 @@ Only after this independent rerun does it request current nonce/deadline/version
 and reconstruct the pinned EIP-712 payload. Original and independent report roots
 are linked in the private local verification receipt with the test-only quality
 label. This is neither production-model quality nor an arbitrary-native-code proof.
+
+`node --import tsx --test tests/api/oci-fullcycle.test.ts` has a separate native
+Linux gate: set `MCPSHIELD_DOCKER_TESTS=1`, `MCPSHIELD_OCI_PROFILE_TESTS=1`,
+`MCPSHIELD_RUNTIME_BUILDER_IMAGE`, `MCPSHIELD_TRIVY_IMAGE` (both exact local CIDs),
+and `MCPSHIELD_TRIVY_DATABASE_DIR`. It uses the authored approved-base source fixture,
+actual local-layout resolver and worker, four single-key validator CLI processes,
+V2 quorum/indexer and two separate Gateway denial processes. Source and expanded
+byte counts, independent roots and bounded Docker create/start evidence are checked.
+It does not download external images or call paid AI; unsupported hosts skip the
+native test. A portable pass must not be reported as a native fullcycle pass.
