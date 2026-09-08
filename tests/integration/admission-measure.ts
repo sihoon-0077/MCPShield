@@ -9,7 +9,7 @@ import ganache from "ganache";
 import { Contract, JsonRpcProvider, NonceManager, Wallet, id } from "ethers";
 import { deployV2 } from "../../contracts/scripts/deploy-v2.js";
 import { attestationV2Domain, attestationV2Types, bytes32, createReleaseRegistryV2, exactReleaseIdentity } from "../../packages/contracts-sdk/src/v2.js";
-import { boundedServiceRequest, v2RpcRequest } from "../../packages/contracts-sdk/src/transport.js";
+import { boundedServiceRequest, TransportUnavailableError, v2RpcRequest } from "../../packages/contracts-sdk/src/transport.js";
 import { buildApp } from "../../apps/api/src/app.js";
 import { ControlStore } from "../../apps/api/src/control-store.js";
 import { defaultPolicy, hash } from "../../apps/api/src/control-plane.js";
@@ -72,6 +72,7 @@ export function assertUnavailableAdmission(body: any, releaseId: string, policyH
 }
 
 export function matrixProxyFailureCode(error: any) {
+  if (error instanceof TransportUnavailableError) return "SERVICE_TRANSPORT_UNAVAILABLE";
   if (error?.message === "SERVICE_TIMEOUT") return "SERVICE_TIMEOUT";
   if (["SERVICE_RESPONSE_TOO_LARGE", "BENCHMARK_PROXY_BODY_LIMIT"].includes(error?.message)) return "BODY_LIMIT";
   const code = error?.cause?.code ?? error?.code;

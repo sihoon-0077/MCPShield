@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import ganache from "ganache";
+import { TransportUnavailableError } from "../../packages/contracts-sdk/src/transport.js";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -77,6 +78,8 @@ test("matrix failures keep only fixed codes, numeric counts and relative code fr
   assert.deepEqual(failure, { code: "BENCHMARK_RPC_PROXY_FAULT_COUNT", stage: "INVARIANTS", frame: "tests/integration/admission-measure.ts:274:7", actual: 48, expected: 0 });
   assert.deepEqual(safeMatrixFailure({ message: "secret-token", actual: { password: "secret" }, stack: "remote/private/file:1:2" }, "secret-stage"), { code: "BENCHMARK_UNCLASSIFIED_FAILURE", stage: "UNKNOWN" });
   assert.equal(matrixProxyFailureCode(Error("SERVICE_TIMEOUT")), "SERVICE_TIMEOUT");
+  assert.equal(matrixProxyFailureCode(new TransportUnavailableError()), "SERVICE_TRANSPORT_UNAVAILABLE");
+  assert.equal(matrixProxyFailureCode(Error("SERVICE_TRANSPORT_UNAVAILABLE")), "UNCLASSIFIED_PROXY_FAULT");
   assert.equal(matrixProxyFailureCode({ cause: { code: "ECONNRESET" }, message: "secret" }), "ECONNRESET");
   assert.equal(matrixProxyFailureCode(Error("secret-token")), "UNCLASSIFIED_PROXY_FAULT");
   assert.equal(safeMatrixFailure(Error("BENCHMARK_SECRET_TOKEN"), "SETUP").code, "BENCHMARK_UNCLASSIFIED_FAILURE");
