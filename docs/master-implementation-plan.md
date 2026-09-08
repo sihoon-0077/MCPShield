@@ -15,6 +15,20 @@
 
 ### 현재 검증 경계
 
+- `bb87dea` Main 전체 `npm test` 성공(Security 107 통과·18 Linux skip,
+  dashboard 23 통과, backend/Gateway/replay/MCP stdio/live smoke 성공), `npm run build` 성공.
+  이어서 `d7b909b`는 실제 OCI resolver→worker→독립 단일키 validator CLI 4개→V2 정족수→
+  정상 paginated MCP 실행·별도 Gateway 프로세스 2개의 폐기 이미지 create/start 0건을
+  확인하는 Linux 전용 전체 테스트를 추가했다. 공통 프로세스 도우미는 기존 npm 테스트와
+  재사용하며 Main portable 3 통과·Linux 2 skip. 실제 Linux 성공은 아직 증명되지 않았다.
+  `85c246f` OCI 준비 UI·정책 유형 매칭·private strict config export 통합 후 dashboard
+  24개와 production build 통과. 실제 API/BFF/worker 연결은 합성 inspector의 ABSTAIN으로
+  검사했으며 브라우저 시각 QA나 실제 OCI 실행 증거가 아니다.
+  `a928b9b`는 실패했던 Gateway fixture build/save/수동 archive 변환을 삭제하고 공통
+  never-started approved native export를 사용한다. 기존 uid/network/cap/seccomp/env/read-only,
+  signed cache/RPC/긴급 1회/EOF/변조 검사는 유지했다. Main OCI 회귀 7 통과·Linux 1 skip.
+  새로운 두 OCI Linux CI 단계를 순차 추가하고 전체 job 시간 상한을 55분으로 조정했다.
+  원본 `mcp/main`은 `6aa370285154f683989f2bf9b219bd2c052e6cee` 유지.
 - [Linux CI 34277348109](https://github.com/sihoon-0077/MCPShield/actions/runs/34277348109),
   `24fa66e`: **종료·전체 실패**. PostgreSQL·Node 24 성공. Node 22 일반 test/build,
   실제 npm closure, prepared Gateway, OCI native import/관측, prepared scan→독립 단일키
