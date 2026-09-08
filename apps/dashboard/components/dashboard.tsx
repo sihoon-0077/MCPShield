@@ -70,6 +70,7 @@ export function Dashboard() {
         </div>
         <div className="source-panel" aria-label="Data source selector" aria-busy={loading}>
           <a className="judge-entry" href="/try">TRY</a>
+          <a className="judge-entry" href="/console">CONSOLE</a>
           {(["MOCK", "LIVE", "REPLAY"] as Source[]).map((source) => (
             <button key={source} className={snapshot.source === source ? "active" : ""} onClick={() => selectSource(source)} disabled={loading} aria-pressed={snapshot.source === source}>{source}</button>
           ))}
