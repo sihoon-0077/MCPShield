@@ -94,7 +94,9 @@ test("OCI actual container config drift or revoked pre-start admission cannot ex
     v => v.Args = ["-c", "unexpected"], v => v.Path = "/bin/other", v => v.Config.WorkingDir = "/tmp", v => v.Config.Healthcheck = { Test: ["CMD", "/bin/true"] },
     v => v.HostConfig.SecurityOpt.push("seccomp=unconfined"), v => v.HostConfig.MemorySwap = -1, v => v.HostConfig.Privileged = true,
     v => v.HostConfig.NetworkMode = "host", v => v.HostConfig.PidMode = "host", v => v.HostConfig.CapAdd = ["SYS_ADMIN"], v => v.HostConfig.Binds = ["/private:/private"],
-    v => v.Mounts.push({ Type: "bind", Destination: "/var/run/docker.sock" }), v => v.HostConfig.Devices = [{}], v => v.HostConfig.Tmpfs["/tmp"] = "rw,size=32m"]) {
+    v => v.Mounts.push({ Type: "bind", Destination: "/var/run/docker.sock" }), v => v.HostConfig.Devices = [{}], v => v.HostConfig.Tmpfs["/tmp"] = "rw,size=32m",
+    v => v.HostConfig.IpcMode = "container:synthetic-other", v => v.HostConfig.IpcMode = "shareable",
+    v => v.HostConfig.Tmpfs["/tmp"] += ",exec", v => v.HostConfig.Tmpfs["/tmp"] += ",size=1g"]) {
     const docker = fakeDocker({ mutate }), snapshot = await createPreparedSnapshot(file, docker);
     await assert.rejects(snapshot.spawn(async () => {}), /PREPARED_/); assert.equal(docker.starts.length, 0); assert.equal(docker.calls.filter(args => args[0] === "rm").length, 1);
   }
