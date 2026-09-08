@@ -16,6 +16,19 @@ const MODERN = "2026-07-28";
 const CLIENT_METHODS = new Set(["initialize", "notifications/initialized", "ping", "server/discover", "tools/list", "tools/call", "notifications/cancelled", "notifications/progress"]);
 const SERVER_NOTIFICATIONS = new Set(["notifications/tools/list_changed", "notifications/progress"]);
 
+// A later call in the same raw batch can await admission past an earlier lease.
+// Preserve every lease until the last synchronous step before forwarding bytes.
+async function admissionExpiryFence(beforeCall, message) {
+  const startedAt = Date.now(), startedMono = performance.now();
+  const decision = await beforeCall(message);
+  if (decision?.decision !== "ALLOW" || decision.expiresAt === undefined) return;
+  const expires = Date.parse(decision.expiresAt);
+  const deadline = Math.min(startedMono + expires - startedAt, performance.now() + expires - Date.now());
+  return () => {
+    if (!Number.isFinite(expires) || Date.now() >= expires || performance.now() >= deadline) throw new Error("MCP_ADMISSION_LEASE_EXPIRED");
+  };
+}
+
 function frameTransform(inspect, beforeForward) {
   let pending = Buffer.alloc(0);
   async function frame(line, output) {
@@ -24,14 +37,16 @@ function frameTransform(inspect, beforeForward) {
     try { value = JSON.parse(line); } catch { throw new Error("Invalid MCP JSON-RPC JSON"); }
     const messages = Array.isArray(value) ? value : [value];
     if (!messages.length || messages.length > 128) throw new Error("Invalid MCP JSON-RPC batch size");
-    const visible = [];
+    const visible = [], finalChecks = [];
     for (const message of messages) {
       try { parseJSONRPCMessage(message); } catch { throw new Error("Invalid MCP JSON-RPC envelope"); }
       if (typeof message.id === "string" && message.id.length > 256) throw new Error("MCP request ID is oversized");
-      visible.push(await inspect(message) !== false);
+      const result = await inspect(message);
+      visible.push(result !== false);
+      if (typeof result === "function") finalChecks.push(result);
     }
     if (visible.some(Boolean) && !visible.every(Boolean)) throw new Error("Mixed private and client response batch");
-    if (visible.every(Boolean)) { beforeForward?.(); output.push(line); }
+    if (visible.every(Boolean)) { beforeForward?.(); for (const check of finalChecks) check(); output.push(line); }
   }
   return new Transform({
     transform(chunk, _encoding, callback) {
@@ -105,6 +120,7 @@ export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall, { sen
     throw new ToolSurfaceDriftError(expectedHash, "TOO_MANY_TOOLS_PAGES");
   };
   const requests = frameTransform(async (message) => {
+    let finalCheck;
     beforeRequest?.(message);
     if (typeof message.id === "string" && message.id.startsWith(privatePrefix)) throw new Error("Reserved Gateway request ID");
     if (typeof message.method !== "string") {
@@ -133,7 +149,7 @@ export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall, { sen
         const cursor = message.params?.cursor ?? "";
         if (typeof cursor !== "string" || !pages.has(cursor)) throw new Error("Unknown MCP tools/list cursor");
       }
-      if (message.method === "tools/call" && beforeCall) await beforeCall(message);
+      if (message.method === "tools/call" && beforeCall) finalCheck = await admissionExpiryFence(beforeCall, message);
     }
     if (Object.hasOwn(message, "id")) {
       const key = idKey(message.id);
@@ -142,6 +158,7 @@ export function runtimeSurfaceGuards(expectedHash, tools = [], beforeCall, { sen
       completed.delete(key);
       requestsById.set(key, { method: message.method, cursor: message.params?.cursor ?? "" });
     }
+    return finalCheck;
   }, beforeForward);
   const responses = frameTransform((message) => {
     if (typeof message.method === "string" && (Object.hasOwn(message, "id") || !SERVER_NOTIFICATIONS.has(message.method))) throw new Error("Unsupported server method in Gateway tools-only profile");
