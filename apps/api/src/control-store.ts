@@ -252,11 +252,30 @@ export class ControlStore {
     return { counts, today: Number(daily.count) + Number(preparations.count), queued: counts.QUEUED + counts.RUNNING + Number(pending.count) };
   }
   async scans(tenantId: string) { return (await this.query("SELECT * FROM cp_scans WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 250", [tenantId])).map(job); }
+  // Call inside the same tenant transaction as the guarded state transition.
+  async scanOutcome(scan: ScanJob, outcome: "completed" | "failed", payload: Record<string, any>) {
+    await this.event(scan.tenantId, scan.releaseId, `scan.${outcome}`, { scanId: scan.scanId, ...payload }, scan.traceId);
+    if (!scan.request.appealId) return;
+    const appeal = await this.get(scan.tenantId, "appeal", scan.request.appealId);
+    if (appeal?.rescan?.scanId !== scan.scanId || appeal.rescan.releaseId !== scan.releaseId || appeal.rescan.policyHash !== scan.policyHash) throw new Error("APPEAL_SCAN_LINK_MISMATCH");
+    // A resolution may precede the worker. Preserve later evidence without reopening or approving anything.
+    await this.event(scan.tenantId, appeal.releaseId, `appeal.rescan.${outcome}`,
+      { appealId: appeal.appealId, scanId: scan.scanId, releaseId: scan.releaseId, policyHash: scan.policyHash, ...payload }, scan.traceId);
+  }
   async claim(owner: string, leaseMs = 180000) {
     const now = new Date().toISOString();
-    await this.query(`UPDATE cp_scans SET state = 'DEAD_LETTER', last_error = ?, updated_at = ?
-      WHERE state = 'RUNNING' AND lease_expires_at <= ? AND attempts >= max_attempts`,
-      [JSON.stringify({ code: "WORKER_LOST", retryable: true }), now, now]);
+    // ponytail: reap at most 16 tenants × 100 jobs per claim; subsequent claims drain larger backlogs.
+    // Use the same tenant lock as enqueue/resolution/outcomes, never a cross-tenant mutation transaction.
+    const expired = await this.query(`SELECT DISTINCT tenant_id FROM cp_scans WHERE state='RUNNING' AND lease_expires_at<=?
+      AND attempts>=max_attempts ORDER BY tenant_id LIMIT 16`, [now]);
+    for (const { tenant_id: tenant } of expired) await this.forTenant(tenant, async tx => {
+      const lost = await tx.query(`UPDATE cp_scans SET state='DEAD_LETTER',last_error=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=?
+        WHERE tenant_id=? AND state='RUNNING' AND lease_expires_at<=? AND attempts>=max_attempts AND scan_id IN (
+          SELECT scan_id FROM cp_scans WHERE tenant_id=? AND state='RUNNING' AND lease_expires_at<=? AND attempts>=max_attempts
+          ORDER BY lease_expires_at,scan_id LIMIT 100) RETURNING *`,
+        [JSON.stringify({ code: "WORKER_LOST", retryable: true }), now, tenant, now, tenant, now]);
+      for (const row of lost) await tx.scanOutcome(job(row), "failed", { code: "WORKER_LOST", retryable: true });
+    });
     // A single UPDATE + RETURNING is the durable queue: no DB/queue dual write.
     const rows = await this.query(`UPDATE cp_scans SET state = 'RUNNING', stage = 'SCANNING', attempts = attempts + 1,
       lease_owner = ?, lease_expires_at = ?, updated_at = ? WHERE scan_id = (

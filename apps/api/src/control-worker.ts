@@ -1,21 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { ControlStore, type ScanJob } from "./control-store.js";
+import { ControlStore } from "./control-store.js";
 import { saveEvidence, type ControlOptions } from "./control-plane.js";
 import { withSpan } from "../../../packages/telemetry/index.mjs";
 import { policyVerdict, preparedPolicy, ociPolicy, assertRuntimeBudget, validPolicy } from "./control-policy.js";
 import { scanPreparedRelease } from "./preparation-worker.js";
 // @ts-expect-error Scanner evidence is shared ESM JavaScript.
 import { verifyEvidenceBundle } from "../../../services/scanner/src/evidence.mjs";
-
-async function outcomeEvent(tx: ControlStore, scan: ScanJob, outcome: "completed" | "failed", payload: Record<string, any>) {
-  await tx.event(scan.tenantId, scan.releaseId, `scan.${outcome}`, { scanId: scan.scanId, ...payload }, scan.traceId);
-  if (!scan.request.appealId) return;
-  const appeal = await tx.get(scan.tenantId, "appeal", scan.request.appealId);
-  if (appeal?.rescan?.scanId !== scan.scanId || appeal.rescan.releaseId !== scan.releaseId || appeal.rescan.policyHash !== scan.policyHash) throw new Error("APPEAL_SCAN_LINK_MISMATCH");
-  // A resolution may precede the worker. Keep this later evidence in history without reopening or approving anything.
-  await tx.event(scan.tenantId, appeal.releaseId, `appeal.rescan.${outcome}`,
-    { appealId: appeal.appealId, scanId: scan.scanId, releaseId: scan.releaseId, policyHash: scan.policyHash, ...payload }, scan.traceId);
-}
 
 export async function runControlWorkerOnce(store: ControlStore, options: ControlOptions, owner = randomUUID()) {
   // Existing bounded claim fence covers closure export + three probes + full AI/critic review, not a 3-minute partial lease.
@@ -49,14 +39,14 @@ export async function runControlWorkerOnce(store: ControlStore, options: Control
       ...(oci ? { ociRuntimeTrust: result.ociRuntimeTrust, semanticEvidenceMode: policy.document.semanticEvidenceMode, providerQuality: "PROVIDER_QUALITY_NOT_MEASURED" }
         : prepared ? { preparedRuntimeTrust: result.preparedRuntimeTrust } : {}), state: verdict === "ABSTAIN" ? "REVIEW_REQUIRED" : "READY_FOR_VALIDATORS" };
     await store.forTenant(scan.tenantId, async tx => {
-      if (await tx.finish(scan, owner, completedResult)) await outcomeEvent(tx, scan, "completed", { reportRoot: result.bundle.manifest.root, status: result.result.scanStatus, verdict });
+      if (await tx.finish(scan, owner, completedResult)) await tx.scanOutcome(scan, "completed", { reportRoot: result.bundle.manifest.root, status: result.result.scanStatus, verdict });
     });
   } catch (error: any) {
     const raw = typeof error?.code === "string" ? error.code : error?.message;
     const code = /^[A-Z][A-Z0-9_]{0,80}$/.test(raw ?? "") ? raw : "SCAN_EXECUTION_FAILED";
     const retryable = /TIMEOUT|UNAVAILABLE|WORKER_LOST|RATE_LIMIT|ECONN|ENOTFOUND|TRANSIENT/.test(code);
     await store.forTenant(scan.tenantId, async tx => {
-      if (await tx.fail(scan, owner, code, retryable)) await outcomeEvent(tx, scan, "failed", { code, retryable });
+      if (await tx.fail(scan, owner, code, retryable)) await tx.scanOutcome(scan, "failed", { code, retryable });
     });
   }
   return true;
