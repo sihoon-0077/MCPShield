@@ -75,10 +75,9 @@ async function dockerCommand(args) {
 }
 
 // Dependencies are injected only by trusted unit tests. The CLI/API never accepts command/image/path overrides.
-export async function createPreparedSnapshot(filename, { command = dockerCommand, start = spawn, platform = process.platform, inspectOci, admissionMode = "strict", breakGlass = false } = {}) {
+export async function createPreparedSnapshot(filename, { command = dockerCommand, start = spawn, platform = process.platform, inspectOci } = {}) {
   const value = await readIdentity(filename);
   const oci = value.binding.profile === "oci-container-v1";
-  if (oci && (admissionMode !== "strict" || breakGlass)) fail("PREPARED_OCI_STRICT_SIGNED_ADMISSION_REQUIRED");
   if (platform !== "linux") fail("PREPARED_LINUX_DOCKER_REQUIRED");
   const image = dockerJson(await command(["image", "inspect", value.binding.finalImageDigest, "--format", "{{json .}}"]));
   validatePreparedImage(image, value.binding);
