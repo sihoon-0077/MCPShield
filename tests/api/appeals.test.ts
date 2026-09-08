@@ -155,6 +155,50 @@ async function concurrentTenants(databaseUrl?: string) {
   } finally { await f.close(); }
 }
 test("two tenants concurrently get one independent fresh job and failure history without crossing quota/idempotency", () => concurrentTenants());
+
+async function workerLoss(databaseUrl?: string) {
+  const f = await setup(databaseUrl);
+  try {
+    const original = await f.appeal(), foreign = await f.appeal(release("a").releaseId, other), live = await f.appeal();
+    const submit = (appealId: string, token = operator) => f.request("/v1/scans", { releaseId: release("c").releaseId, policyHash: hash(defaultPolicy), appealId }, token);
+    const responses = await Promise.all([submit(original.appealId), submit(foreign.appealId, other), submit(live.appealId)]);
+    assert.ok(responses.every(response => response.statusCode === 202));
+    const claims = await Promise.all(Array.from({ length: 3 }, () => f.store.claim(randomUUID(), 60000)));
+    assert.equal(claims.filter(Boolean).length, 3);
+    for (const response of responses.slice(0, 2)) await f.store.query("UPDATE cp_scans SET attempts=max_attempts,lease_expires_at=? WHERE scan_id=?",
+      [new Date(Date.now() - 1).toISOString(), response.json().scan.scanId]);
+    // A failing history insert must roll back the state/trigger event, not leave an unlinked terminal row.
+    if (f.store.driver === "POSTGRESQL") {
+      await f.store.query("CREATE FUNCTION test_appeal_loss_failure() RETURNS trigger AS $$ BEGIN IF NEW.event_name='appeal.rescan.failed' THEN RAISE EXCEPTION 'SYNTHETIC_AUDIT_FAILURE'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql");
+      await f.store.query("CREATE TRIGGER test_appeal_loss_failure BEFORE INSERT ON cp_events FOR EACH ROW EXECUTE FUNCTION test_appeal_loss_failure()");
+    } else await f.store.query("CREATE TRIGGER test_appeal_loss_failure BEFORE INSERT ON cp_events WHEN NEW.event_name='appeal.rescan.failed' BEGIN SELECT RAISE(ABORT,'SYNTHETIC_AUDIT_FAILURE'); END");
+    await assert.rejects(f.store.claim(randomUUID()), /SYNTHETIC_AUDIT_FAILURE/);
+    for (const [tenant, response] of [[f.tenantA, responses[0]], [f.tenantB, responses[1]]] as const) {
+      assert.equal((await f.store.scan(tenant, response.json().scan.scanId))?.status, "RUNNING");
+      assert.equal((await f.store.events(tenant, release("a").releaseId)).filter(event => event.eventName === "appeal.rescan.failed").length, 0);
+    }
+    await f.store.query(`DROP TRIGGER test_appeal_loss_failure${f.store.driver === "POSTGRESQL" ? " ON cp_events" : ""}`);
+    if (f.store.driver === "POSTGRESQL") await f.store.query("DROP FUNCTION test_appeal_loss_failure()");
+    const reaped = await Promise.all(Array.from({ length: 3 }, () => f.store.claim(randomUUID())));
+    assert.ok(reaped.every(item => item === undefined));
+    for (const [tenant, response] of [[f.tenantA, responses[0]], [f.tenantB, responses[1]]] as const) {
+      const scanId = response.json().scan.scanId, current = await f.store.scan(tenant, scanId), stale = claims.find(item => item?.scanId === scanId)!;
+      assert.equal(current?.status, "DEAD_LETTER"); assert.equal(current?.lastError?.code, "WORKER_LOST");
+      assert.equal(current?.leaseOwner, undefined); assert.equal(current?.leaseExpiresAt, undefined);
+      assert.equal(await f.store.finish(stale, stale.leaseOwner!, { verdict: "PASS" }), false);
+      assert.equal(await f.store.fail(stale, stale.leaseOwner!, "STALE_FAILURE", false), false);
+      const events = (await f.store.events(tenant, release("a").releaseId)).filter(event => event.eventName === "appeal.rescan.failed");
+      assert.equal(events.length, 1); assert.equal(events[0].payload.scanId, scanId); assert.equal(events[0].payload.code, "WORKER_LOST");
+      assert.equal(events[0].payload.retryable, true); assert.equal(events[0].payload.releaseId, release("c").releaseId);
+      assert.equal((await f.store.events(tenant, release("c").releaseId)).filter(event => event.eventName === "scan.failed").length, 1);
+      assert.equal((await f.store.get(tenant, "release", release("a").releaseId))?.status, "REVOKED");
+    }
+    const stillLive = await f.store.scan(f.tenantA, responses[2].json().scan.scanId);
+    assert.equal(stillLive?.status, "RUNNING"); assert.equal(stillLive?.lastError, undefined);
+  } finally { await f.close(); }
+}
+test("abrupt worker loss atomically records one terminal appeal failure per tenant and preserves live leases", () => workerLoss());
+
 test("PostgreSQL appeal queue/link/history and disposition serialize with tenant-scoped native transactions", { skip: !process.env.MCPSHIELD_POSTGRES_TEST_URL }, async () => {
   const { Pool } = await import("pg"), pool = new Pool({ connectionString: process.env.MCPSHIELD_POSTGRES_TEST_URL });
   const schema = `mcpshield_appeal_${randomUUID().replace(/-/g, "")}`;
@@ -165,6 +209,7 @@ test("PostgreSQL appeal queue/link/history and disposition serialize with tenant
     await pool.query(`CREATE SCHEMA ${schema}`);
     const target = new URL(process.env.MCPSHIELD_POSTGRES_TEST_URL!); target.searchParams.set("options", `-csearch_path=${schema}`);
     await concurrentTenants(target.href);
+    await workerLoss(target.href);
   } finally { await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); await pool.end(); }
 });
 
