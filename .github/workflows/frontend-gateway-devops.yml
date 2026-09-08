@@ -21,7 +21,9 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # Bounded independent OCI rescans and four single-key validator processes
+    # run sequentially on the same trusted local images/database.
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
@@ -131,6 +133,17 @@ jobs:
           export MCPSHIELD_TRIVY_IMAGE="$(docker image inspect aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 --format '{{.Id}}')"
           export MCPSHIELD_TRIVY_DATABASE_DIR="$PWD/runtime-builder-cache/db"
           node --import tsx --test tests/security/oci-profile.test.mjs
+      - name: Exercise native OCI worker and independent single-key validators through V2 and both Gateways
+        if: ${{ !cancelled() && matrix.node == 22 && steps.oci_review.outcome == 'success' }}
+        timeout-minutes: 21
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+          MCPSHIELD_OCI_PROFILE_TESTS: "1"
+        run: |
+          export MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)"
+          export MCPSHIELD_TRIVY_IMAGE="$(docker image inspect aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 --format '{{.Id}}')"
+          export MCPSHIELD_TRIVY_DATABASE_DIR="$PWD/runtime-builder-cache/db"
+          node --import tsx --test tests/api/oci-fullcycle.test.ts
       - name: Exercise prepared Docker scans and single-key validators through V2 and both Gateways
         if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
         timeout-minutes: 11
