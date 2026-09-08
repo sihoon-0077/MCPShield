@@ -2,7 +2,7 @@ export function redactPromptText(content) {
   return content
     .replace(/(https?:\/\/)[^\s/"']+:[^\s/@"']+@/gi, '$1[REDACTED_USERINFO]@')
     .replace(/([?&](?:token|key|secret|signature|sig|credential|authorization)=)[^&\s"']+/gi, '$1[REDACTED]')
-    .replace(/-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]')
+    .replace(/-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----[\s\S]*?-----END \1-----/g, '[REDACTED_PRIVATE_KEY]')
     .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, '[REDACTED_ACCESS_KEY]')
     .replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, '[REDACTED_GCP_API_KEY]')
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')

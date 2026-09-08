@@ -831,3 +831,59 @@ Windows/disabled skip is NOT_RUN, not completed native acceptance:
 ```sh
 MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_OCI_PROFILE_TESTS=1 MCPSHIELD_RUNTIME_BUILDER_IMAGE=sha256:... MCPSHIELD_TRIVY_IMAGE=sha256:... MCPSHIELD_TRIVY_DATABASE_DIR=/absolute/cache/db node --import tsx --test tests/security/oci-profile.test.mjs
 ```
+
+### Privacy-scoped provider review checkpoint (not yet a signing policy)
+
+`src/scoped-semantic.mjs` exports `buildScopedSemanticInput`,
+`verifyScopedSemanticInput` and `reviewScopedSemantics`. They add separate
+`mcpshield.scoped-semantic-input.v1` / `mcpshield.scoped-disclosure-proof.v1`
+domains and `SCOPED_PROVIDER_REVIEW_V1`, without changing the existing
+`LOCAL_CONTRACT_TEST` full-source fence or its versioned OCI/Node policy.
+
+Private input is `{files,baselineFiles?,tools,baselineTools?,runtime}`. Files are
+original UTF-8 `{path,content,rawDigest?}` bytes previously bound locally to the
+actual image/closure; runtime contains only its known profile, runtimeDigest and
+optional environmentDigest. Raw paths become hashed IDs; environment values,
+transport headers and arbitrary runtime fields are rejected. Remote input has
+redacted tool/schema metadata, before/after change hashes and selected risk
+snippets. Defaults/examples are removed; known credentials/canaries are redacted
+in descriptions, keys and schema literals. This does **not** claim to recognize
+arbitrary private data or encoded unknown secrets.
+
+The fixed union across analyzer, blind critic and probe generation is selected
+once: per original file version at most 25% / 2,048 characters, overall 32 KiB of
+snippet characters, 64 snippets and 64 KiB serialized input. All three roles see
+the same DTO; no follow-up/source expansion is permitted. Missing lexical risk
+coverage, budget overflow, copied complete source in metadata or redacted tool
+identifiers make the scope incomplete **before any role transmits**. Original
+source and raw tool hashes, selection ranges and policy are independently
+reconstructed by the pure proof checker. Baseline inputs must themselves be
+trusted by the future caller; hash equality alone is not baseline authority.
+
+`ai` requires explicit `allowRemoteAi:true`,
+`disclosurePolicy:'SCOPED_PROVIDER_REVIEW_V1'` and
+`evidenceMode:'PROVIDER_EXECUTION'` or `'LOCAL_CONTRACT_TEST'`. Only numeric
+loopback is allowed for the latter, while external configuration requires
+HTTPS; OpenAI uses its exact Responses endpoint and explicit model/token.
+Optional blind `critic` and `probe` settings must pass the same policy and mode
+before the analyzer request. Existing bounded no-tools transport, strict schema,
+precomputed citations and local synthetic argument validation are reused. The
+actual HTTP regression uses an explicitly synthetic local Responses server,
+not a paid provider or model-quality measurement:
+
+```sh
+node --import tsx --test tests/security/scoped-semantic.test.mjs
+```
+
+Scope completion does not mean complete source/behavior coverage. This checkpoint
+always returns `approvalVerdict:'ABSTAIN'` and
+`providerQuality:'PROVIDER_QUALITY_NOT_MEASURED'`; no API/signing consumer is wired
+yet. Next required integration is a separately approved versioned policy with
+local inventory/static/Trivy/observation and independent validator reruns. Existing
+actual-transmission callers still requiring replacement/fencing are legacy
+`scanner.mjs` analyzer/critic (first-12K source excerpts), prepared/OCI
+`reviewPreparedSemantics` (currently local-contract-only), `generateSyntheticProbes`
+and the benchmark-specific provider paths. Shared `requestAiJson` stays a generic
+transport; each caller must declare its disclosure domain rather than bypass the
+scoped DTO through a caller-supplied prompt. Configured semantics must migrate to
+the scoped path, not remain permanently disabled as the privacy solution.
