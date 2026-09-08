@@ -28,11 +28,24 @@
 - 위 코드의 로컬 backend 71개 통과·4개 외부 환경 명시 skip, 전체 타입 검사와
   Next production build 성공. 전체 npm test는 대시보드 실패로 미통과다.
   Windows에서 실제 Docker·PostgreSQL 통과를 주장하지 않는다.
+- 추가 로컬 보안 78개 통과·Docker 10개 skip, Gateway 66개 통과·Docker 1개 skip,
+  운영 의존성 audit 0건. `de4fc9f`는 파일 I/O 중 만료 재검사까지 포함해 서명·경합
+  회귀 12개 통과. 코드별 테스트 개수를 합쳐 제품 안전성이나 탐지율로 해석하지 않는다.
 - Gateway terminal revocation은 release/chain/registry 범위로 정책·tenant 변경을 넘어 유지한다.
   임시 캐시 쓰기 및 비동기 lock 정리 중 오래된 ALLOW가 반환되는 경합을 발견했다.
   Main 수정과 별도 프로세스 barrier 회귀 `2f1e03e`를 함께 실행해 11개 테스트 통과.
   두 경합 모두 차단·캐시 삭제·폐기 증거 보존·새 프로세스 재허용 거부를 확인했다.
   최종 비동기 파일 정리 뒤 만료/폐기를 다시 검사하고 lock 해제 뒤 추가 await 없이 반환한다.
+- [Linux CI 34263512267](https://github.com/sihoon-0077/MCPShield/actions/runs/34263512267)
+  (`5e8c197`)는 위 대시보드 계약 불일치 및 PostgreSQL 동시 open의 `40P01` 교착상태로 실패했다.
+  마이그레이션끼리의 advisory lock은 있었지만 매 open의 트리거 DDL 재실행이 이미 실행 중인
+  업무 transaction과 경합했다. 적용 이력·checksum 및 병렬 실제 PG 회귀를 보완 중이다.
+  새 builder·prepared Docker 전체 회귀·최신 서명 image 단계는 이 실행에서 도달하지 못했다.
+- clean `de4fc9f`의 실제 로컬 EVM·SQLite·HTTP 측정(40회/동시4/identity4):
+  hot p95 83.500ms, uniform p95 60.727ms, signed REVOKED 40/40 BLOCK·캐시 재사용0회,
+  해당 BLOCK p95 46.899ms, 다음 admission의 차단 확인 49.126ms.
+  시작/종료 source hash는 `0585e0af2b31e72e6daee7f645f2c83a8432d346dff1e26e01094ac97cb3cc1f`로 동일하다.
+  작은 Windows/Ganache 실험이며 운영 SLO·1만 key·실제 네트워크 장애 측정이 아니다.
 
 명시적으로 남은 구현은 범용 OCI 실행/관측, legacy 정책의 검증자 독립 재실행,
 조직 indexer·직접 RPC fallback 및 서명된 break-glass 감사, 문서의 전체 부하·평가 행렬이다.
