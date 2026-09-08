@@ -62,7 +62,7 @@ test('unreviewable changes, excessive risk coverage and whole source smuggled in
     assert.equal(result.proof.scopeComplete, false);
   }
   const copied = buildScopedSemanticInput({ ...original(), tools: [{ ...tools[0], description: content }] });
-  assert.ok(copied.proof.issues.includes('SCOPED_METADATA_CONTAINS_COMPLETE_SOURCE'));
+  assert.ok(copied.proof.issues.includes('SCOPED_DISCLOSURE_UNION_EXCEEDED'));
   const repeated = buildScopedSemanticInput({ ...original(), files: [{ path: 'a.js', content: ('x'.repeat(100) + ' fetch(); ').repeat(100) }] });
   assert.ok(repeated.proof.issues.includes('SCOPED_RISK_SELECTION_BUDGET_EXCEEDED'));
   const unchanged = original(); unchanged.baselineFiles = unchanged.files;
@@ -126,4 +126,54 @@ test('scoped critic incomplete response is not a clean semantic result and stops
   assert.equal(count, 2); assert.equal(result.scopeComplete, false); assert.equal(result.noUnresolvedRisk, false);
   assert.deepEqual(result.issues, ['SCOPED_CRITIC_INCOMPLETE']);
   assert.equal(JSON.stringify(result).includes('PRIVATE_PROVIDER_DIAGNOSTIC'), false);
+});
+
+test('metadata union rejects source split across fields, keys and arrays, including short sources, before any role sends HTTP', async (context) => {
+  let count = 0;
+  const url = await server(context, (body, response) => { count++; response.end(JSON.stringify(body.responseSchema.properties.scenarios ? probes : clean)); });
+  const ai = { allowRemoteAi: true, disclosurePolicy: SCOPED_DISCLOSURE_POLICY, evidenceMode: 'LOCAL_CONTRACT_TEST', provider: 'custom', url, timeoutMs: 1000 };
+  const source = Array.from({ length: 20 }, (_, index) => `const harmless${index}='synthetic${index}';\n`).join('');
+  for (const raw of [source, "const x='demo';", 'x']) {
+    const half = Math.ceil(raw.length / 2), parts = [raw.slice(0, half), raw.slice(half)];
+    for (const changedTools of [
+      [{ ...tools[0], description: parts[0], title: parts[1] }],
+      [{ ...tools[0], description: parts[1], title: parts[0] }],
+      [{ ...tools[0], inputSchema: { type: 'object', properties: Object.fromEntries(parts.filter(Boolean).map(part => [part, { type: 'string' }])) } }],
+      [{ ...tools[0], inputSchema: { type: 'string', enum: [...parts].reverse() } }],
+      [{ ...tools[0], inputSchema: { type: 'string', enum: Array.from(raw) } }],
+    ]) {
+      const files = [{ path: 'server.js', content: raw }];
+      const result = await reviewScopedSemantics({ ...original(), files, baselineFiles: files, tools: changedTools, ai });
+      assert.equal(result.scopeComplete, false);
+      assert.ok(result.issues.includes('SCOPED_DISCLOSURE_UNION_EXCEEDED'));
+      assert.equal(result.proof.union.snippetChars, 0);
+      assert.equal(result.proof.union.metadataChars, raw.length);
+      assert.equal(result.proof.union.sourceChars, raw.length);
+      assert.deepEqual(Object.keys(result.reviews), []);
+    }
+  }
+  assert.equal(count, 0, 'no analyzer, critic or probe may receive any fragment of the rejected DTO');
+});
+
+test('metadata plus selected snippets use one coverage budget and exact-fragment work is bounded before HTTP', async (context) => {
+  let count = 0;
+  const url = await server(context, (_body, response) => { count++; response.end(JSON.stringify(clean)); });
+  const ai = { allowRemoteAi: true, disclosurePolicy: SCOPED_DISCLOSURE_POLICY, evidenceMode: 'LOCAL_CONTRACT_TEST', provider: 'custom', url, timeoutMs: 1000 };
+  const mixed = original(); mixed.tools = [{ ...tools[0], description: content.slice(0, 200) }];
+  const rejected = await reviewScopedSemantics({ ...mixed, ai });
+  assert.ok(rejected.proof.union.snippetChars > 0);
+  assert.ok(rejected.proof.union.sourceChars > rejected.proof.union.snippetChars);
+  assert.ok(rejected.issues.includes('SCOPED_DISCLOSURE_UNION_EXCEEDED'));
+  const large = original();
+  large.files = [{ path: 'large.js', content: 'z'.repeat(8 * 1024 * 1024) }];
+  large.baselineFiles = large.files;
+  large.tools = [{ ...tools[0], description: 'public description '.repeat(3200) }];
+  const started = performance.now(), bounded = await reviewScopedSemantics({ ...large, ai });
+  assert.equal(bounded.scopeComplete, false);
+  assert.ok(bounded.issues.includes('SCOPED_DISCLOSURE_WORK_INCOMPLETE'));
+  assert.equal(bounded.proof.union.accounting.work, bounded.proof.union.limits.disclosureWork);
+  assert.equal(bounded.proof.union.sourceChars, null);
+  assert.equal(bounded.proof.union.accounting.arbitraryEncodedOrRewrittenData, 'NOT_PROVEN_SAFE');
+  assert.ok(performance.now() - started < 10_000, '8 MiB source x near-limit metadata must not use quadratic searches');
+  assert.equal(count, 0);
 });

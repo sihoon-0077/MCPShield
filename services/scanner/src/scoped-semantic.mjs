@@ -7,7 +7,7 @@ import { requestAiJson } from './ai-transport.mjs';
 
 export const SCOPED_DISCLOSURE_POLICY = 'SCOPED_PROVIDER_REVIEW_V1';
 const limits = Object.freeze({ inputBytes: 64 * 1024, snippetChars: 32 * 1024, fileSnippetChars: 2048, fileFraction: 0.25,
-  localSourceBytes: 8 * 1024 * 1024, localFiles: 50_000, snippets: 64 });
+  localSourceBytes: 8 * 1024 * 1024, localFiles: 50_000, snippets: 64, disclosureWork: 8_000_000 });
 const hash = (value) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
 const same = (a, b) => canonicalJson(a) === canonicalJson(b);
 // Selection is a bounded lexical review, never a claim of complete program analysis.
@@ -58,6 +58,54 @@ function scopedTools(tools) {
   });
 }
 
+// Conservative exact-fragment accounting, not an information-flow theorem:
+// arbitrary encodings/paraphrases and short fragments embedded inside unrelated
+// strings are not proven safe. Every metadata key/value/array element participates.
+// Fixed-size fingerprints avoid sourceBytes * metadataBytes substring searches.
+function disclosureUnion(files, selections, projectedMetadata) {
+  const fragments = Array.from({ length: 9 }, () => new Set()), records = [];
+  let work = 0, sourceChars = 0, metadataChars = 0;
+  const step = (amount = 1) => { work += amount; if (work > limits.disclosureWork) throw Error('SCOPED_DISCLOSURE_WORK_LIMIT'); };
+  const collect = (value) => {
+    if (typeof value === 'string') {
+      if (value.length < 8) { step(); if (value.length) fragments[value.length].add(value); }
+      else for (let index = 0; index + 8 <= value.length; index++) { step(); fragments[8].add(value.slice(index, index + 8)); }
+    } else if (value && typeof value === 'object') {
+      if (Array.isArray(value)) value.forEach(collect);
+      else for (const [key, child] of Object.entries(value)) { collect(key); collect(child); }
+    } else if (value !== undefined) collect(String(value));
+  };
+  try {
+    collect(projectedMetadata);
+    const widths = fragments.flatMap((set, size) => set.size ? [size] : []), seen = new Set();
+    for (const file of files) {
+      const identity = file.fileId + '/' + file.digest;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const text = redactPromptText(file.content), disclosed = new Uint8Array(text.length);
+      for (let index = 0; index < text.length; index++) for (const size of widths) {
+        step();
+        if (index + size <= text.length && fragments[size].has(text.slice(index, index + size))) {
+          step(size); disclosed.fill(1, index, index + size);
+        }
+      }
+      const metadataCount = disclosed.reduce((sum, value) => sum + value, 0);
+      for (const selected of selections) if (selected.fileId === file.fileId && selected.rawDigest === file.digest) {
+        for (const { start, end } of selected.ranges) { step(end - start); disclosed.fill(1, start, end); }
+      }
+      step(text.length);
+      const unionChars = disclosed.reduce((sum, value) => sum + value, 0);
+      records.push({ fileId: file.fileId, rawDigest: file.digest, redactedChars: text.length, metadataChars: metadataCount, unionChars });
+      sourceChars += unionChars; metadataChars += metadataCount;
+    }
+    return { complete: true, sourceChars, metadataChars, records, work,
+      exceeded: sourceChars > limits.snippetChars || records.some((record) => record.unionChars > Math.min(limits.fileSnippetChars, Math.floor(record.redactedChars * limits.fileFraction))) };
+  } catch (error) {
+    if (error.message !== 'SCOPED_DISCLOSURE_WORK_LIMIT') throw error;
+    return { complete: false, sourceChars: null, metadataChars: null, records: [], work: limits.disclosureWork, exceeded: false };
+  }
+}
+
 // PRIVATE input: original text has already been independently bound to an
 // installed closure or native OCI export by the caller. This pure helper only
 // proves selection/redaction consistency; it does not acquire that authority.
@@ -103,13 +151,6 @@ export function buildScopedSemanticInput({ files, baselineFiles = [], tools, bas
   }
   const projectedTools = scopedTools(tools), projectedBaseline = scopedTools(baselineTools);
   if (!projectedTools.length) throw Error('SCOPED_TOOLS_INVALID');
-  const metadataStrings = [];
-  const strings = (value) => { if (typeof value === 'string') metadataStrings.push(value); else if (value && typeof value === 'object') Object.values(value).forEach(strings); };
-  strings([projectedTools, projectedBaseline]);
-  for (const file of [...current, ...previous]) {
-    const text = redactPromptText(file.content);
-    if (text.length >= 32 && metadataStrings.some((value) => value.includes(text))) issues.push('SCOPED_METADATA_CONTAINS_COMPLETE_SOURCE');
-  }
   if (projectedTools.some((tool, index) => tool.name !== tools[index].name) ||
     projectedBaseline.some((tool, index) => tool.name !== baselineTools[index].name)) issues.push('SCOPED_TOOL_IDENTIFIER_REDACTED');
   const input = { schemaVersion: 'mcpshield.scoped-semantic-input.v1', disclosurePolicy: SCOPED_DISCLOSURE_POLICY,
@@ -119,11 +160,18 @@ export function buildScopedSemanticInput({ files, baselineFiles = [], tools, bas
   const inventory = (list) => list.map(({ fileId, digest, content }) => ({ fileId, digest, bytes: Buffer.byteLength(content) }));
   const inputBytes = Buffer.byteLength(canonicalJson(input));
   if (inputBytes > limits.inputBytes) issues.push('SCOPED_INPUT_BUDGET_EXCEEDED');
+  const union = inputBytes <= limits.inputBytes ? disclosureUnion([...current, ...previous], selections, [projectedTools, projectedBaseline])
+    : { complete: false, sourceChars: null, metadataChars: null, records: [], work: 0, exceeded: false };
+  if (!union.complete) issues.push('SCOPED_DISCLOSURE_WORK_INCOMPLETE');
+  if (union.exceeded) issues.push('SCOPED_DISCLOSURE_UNION_EXCEEDED');
   const proof = { schemaVersion: 'mcpshield.scoped-disclosure-proof.v1', disclosurePolicy: SCOPED_DISCLOSURE_POLICY,
     inputDigest: hash(canonicalJson(input)), sourceInventoryDigest: hash(canonicalJson(inventory(current))),
     toolSurfaceDigest: hash(canonicalJson(tools)), baselineToolSurfaceDigest: hash(canonicalJson(baselineTools)),
     baselineInventoryDigest: hash(canonicalJson(inventory(previous))), baselineProvided: previous.length > 0,
-    union: { roles: ['analyzer', 'critic', 'probe'], limits, inputBytes, sourceChars: selectedChars, selections },
+    union: { roles: ['analyzer', 'critic', 'probe'], limits, inputBytes, snippetChars: selectedChars, sourceChars: union.sourceChars,
+      metadataChars: union.metadataChars, selections, accounting: { algorithm: 'EXACT_METADATA_FRAGMENTS_AND_SELECTED_SOURCE_V1',
+        ngramChars: 8, shortMetadataValues: 'MATCH_ENTIRE_VALUE_1_TO_7_CHARS', complete: union.complete,
+        work: union.work, files: union.records, arbitraryEncodedOrRewrittenData: 'NOT_PROVEN_SAFE' } },
     scopeComplete: issues.length === 0, fullSourceCoverage: false, fullBehaviorCoverage: false,
     redactionAssurance: 'KNOWN_CREDENTIAL_AND_CANARY_PATTERNS_NOT_ARBITRARY_SECRET_DETECTION',
     issues: [...new Set(issues)] };

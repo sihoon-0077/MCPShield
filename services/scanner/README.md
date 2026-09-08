@@ -852,10 +852,24 @@ arbitrary private data or encoded unknown secrets.
 
 The fixed union across analyzer, blind critic and probe generation is selected
 once: per original file version at most 25% / 2,048 characters, overall 32 KiB of
-snippet characters, 64 snippets and 64 KiB serialized input. All three roles see
-the same DTO; no follow-up/source expansion is permitted. Missing lexical risk
-coverage, budget overflow, copied complete source in metadata or redacted tool
-identifiers make the scope incomplete **before any role transmits**. Original
+source characters, 64 snippets and 64 KiB serialized input. This includes source
+positions matched by **all metadata keys, string/scalar values and arrays** plus
+the selected snippet ranges, not merely the separately labelled snippets.
+Eight-character exact fingerprints and whole short metadata values (1–7 chars)
+conservatively account for source fragments split/reordered among fields; there
+is no minimum source-file length exemption. Duplicate file versions are counted
+once. Unrelated metadata/source word overlap can conservatively require review.
+The guard is bounded to 8,000,000 comparison/coverage operations; exhaustion marks
+coverage incomplete with null totals and **zero HTTP requests**, not a partial
+budget success. It avoids source-size × metadata-size substring searches.
+
+All three roles see the same DTO; no follow-up/source expansion is permitted.
+The exact-fragment guard is not a general information-flow proof: arbitrary
+encoded/rewritten data and short fragments embedded in unrelated longer strings
+are `NOT_PROVEN_SAFE` in the proof. This guard alone does not establish the whole
+master source/environment/customer-data privacy requirement. Missing lexical risk
+coverage, union/work budget overflow or redacted tool identifiers make the scope
+incomplete **before any role transmits**. Original
 source and raw tool hashes, selection ranges and policy are independently
 reconstructed by the pure proof checker. Baseline inputs must themselves be
 trusted by the future caller; hash equality alone is not baseline authority.
