@@ -37,7 +37,7 @@ function example(quarantine = false) {
 
 test("validator reconstructs local domain/types and rejects signing-oracle templates", async () => {
   for (const quarantine of [false, true]) {
-    const { context, template } = example(quarantine), checked = checkedValidatorPayload(template, context, quarantine), wallet = Wallet.createRandom();
+    const { context, template } = example(quarantine), checked = await checkedValidatorPayload(template, context, quarantine), wallet = Wallet.createRandom();
     const signature = await wallet.signTypedData(checked.domain, checked.types, checked.payload);
     assert.equal(verifyTypedData(checked.domain, checked.types, checked.payload, signature), wallet.address);
     const corruptions = [
@@ -53,11 +53,11 @@ test("validator reconstructs local domain/types and rejects signing-oracle templ
     ];
     for (const corrupt of corruptions) {
       const changed = structuredClone(template); corrupt(changed);
-      assert.throws(() => checkedValidatorPayload(changed, context, quarantine));
+      await assert.rejects(() => checkedValidatorPayload(changed, context, quarantine));
     }
-    assert.throws(() => checkedValidatorPayload(template, { ...context, policy: { ...defaultPolicy, validitySeconds: 120 } }, quarantine));
-    assert.throws(() => checkedValidatorPayload(template, { ...context, identity: { ...context.identity, exists: false } }, quarantine));
-    assert.throws(() => checkedValidatorPayload(template, { ...context, independentSourceEvidence: undefined }, quarantine));
+    await assert.rejects(() => checkedValidatorPayload(template, { ...context, policy: { ...defaultPolicy, validitySeconds: 120 } }, quarantine));
+    await assert.rejects(() => checkedValidatorPayload(template, { ...context, identity: { ...context.identity, exists: false } }, quarantine));
+    await assert.rejects(() => checkedValidatorPayload(template, { ...context, independentSourceEvidence: undefined }, quarantine));
   }
 });
 

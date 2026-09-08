@@ -396,9 +396,10 @@ frozen into the job configuration; changing configuration never silently retries
 with different authority. API callers supply only `policyHash`, never these paths,
 images, probes or AI credentials. No Docker socket is needed by the API process.
 
-The additive OCI policy/configuration checkpoint remains fail-closed (`ABSTAIN`)
-until the strict scanner policy and independent validator rerun are connected.
-Binding, image preparation and job completion alone are not PASS or VERIFIED.
+The strict OCI policy recomputes its supported checks from bound evidence and local
+authority. Missing native identity, complete source/SBOM, probes or test-only semantic
+provenance cannot become PASS. Binding, image preparation and job completion alone
+are not PASS or VERIFIED.
 
 The trusted worker dispatches OCI preparation/rescans through the same 20-minute
 lease/CAS queue and stores a distinct `prepared-oci` release. Native image/database
@@ -416,3 +417,17 @@ recovery. This does not revoke a completed release. There is no automatic orphan
 operators must first check committed ownership, especially for
 `COMMIT_OWNERSHIP_RECHECK_REQUIRED`. If the database is unavailable, a fixed stderr
 event reports that the recovery record could not be saved; raw Docker errors are omitted.
+
+Each OCI signer separately sets `VALIDATOR_OCI_ENABLED=true` and the same explicit
+OCI environment fields above with prefix `VALIDATOR_OCI_` instead of `CONTROL_OCI_`.
+The validator needs its own exact base/candidate/Trivy/sink images, pinned catalogue,
+current pinned local database, and `VALIDATOR_ALLOW_REMOTE_AI=true` plus the explicit
+numeric-loopback `LOCAL_CONTRACT_TEST` analyzer/critic configuration. It re-exports
+the image, verifies its own installed observer, reruns the full OCI scanner with
+fresh generated probes, and compares verdict plus deterministic finding scope sets.
+API-supplied worker trust, fabricated completion checks, a reused original scan, or
+an original FAIL followed by an independent ABSTAIN cannot authorize a signature.
+Only after this independent rerun does it request current nonce/deadline/version
+and reconstruct the pinned EIP-712 payload. Original and independent report roots
+are linked in the private local verification receipt with the test-only quality
+label. This is neither production-model quality nor an arbitrary-native-code proof.

@@ -45,7 +45,7 @@ test("OCI policy fixes test-only semantic scope and separates 100MiB source from
     assert.throws(() => assertRuntimeBudget(source, ociPolicy, { ...descriptor, ...edit }), /OCI_RUNTIME_BUDGET_EXCEEDED/);
   }
   assert.throws(() => assertRuntimeBudget({ metadata: { sourceBytes: 101 * 1024 * 1024 } }, ociPolicy), /OCI_SOURCE_BUDGET_EXCEEDED/);
-  // This checkpoint deliberately has no approval implementation: phase completion never falls through to legacy PASS.
+  // No independent runtime proof: phase completion never falls through to legacy PASS.
   assert.equal(policyVerdict({ files: {} }, { scanStatus: "PASSED" }, ociPolicy), "ABSTAIN");
   assert.equal(policyVerdict({ files: { "oci/binding.json": "{}" } }, { scanStatus: "PASSED" }, defaultPolicy), "ABSTAIN");
 });
