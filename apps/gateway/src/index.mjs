@@ -262,6 +262,7 @@ function recheckSession(snapshot, options) {
     const decision = await executionDecision(snapshot, options, message.params.name, "CALL", operationClass(snapshot.tools.filter((tool) => tool.name === message.params.name)));
     requireExecutionDecision(snapshot, decision);
     emergencySessions.get(snapshot)?.call(message, decision);
+    return decision;
   };
 }
 
