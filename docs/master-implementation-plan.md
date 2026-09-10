@@ -1,13 +1,21 @@
 # MCPShield 마스터 문서 구현 현황
 
-기준일: 2026-09-09 KST. 상태: **구현 진행 중 — 전체 완료 아님**.
+기준일: 2026-09-10 KST. 상태: **구현 진행 중 — 전체 완료 아님**.
 
 기준 문서: 사용자가 제공한 `MCPShield_전체_시스템디자인_해커톤_마스터문서.md`.
 원본 SHA-256: `702268984174af450276b5292a4afccd6a4d5dce79738fe3abde41c4d30d4ea2`.
 시작 커밋: `6aa370285154f683989f2bf9b219bd2c052e6cee` (`mcp/main`).
 기존 코드·공개 데모를 보존하고 `master/main`에서 통합한다.
 
-## 최신 통합 체크포인트 (2026-09-09 KST)
+## 인수인계 체크포인트 (2026-09-10 KST)
+
+- 기능 HEAD는 `c9f8798`. 이번 변경은 [개발 인수인계](../DEVELOPMENT_HANDOFF.md)와 초안 보관이며 기능 병합·새 배포가 아니다.
+- [CI 34286988002](https://github.com/sihoon-0077/MCPShield/actions/runs/34286988002)를 GitHub API로 재확인: 완료·전체 실패. PostgreSQL/Node 24 성공, Node 22의 composed OCI·지원 fixture 독립 재검사·OCI worker→validator→V2→두 Gateway 세 단계 실패. repeat-demo/signed-image는 skipped.
+- 같은 기능 HEAD의 로컬 backend 타입 검사 성공. appeals API/BFF와 release-readiness focused 검사 15 PASS / PostgreSQL 선택 1 SKIP / 0 FAIL. 전체 Linux/외부 모델 검증의 대체 증거가 아니다.
+- 인수인계 작성 중 `npm run demo:live-smoke` 재실행 성공: 합성 정상 ALLOW, 악성 BLOCK_BEFORE_SPAWN, 종료 코드 0.
+- `master/backend-appeals` `9217faf`, `master/frontend-appeals` `859e727`, `master/security-ai` `e46c3ed`의 후속 작업은 별도 브랜치로 보존하고 검토·통합을 남긴다. 약 70%는 개발 진척 추정이며 배포/검증 완료율이 아니다.
+
+## 이전 통합 체크포인트 (2026-09-09 KST)
 
 아래 기록이 이전 커밋의 진행 중 표기보다 우선한다. 대화에서 설명한 약 70%는
 가중 요구사항별로 계산한 완료율이 아닌 구현 진척 추정치였다. 이를 검증 완료율이나

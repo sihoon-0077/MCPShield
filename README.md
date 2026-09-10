@@ -1,5 +1,8 @@
 # MCPShield
 
+새 개발자는 **[개발 인수인계 — 여기서 시작](DEVELOPMENT_HANDOFF.md)**을 먼저 읽으세요.
+기본 브랜치 `main`은 이전 버전이며, 최신 통합 개발은 `master/main`에서 진행합니다.
+
 ## Master 구현 브랜치
 
 `master/main`은 원본 해커톤 데모를 보존하면서 전체 마스터 문서의 요구사항을 확장하는 작업 브랜치입니다.
