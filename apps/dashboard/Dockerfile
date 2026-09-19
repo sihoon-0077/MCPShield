@@ -17,6 +17,7 @@ COPY packages/contracts-sdk/src/v2-identity.mjs packages/contracts-sdk/src/v2-id
 COPY packages/artifact-policy/import-policy.mjs ./packages/artifact-policy/import-policy.mjs
 COPY apps/gateway/src/artifact.mjs ./apps/gateway/src/artifact.mjs
 COPY services/scanner/src/prepared-binding.mjs services/scanner/src/oci-binding.mjs services/scanner/src/snapshot.mjs services/scanner/src/evidence.mjs ./services/scanner/src/
+COPY services/scanner/src/scoped-policy.mjs services/scanner/src/canonical-json.mjs ./services/scanner/src/
 COPY services/resolver/src/runtime-descriptor.mjs services/resolver/src/oci-runtime-descriptor.mjs ./services/resolver/src/
 RUN npm run build --workspace @mcpshield/dashboard
 

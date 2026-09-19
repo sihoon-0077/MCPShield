@@ -1,4 +1,4 @@
-import { canonicalJson } from './evidence.mjs';
+import { canonicalJson } from './canonical-json.mjs';
 
 export const SCOPED_DISCLOSURE_POLICY = 'SCOPED_PROVIDER_REVIEW_V1';
 export const SCOPED_NODE_PROFILE = 'restricted-node-docker-v2';
