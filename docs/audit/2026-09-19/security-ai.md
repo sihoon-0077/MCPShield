@@ -204,7 +204,7 @@ FR 매핑을 위해 원문 506–531도 확인했다.
 |---|---|---|---|
 | A1 source/lock/surface/static/canary/PASS 전제,5696–5701 | FR001–006/101–113,S01 | 완료 | 지원mail/prepared v1 native fullcycle; 임의 npm 전체 승인아님. |
 | A1 VERIFIED→ALLOW→restricted spawn→surface→mail→receipt,5709–5714 | S01,S46,S57 | 부분 | TRUST/DYN native E2E 존재. 최신 Nodev2/OCI2와 receipt모든 필드의 동일E2E는 Main/Frontend최종합산. |
-| A2 같은publisher서명된malicious update signatureVALID,5720,5730 | FR003,S55 | 부분 | demo signature/contract test 존재. 외부publisher identity검증 일반화는없음. |
+| A2 같은publisher서명된malicious update signatureVALID,5720,5730 | FR003,S55,Frontend DM16 | 미완료 | 교차감사 교정: fixture manifest에 publisher signature/key 없음. LIVE signature는 UNKNOWN, MOCK/replay의 VALID는 고정 표시. EIP-712 validator 서명은 publisher 서명 증거가 아님. |
 | A2 scopeAI+실canary,5721–5722,5731–5732 | S28,S05,E19 | 부분 | 실제local sinkcanary 탐지. localfallback/contractAI와진짜모델 finding품질 구분; 원문의 PURPOSE_SCOPE_MISMATCH는현 SEMANTIC_BEHAVIOR_MISMATCH로매핑. |
 | A2 emergency→2FAIL→REVOKED→2Gateway prespawn block,5733–5735 | S58,S56,E30 | 완료 | TRUST v1native fullcycle및contractquorum. 조직독립/실모델결과 아님. |
 | A3 drift mismatch/block/terminate/event/rescan,5741–5753 | FR006,S26,S53 | 부분 | collector+Gateway drift/pagination차단 회귀. notification/periodic/event/freshscan전경로 최신 UI합산 필요. |

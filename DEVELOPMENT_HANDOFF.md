@@ -1,18 +1,31 @@
 # MCPShield 개발 인수인계 — 여기서 시작하세요
 
-기준일: **2026-09-19 KST**. 기능 통합 기준: **`1686547` (`master/main`)** 및 후속 검증·문서 보완.
+기준일: **2026-09-19 KST**. 기능·CI 기준: **`7bac78a` (`master/main`)**. 이후 변경은 감사 문서·집계기다.
 9월 10일 이후 보안·백엔드·프론트엔드 후속 변경과 종합 상태 점검을 통합했다. 최신 전체 Linux Docker 검증과 공개 배포는 아직 완료되지 않았다.
 
 ## 1. 현재 어디까지 만들었나
 
-**전체 마스터 목표 대비 약 70%는 개발 진척의 추정치다.** 요구사항 가중치로 계산한 수치나 테스트 통과율, 운영 배포 완료율이 아니다. 앞으로 할 작업은 완료에 포함하지 않는다.
+**최신 판단은 [5,997줄 전체 재감사](docs/MASTER_REQUIREMENTS_AUDIT_2026-09-19.md)가 우선한다.**
+중복 제거 검수 264개: 완료49 / 부분121 / 미완료94, 엄격 완료율18.56%.
+명시된 핵심 FR만 보면 50개 중 완료35 / 부분15로70.00%다. 이전의 ‘전체 약70%’ 추정과 다른 지표다.
+항목 수 기반 문서 충족률이며 코드량/개발공수의 비율이 아니다. 부분까지 포함한 착수 범위는64.39%다.
+
+**사용자 잔여 한도50% 조건에 따라 신규 구현을 중단했다.** 현재 작업·감사만 마감했으며,
+후속 자동 목표 턴에서도 사용자 재개 지시 없이 새 기능/수정/배포를 시작하지 않는다.
+전체 개발 목표는 미완료이며, 이를 완료 또는 기술적 차단으로 잘못 표시하지 않는다.
+OCI scanner `8c13b9c`는 별도 worktree에 보존한 미통합 코드다.
+
+`7bac78a` [CI35427980359](https://github.com/sihoon-0077/MCPShield/actions/runs/35427980359)는 종료·전체실패.
+Node24/PG/기존10회반복demo 성공, 새 scoped Node scanner/API fullcycle 두 gate는 ABSTAIN≠FAIL 실패.
+후속 Compose/Grafana 및 최종 이미지 서명·보관은 skipped다. 상세 로그·남은 조건은 재감사 §5 참조.
+이번 감사 문서·집계기는 로컬 커밋에만 보존하며, 원격 master/main은7bac78a다(새 push/CI 없음).
 
 현재는 **실제 MCP 통신을 사용하는 합성 데이터 데모 + 운영 기능을 확장한 개발본**이다. 전체 마스터 구현과 실제 고객 운영 검증은 미완료다. 첫 실사용 목표는 지원되는 MCP 몇 개를 소규모 팀에 연결해 정상 업무·위험 업데이트 차단·장애 대응을 검증하는 것이다.
 
 | 파트 | Main에 구현된 것 | 남은 핵심 작업 |
 |---|---|---|
 | Frontend | Next.js/React 대시보드, `/try`, `/console`, 역할별 로그인, 릴리스 검색·등록, 검사·재처리, 정책, 증거·이력, 이의제기 종결·변경본 재검사 연결, 체인·receipt 표시, 공통 한국어 오류 안내 | 실제 브라우저 조작·시각 검증, 실제 운영 사용자 검증 |
-| Backend | Fastify/TypeScript, 기존 `/api`와 확장 `/v1`, tenant 격리, admin/operator/reader, SQLite/PostgreSQL, SQL queue·lease·backoff·DLQ, 멱등성, 암호화 증거·감사 이벤트·chain outbox, scan/preparation 시도별 lease fence, 인증된 종합 health·실제 Worker heartbeat | scoped-v2 원본 catalogue·독립 validator 연결 통합, 실제 운영 DB·secret 관리·복구·부하 검증 |
+| Backend | Fastify/TypeScript, 기존 `/api`와 확장 `/v1`, tenant 격리, admin/operator/reader, SQLite/PostgreSQL, SQL queue·lease·backoff·DLQ, 멱등성, 암호화 증거·감사 이벤트·chain outbox, scan/preparation 시도별 lease fence, 인증된 종합 health·실제 Worker heartbeat, scoped-v2 원본 catalogue·독립 validator 코드 연결 | 새 scoped-v2 native 실패 해결·검증, chain retry 상한/DLQ, 실제 운영 DB·secret 관리·복구·부하 검증 |
 | Security·AI | npm/tarball/OCI 수집, 정확한 digest·도구 표면 고정, 정적 규칙·변경점·SBOM/취약점 검사, Docker 격리·canary, 증거 Merkle root, Node scoped-v2의 제한 DTO·독립 critic·생성 probe 인자 연결 | 새 scoped-v2 전체 Linux 검증, OCI scoped-v2 연결, 실제 외부 모델 호출·품질 평가 |
 | Blockchain | Solidity V1/V2·receipt anchor, EIP-712, 2-of-3, 중복·만료·다른 체인 서명 거부, 격리·terminal 폐기, 정책 버전, indexer·reorg/전송 복구 | Base Sepolia 배포·외부 RPC 검증, 독립 기관 validator, 운영 키 관리 |
 | Gateway | 실제 stdio/HTTP MCP, 실행 전 차단, 매 도구 호출 승인 재검사, identity·policy·expiry 검증, signed cache·장애 fallback, 제한된 npm/OCI 실행 프로필, v1/local-v2/provider-v2 identity 분리 회귀 | 새 scoped-v2 Linux 연결, 지원 대상 확대, 후속 호출 없는 지속 실행의 폐기 즉시 중단 보장 |
