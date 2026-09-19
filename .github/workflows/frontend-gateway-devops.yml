@@ -249,7 +249,7 @@ jobs:
       - name: Exercise actual PostgreSQL control plane
         env:
           MCPSHIELD_POSTGRES_TEST_URL: postgresql://mcpshield:mcpshield_ci_only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/mcpshield_ci
-          run: node --import tsx --test tests/api/control-plane.test.ts tests/api/preparations.test.ts tests/api/appeals.test.ts tests/api/health.test.ts
+        run: node --import tsx --test tests/api/control-plane.test.ts tests/api/preparations.test.ts tests/api/appeals.test.ts tests/api/health.test.ts
       - name: Back up and restore into a separate empty database
         env:
           PG_CONTAINER: ${{ job.services.postgres.id }}

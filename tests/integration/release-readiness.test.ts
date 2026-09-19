@@ -24,6 +24,8 @@ test('release smoke contract exercises the real API and complete synthetic judge
 });
 test('independent CI diagnostics never remove upstream success gates from image signing or retention', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/frontend-gateway-devops.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /^        run: node --import tsx --test tests\/api\/control-plane\.test\.ts tests\/api\/preparations\.test\.ts tests\/api\/appeals\.test\.ts tests\/api\/health\.test\.ts\r?$/m,
+    'The PostgreSQL command is a step property, not an env variable');
   const jobs = workflow.split(/^  (?=[a-z-]+:\s*$)/m);
   for (const name of ['repeat-demo', 'signed-image']) {
     const job = jobs.find((part) => part.startsWith(`${name}:`));
