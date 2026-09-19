@@ -86,5 +86,7 @@ export async function retryPreparation(store: ControlStore, tenant: string, prep
 }
 export function publicPreparation({ tenantId: _tenant, request: _request, leaseOwner: _owner, leaseExpiresAt: _lease, configHash: _config, result, ...job }: PreparationJob) {
   if (!result) return job;
-  const { evidenceKey: _key, ...safeResult } = result; return { ...job, result: safeResult };
+  const safeResult = Object.fromEntries(["outcome", "releaseId", "scanId", "verdict", "reportRoot", "issues", "semanticEvidenceMode", "providerQuality"]
+    .filter(key => result[key] !== undefined).map(key => [key, result[key]]));
+  return { ...job, result: safeResult };
 }

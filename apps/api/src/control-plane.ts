@@ -3,10 +3,11 @@ import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2.js";
-import { ControlStore, type ScanJob } from "./control-store.js";
+import { ControlStore, assertScanProfile, type ScanJob } from "./control-store.js";
 import { currentTraceId, traceHeaders, withSpan, recordAdmission } from "../../../packages/telemetry/index.mjs";
 import type { EvidenceObjectStore } from "../../../packages/object-storage/index.mjs";
-import { defaultPolicy, preparedPolicy, ociPolicy, validPolicy } from "./control-policy.js";
+import { defaultPolicy, preparedPolicy, ociPolicy, scopedPreparedPolicy, validPolicy } from "./control-policy.js";
+import type { ScopedPreparedConfig } from "./scoped-config.js";
 import { registerChainRoutes } from "./chain-control.js";
 import { enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
 import { registerReceiptRoutes } from "./receipt-control.js";
@@ -31,6 +32,7 @@ export interface ControlOptions {
   v2Relayer?: V2Relayer;
   receiptRelayer?: ReceiptRelayer;
   preparedRuntime?: PreparedConfig;
+  scopedPrepared?: ScopedPreparedConfig;
   ociRuntime?: OciConfig;
   prepareOciRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
   scanOciRuntime?: (input: Record<string, any>) => Promise<Record<string, any>>;
@@ -65,6 +67,10 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
     await store.put(tenant, "policy", hash(defaultPolicy), { policyHash: hash(defaultPolicy), alias: "mvp-default-v1", version: "1.0.0", document: defaultPolicy, createdAt: new Date().toISOString(), deprecatedAt: null });
     await store.put(tenant, "policy", hash(preparedPolicy), { policyHash: hash(preparedPolicy), alias: "restricted-node-docker-v1", version: "1.0.0", document: preparedPolicy, createdAt: new Date().toISOString(), deprecatedAt: null });
     await store.put(tenant, "policy", hash(ociPolicy), { policyHash: hash(ociPolicy), alias: ociPolicy.profile, version: "1.0.0", document: ociPolicy, createdAt: new Date().toISOString(), deprecatedAt: null });
+    for (const mode of ["LOCAL_CONTRACT_TEST", "PROVIDER_EXECUTION"] as const) {
+      const document = scopedPreparedPolicy(mode);
+      await store.put(tenant, "policy", hash(document), { policyHash: hash(document), alias: `${document.profile}-${mode}`, version: document.version, document, createdAt: new Date().toISOString(), deprecatedAt: null });
+    }
   }
   const authenticate = (header: string | undefined) => {
     const supplied = header?.startsWith("Bearer ") ? header.slice(7) : "";
@@ -157,7 +163,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       const release = await get(user.tenantId, "release", body.releaseId);
       const policy = await get(user.tenantId, "policy", body.policyHash);
       if (policy.deprecatedAt) throw err("POLICY_DEPRECATED", 409);
-      if ((release.runtimeProfile ?? null) !== (policy.document.profile ?? null)) throw err("SCAN_PROFILE_MISMATCH", 409);
+      assertScanProfile(release, policy.document);
       if (release.runtimeProfile && body.baselineReleaseId) throw err("PREPARED_BASELINE_UNSUPPORTED");
       if (body.requestedTiers && (!Array.isArray(body.requestedTiers) || [...body.requestedTiers].sort().join() !== [...policy.document.requiredTiers].sort().join())) throw err("REQUIRED_TIERS_MISSING");
       if (body.baselineReleaseId && (await get(user.tenantId, "release", body.baselineReleaseId)).toolId !== release.toolId) throw err("BASELINE_TOOL_MISMATCH");
@@ -294,12 +300,23 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
   return store;
 }
 
-function publicRelease({ artifactDir: _path, metadata: _metadata, preparedEvidenceKey: _key, preparedReportRoot: _root, runtimeTag: _tag, ...release }: Record<string, any>) { return release; }
+const publicFields = (value: Record<string, any>, fields: string[]) => Object.fromEntries(fields.filter(key => value[key] !== undefined).map(key => [key, value[key]]));
+function publicRelease(release: Record<string, any>) {
+  return publicFields(release, ["releaseId", "legacyReleaseId", "toolId", "version", "artifactUri", "artifactDigest", "manifestDigest", "toolSurfaceHash", "sourceType",
+    "runtimeProfile", "sourceReleaseId", "runtimeOwnership", "status", "policyHash", "reportRoot", "validUntil", "chain", "chainUnavailable", "createdAt", "semanticEvidenceMode", "providerQuality"]);
+}
 function publicScan({ tenantId: _tenant, leaseOwner: _owner, request, result, ...scan }: ScanJob) {
   const baselineReleaseId = request.baselineReleaseId ?? null;
   const appealId = request.appealId ?? null;
   if (!result) return { ...scan, baselineReleaseId, appealId };
-  const { evidenceKey: _key, preparedRuntimeTrust: _proof, ociRuntimeTrust: _ociProof, ...safeResult } = result; return { ...scan, baselineReleaseId, appealId, result: safeResult };
+  const safeResult = publicFields(result, ["scanResult", "reportRoot", "analysis", "policyHash", "validFrom", "validUntil", "verdict", "state", "semanticEvidenceMode", "providerQuality"]);
+  if (safeResult.analysis) {
+    const analysis = safeResult.analysis;
+    safeResult.analysis = { ...(typeof analysis.profile === "string" && [preparedPolicy.profile, ociPolicy.profile, "restricted-node-docker-v2"].includes(analysis.profile) ? { profile: analysis.profile } : {}),
+      ...(["PASS", "FAIL", "ABSTAIN"].includes(analysis.verdict) ? { verdict: analysis.verdict } : {}),
+      issues: Array.isArray(analysis.issues) ? analysis.issues.filter((code: unknown) => typeof code === "string" && /^[A-Z][A-Z0-9_]{0,100}$/.test(code)).slice(0, 32) : [] };
+  }
+  return { ...scan, baselineReleaseId, appealId, result: safeResult };
 }
 export async function saveEvidence(options: ControlOptions, tenantId: string, bundle: Record<string, any>) {
   const content = Buffer.from(canonical(bundle));

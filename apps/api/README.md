@@ -502,3 +502,90 @@ V2 quorum/indexer and two separate Gateway denial processes. Source and expanded
 byte counts, independent roots and bounded Docker create/start evidence are checked.
 It does not download external images or call paid AI; unsupported hosts skip the
 native test. A portable pass must not be reported as a native fullcycle pass.
+
+### Additive Node scoped v2
+
+`restricted-node-docker-v2` is a separate `version: 2.0.0` control policy with the
+exact `semantic: scopedReviewPolicy(LOCAL_CONTRACT_TEST|PROVIDER_EXECUTION)` object.
+Both policies are listed under `/v1/policies`; v1 defaults, hashes and requests stay
+unchanged. Prepare still accepts only `{policyHash}`. The server generates the
+full `executionPolicy.semantic` commitment. A changed semantic mode produces a
+different manifest/release identity, not a reinterpretation of an old approval.
+OCI v2 and prepared baselines remain unsupported.
+
+In addition to the existing pinned `CONTROL_PREPARED_*` and Docker configuration,
+API and worker require:
+
+- `CONTROL_SCOPED_PROVENANCE_PATHS`: JSON object mapping tenant IDs to absolute,
+  operator-owned catalogue paths. A tenant cannot borrow another tenant's entry.
+- `CONTROL_SCOPED_AI_CONFIG`: separate JSON AI configuration, validated by the
+  scanner's `validateScopedAiV2` before execution and again at its actual risk tier.
+  It requires explicit `allowRemoteAi: true`,
+  `disclosurePolicy: SCOPED_PROVIDER_REVIEW_V1`, matching `evidenceMode`, provider
+  and bounded transport configuration. This never enables v1 full-source export.
+  Local tests use only numeric-loopback endpoints and synthetic credentials.
+  Tier 3 requires independently transmitted distinct OpenAI model selections and
+  distinct nonempty response model identities, not merely different aliases.
+
+The catalogue file has exactly this local-only shape (digest shown as a placeholder):
+
+```json
+{
+  "schemaVersion": "mcpshield.scoped-provenance-catalogue.v1",
+  "artifacts": [{
+    "schemaVersion": "mcpshield.operator-code-artifact.v1",
+    "authority": "OPERATOR_LOCAL_CATALOG",
+    "contentClass": "CODE_ARTIFACT_NO_CUSTOMER_DATA",
+    "sourceArtifactDigest": "sha256:<64 lowercase hex characters>"
+  }]
+}
+```
+
+The file is bounded to 512 KiB and 128 unique original tree digests; an empty
+`artifacts` array revokes eligibility. It is reopened without following the final
+symlink where supported. This is an operator declaration, not automatic proof
+that arbitrary encoded data contains no customer information. Package metadata,
+API bodies and archived worker proofs are not declaration authorities.
+
+Every relevant boundary rechecks current declaration/configuration. Prepare,
+rescan, final persistence and attestation-template generation also use a fresh
+bounded snapshot of the retained original source: exact source identity and actual
+original file bytes must fit `maxArtifactBytes`. Private `sourceBudget` binds that
+count to the original tree digest; neither missing size, archive length nor the
+expanded installed closure is substituted. This deliberately adds bounded local
+reads; it does not cache approvals or mutate candidate source. Retry cannot silently
+replace its frozen configuration. Removing a catalogue entry or changing worker
+configuration fails closed even if earlier results were PASS.
+Revocation takes effect at these checkpoints; it does not retract or cancel a
+provider request that was already transmitted before the local change.
+
+Each validator separately configures `VALIDATOR_SCOPED_PROVENANCE_PATH`,
+`VALIDATOR_SCOPED_AI_CONFIG` and the existing `VALIDATOR_SOURCES_PATH` (unchanged
+`mcpshield.validator-sources.v1` schema). It selects the original `sourceReleaseId`
+from its own immutable locator catalogue, reacquires and checks all source identity
+fields and original byte count before provider work, exports its own image, and
+performs a fresh scoped review and Docker run. It reloads/reacquires before signing;
+API-supplied provenance, an absent independent scan, changed source/archive/mode,
+over-budget source or mismatched verdict cannot authorize a signature.
+
+Public summaries include only policy-derived `semanticEvidenceMode` and fixed
+`providerQuality: PROVIDER_QUALITY_NOT_MEASURED`. The mode does **not** prove that a
+provider request happened: budget/config failures can cause zero requests. Raw
+review execution evidence stays encrypted and operator-only. Paths, provider keys,
+catalogues, runtime trust and private source budgets are not public projections.
+
+Rollback: disable the separate scoped configuration or deprecate its policy; keep
+existing v1 configuration unchanged. Do not relabel existing v2 evidence as v1.
+To re-enable a revoked declaration, restore the explicit local catalogue and use a
+new preparation or the permitted retry with its original frozen settings.
+
+Portable checks: `node --import tsx --test tests/api/scoped-preparations.test.ts
+tests/api/scoped-validator.test.ts`. These use actual SQL/source acquisition and
+loopback Responses contracts but explicitly synthetic Docker observations.
+The separate real Linux fullcycle is
+`node --import tsx --test --test-name-pattern="scoped Node v2 source" tests/api/prepared-fullcycle.test.ts`
+with `MCPSHIELD_DOCKER_TESTS=1`, `MCPSHIELD_SCOPED_DOCKER_TESTS=1` and a pinned local
+`MCPSHIELD_RUNTIME_BUILDER_IMAGE`. It uses a naturally sized authored mailbox,
+separate local catalogues, two real validator subprocesses, local EVM quorum and
+Gateway allow/revoke with Docker create/start evidence. No paid provider, actual
+customer data or public-registry provenance is claimed.

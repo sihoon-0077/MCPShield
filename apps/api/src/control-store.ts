@@ -5,6 +5,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as pause } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Pool, PoolClient } from "pg";
+// @ts-expect-error Shared pure scoped commitment validation.
+import { SCOPED_NODE_PROFILE, validateScopedReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
+
+export function assertScanProfile(release: Record<string, any>, policy: Record<string, any>) {
+  if ((release.runtimeProfile ?? null) !== (policy.profile ?? null)) throw Object.assign(new Error("SCAN_PROFILE_MISMATCH"), { statusCode: 409 });
+  if (policy.profile === SCOPED_NODE_PROFILE && (policy.version !== "2.0.0" || !validateScopedReviewPolicy(policy.semantic)
+    || release.semanticEvidenceMode !== policy.semantic.evidenceMode)) throw Object.assign(new Error("SCAN_SEMANTIC_MODE_MISMATCH"), { statusCode: 409 });
+}
 
 export interface ScanJob {
   scanId: string; tenantId: string; releaseId: string; policyHash: string;
@@ -193,6 +201,13 @@ export class ControlStore {
     return this.forTenant(tenantId, async (transaction) => {
       const existing = await transaction.idempotentScan(tenantId, key, requestHash);
       if (existing) return { scan: existing, deduplicated: true, reusedResult: false };
+      if (release.runtimeProfile === SCOPED_NODE_PROFILE || policy.profile === SCOPED_NODE_PROFILE) {
+        const target = await transaction.get(tenantId, "release", request.releaseId);
+        const currentPolicy = await transaction.get(tenantId, "policy", request.policyHash);
+        if (!target || target.artifactDigest !== request.artifactDigest) throw Object.assign(new Error("SCAN_TARGET_CHANGED"), { statusCode: 409 });
+        if (!currentPolicy || currentPolicy.deprecatedAt || JSON.stringify(currentPolicy.document) !== JSON.stringify(policy)) throw Object.assign(new Error("POLICY_DEPRECATED"), { statusCode: 409 });
+        assertScanProfile(target, currentPolicy.document);
+      }
       let appeal: Record<string, any> | undefined;
       if (request.appealId) {
         const fail = (code: string, statusCode = 409): never => { throw Object.assign(new Error(code), { statusCode }); };
@@ -207,7 +222,7 @@ export class ControlStore {
         if (target!.toolId !== original!.toolId) fail("APPEAL_TOOL_MISMATCH");
         if (target!.artifactDigest !== request.artifactDigest || target!.runtimeProfile !== release.runtimeProfile) fail("APPEAL_TARGET_CHANGED");
         if (!selectedPolicy || selectedPolicy.deprecatedAt || JSON.stringify(selectedPolicy.document) !== JSON.stringify(policy)) fail("POLICY_DEPRECATED");
-        if ((target!.runtimeProfile ?? null) !== (policy.profile ?? null)) fail("SCAN_PROFILE_MISMATCH");
+        assertScanProfile(target!, policy);
         if (target!.artifactDigest === (appeal!.original?.artifactDigest ?? original!.artifactDigest)) {
           // Old records with no pinned policy cannot infer the challenged policy from today's mutable projection.
           const challenged = appeal!.original?.policyHash ?? (appeal!.scanId ? (await transaction.scan(tenantId, appeal!.scanId))?.policyHash : undefined);

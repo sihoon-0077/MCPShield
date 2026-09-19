@@ -6,6 +6,7 @@ import { createS3EvidenceStore } from "../../../packages/object-storage/index.mj
 import { ReceiptRelayer } from "./receipt-relayer.js";
 import { checkedPreparedConfig, checkedAiDisclosurePolicy } from "./prepared-config.js";
 import { checkedOciConfig } from "./oci-config.js";
+import { checkedScopedConfig } from "./scoped-config.js";
 
 export function controlConfig(env = process.env): ControlOptions | undefined {
   if (env.CONTROL_PLANE_ENABLED !== "true") return undefined;
@@ -14,6 +15,11 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
   if (!Array.isArray(credentials) || !credentials.length) throw new Error("CONTROL_PLANE_CREDENTIALS required");
   if (!/^[0-9a-f]{64}$/.test(env.CONTROL_EVIDENCE_KEY ?? "")) throw new Error("CONTROL_EVIDENCE_KEY must be 32-byte hex");
   const allowRemoteAi = env.CONTROL_ALLOW_REMOTE_AI === "true";
+  let scopedPrepared;
+  if (env.CONTROL_SCOPED_PROVENANCE_PATHS !== undefined || env.CONTROL_SCOPED_AI_CONFIG !== undefined) {
+    try { scopedPrepared = checkedScopedConfig({ provenancePaths: JSON.parse(env.CONTROL_SCOPED_PROVENANCE_PATHS ?? ""), ai: JSON.parse(env.CONTROL_SCOPED_AI_CONFIG ?? "") }); }
+    catch { throw Error("SCOPED_CONFIG_INVALID"); }
+  }
   if (env.CONTROL_PREPARED_ENABLED === "true" && env.CONTROL_SANDBOX_MODE !== "docker") throw new Error("PREPARED_DOCKER_REQUIRED");
   const preparedRuntime = env.CONTROL_PREPARED_ENABLED === "true" ? checkedPreparedConfig({ builderImageDigest: env.CONTROL_PREPARED_BUILDER_DIGEST ?? "",
     platform: { os: "linux", architecture: env.CONTROL_PREPARED_ARCHITECTURE as "amd64" | "arm64" },
@@ -37,7 +43,7 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
   }
   return {
     credentials,
-    preparedRuntime, ociRuntime,
+    preparedRuntime, ociRuntime, scopedPrepared,
     databaseUrl: env.CONTROL_DATABASE_URL ?? resolve("data/control-plane.sqlite"),
     artifactPath: env.CONTROL_ARTIFACT_PATH ?? resolve("data/control-artifacts"),
     evidencePath: env.CONTROL_EVIDENCE_PATH ?? resolve("data/control-evidence"),

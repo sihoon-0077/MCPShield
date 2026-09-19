@@ -4,7 +4,8 @@ import { attestationV2Types, bytes32, quarantineV2Types } from "../../../package
 import { chainActionId, chainActions, enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
 import { ControlStore } from "./control-store.js";
 import { hash, loadEvidence, type ControlOptions, type Credential } from "./control-plane.js";
-import { ociPolicy, policyVerdict } from "./control-policy.js";
+import { ociPolicy, preparedPolicy, policyVerdict, validPolicy, isNodePreparedPolicy } from "./control-policy.js";
+import { scopedPreparationContext } from "./scoped-config.js";
 import { withSpan } from "../../../packages/telemetry/index.mjs";
 import { checkedPreparedTrust } from "./prepared-config.js";
 import { checkedPreparedEvidence, checkedOciEvidence } from "./prepared-evidence.js";
@@ -26,14 +27,20 @@ export async function registerChainRoutes(api: FastifyInstance, store: ControlSt
     const client = enabled(), scan = await store.scan(tenantId, scanId);
     if (!scan?.result || scan.status !== "COMPLETED") throw failure("SCAN_NOT_READY", 409);
     const [release, policy] = await Promise.all([store.get(tenantId, "release", scan.releaseId), store.get(tenantId, "policy", scan.policyHash)]);
-    if (!release || !policy || policy.deprecatedAt) throw failure("POLICY_OR_RELEASE_UNAVAILABLE", 409);
+    if (!release || !policy || policy.deprecatedAt || !validPolicy(policy.document) || hash(policy.document) !== scan.policyHash) throw failure("POLICY_OR_RELEASE_UNAVAILABLE", 409);
     const bundle = await loadEvidence(options, tenantId, scan.result.evidenceKey, scan.result.reportRoot);
     const oci = policy.document.profile === ociPolicy.profile;
     if (policy.document.profile) (oci ? checkedOciEvidence : checkedPreparedEvidence)(bundle, release);
     // This stored worker context proposes a template without giving the API a Docker socket.
     // It is not an independent proof: each signing validator must re-export its own local image.
-    const verdict = policyVerdict(bundle, scan.result.scanResult, policy.document, oci ? await checkedOciTrust(scan.result.ociRuntimeTrust, options.ociRuntime)
-      : checkedPreparedTrust(scan.result.preparedRuntimeTrust, options.preparedRuntime));
+    let trust = oci ? await checkedOciTrust(scan.result.ociRuntimeTrust, options.ociRuntime) : checkedPreparedTrust(scan.result.preparedRuntimeTrust, options.preparedRuntime);
+    if (isNodePreparedPolicy(policy.document) && policy.document.profile !== preparedPolicy.profile) {
+      const { binding } = checkedPreparedEvidence(bundle, release);
+      const current = await scopedPreparationContext(options, tenantId, policy.document, (await store.get(tenantId, "release", binding.sourceReleaseId))!);
+      if (!trust || trust.scopedConfigHash !== hash(current.frozen) || hash(binding.executionPolicy) !== hash(current.scopedReview.executionPolicy)) throw failure("SCOPED_CONFIG_CHANGED", 409);
+      trust = { ...trust, sourceProvenance: current.scopedReview.sourceProvenance };
+    }
+    const verdict = policyVerdict(bundle, scan.result.scanResult, policy.document, trust);
     const context = await client.context(validator);
     const now = Math.floor(Date.now() / 1000), validFrom = Math.floor(Date.parse(scan.result.validFrom) / 1000), validUntil = Math.floor(Date.parse(scan.result.validUntil) / 1000);
     if (validUntil <= now || validFrom > now) throw failure("SCAN_VALIDITY_EXPIRED", 409);

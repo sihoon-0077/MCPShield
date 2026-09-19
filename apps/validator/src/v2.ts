@@ -1,7 +1,8 @@
 import { Contract, JsonRpcProvider, Wallet, id } from "ethers";
 import { pathToFileURL } from "node:url";
 import { setTimeout } from "node:timers/promises";
-import { ociPolicy, policyVerdict, validPolicy } from "../../api/src/control-policy.js";
+import { ociPolicy, preparedPolicy, policyVerdict, validPolicy, isNodePreparedPolicy } from "../../api/src/control-policy.js";
+import { checkedScopedSource, checkedScopedValidatorConfig, type ScopedValidatorConfig } from "./scoped-verification.js";
 import { hash } from "../../api/src/control-plane.js";
 import { attestationV2Domain, attestationV2Types, bytes32, createReleaseRegistryV2, exactReleaseIdentity, quarantineV2Types } from "../../../packages/contracts-sdk/src/v2.js";
 import { boundedServiceRequest, checkedServiceUrl, v2RpcRequest } from "../../../packages/contracts-sdk/src/transport.js";
@@ -19,6 +20,7 @@ interface ValidatorContext {
   chainId: number; registryAddress: string; policyHash: string; policy: any; scan: any; evidence: any;
   identity: any; validatorSetVersion: number; nonce: number; now?: number;
   preparedRuntime?: PreparedConfig; preparedRuntimeTrust?: Record<string, any>;
+  scopedPrepared?: ScopedValidatorConfig;
   independentPreparedEvidence?: { result: any; bundle: any };
   ociRuntime?: OciConfig; ociRuntimeTrust?: Record<string, any>; independentOciEvidence?: { result: any; bundle: any };
   independentSourceEvidence?: { result: any; bundle: any; sourceIdentity: any; baselineReleaseId: string | null };
@@ -31,17 +33,23 @@ export async function checkedValidatorPayload(template: any, context: ValidatorC
     || Object.keys(template.payload).sort().join() !== Object.values(types)[0].map((field) => field.name).sort().join()) fail();
   if (!validPolicy(policy) || hash(policy) !== context.policyHash || scan.status !== "COMPLETED" || scan.policyHash !== context.policyHash
     || !scan.result || scan.result.reportRoot !== evidence.reportRoot || !verifyEvidenceBundle(evidence.bundle, evidence.reportRoot)) fail();
-  const runtimeTrust = policy.profile === ociPolicy.profile ? await checkedOciTrust(context.ociRuntimeTrust, context.ociRuntime)
+  let runtimeTrust = policy.profile === ociPolicy.profile ? await checkedOciTrust(context.ociRuntimeTrust, context.ociRuntime)
     : checkedPreparedTrust(context.preparedRuntimeTrust, context.preparedRuntime);
   if (policy.profile === ociPolicy.profile) {
     checkedOciEvidence(evidence.bundle, identity);
     if (!runtimeTrust || !context.independentOciEvidence) fail();
     compareOciScans({ bundle: evidence.bundle, result: scan.result.scanResult }, context.independentOciEvidence, policy, runtimeTrust!);
-  } else if (policy.profile) {
-    checkedPreparedEvidence(evidence.bundle, identity);
+  } else if (isNodePreparedPolicy(policy)) {
+    const { binding, source } = checkedPreparedEvidence(evidence.bundle, identity);
     if (!checkedPreparedTrust(context.preparedRuntimeTrust, context.preparedRuntime) || !context.independentPreparedEvidence) fail();
-    comparePreparedScans({ bundle: evidence.bundle, result: scan.result.scanResult }, context.independentPreparedEvidence, policy, context.preparedRuntimeTrust!);
+    if (policy.profile !== preparedPolicy.profile) {
+      const current = await checkedScopedSource(policy, binding, source, context.scopedPrepared);
+      if (current.configHash !== runtimeTrust?.scopedVerificationConfigHash) fail();
+      runtimeTrust = { ...runtimeTrust, sourceProvenance: current.sourceProvenance, sourceBudget: current.sourceBudget };
+    }
+    comparePreparedScans({ bundle: evidence.bundle, result: scan.result.scanResult }, context.independentPreparedEvidence, policy, runtimeTrust!);
   } else {
+    if (policy.profile !== undefined) fail();
     if (!context.independentSourceEvidence) fail();
     compareSourceScans({ bundle: evidence.bundle, result: scan.result.scanResult }, context.independentSourceEvidence, policy, identity, scan.releaseId, scan.baselineReleaseId ?? null);
   }
@@ -76,7 +84,7 @@ export async function checkedValidatorPayload(template: any, context: ValidatorC
 
 export async function runValidatorFanout(options: { apiUrl: string; token: string; scanId: string; privateKeys: string[]; quarantineFirst?: boolean;
   chainId: number; registryAddress: string; policyHash: string; rpcUrl: string; preparedRuntime?: PreparedConfig; preparedAi?: PreparedValidatorAi;
-  ociRuntime?: OciConfig;
+  ociRuntime?: OciConfig; scopedPrepared?: ScopedValidatorConfig;
   legacySources?: ValidatorSources; verificationReceiptsPath?: string }) {
   if (!Number.isSafeInteger(options.chainId) || options.chainId <= 0 || !/^0x[0-9a-fA-F]{40}$/.test(options.registryAddress)
     || !/^0x[0-9a-f]{64}$/.test(options.policyHash) || !/^[0-9a-f-]{36}$/.test(options.scanId)) throw new Error("VALIDATOR_TRUST_CONFIG_REQUIRED");
@@ -131,16 +139,17 @@ export async function runValidatorFanout(options: { apiUrl: string; token: strin
             ociRuntimeTrust = verification.trusted; independentOciEvidence = verification.independent;
             await recordPreparedVerification(options.verificationReceiptsPath ?? "data/validator-verifications.jsonl", { chainId: options.chainId, registryContract: options.registryAddress,
               validator: wallet.address, releaseId: scan.releaseId, policyHash: options.policyHash }, verification.comparison);
-          } else if (policy?.profile) {
+          } else if (isNodePreparedPolicy(policy)) {
             if (!options.preparedRuntime) throw new Error("PREPARED_VALIDATOR_TRUST_REQUIRED");
             const identity = await registry.releases(scan.releaseId);
             if (!identity.exists) throw new Error("PREPARED_RELEASE_NOT_REGISTERED");
             checkedPreparedEvidence(evidence.bundle, identity);
-            const verification = await independentlyScanPrepared({ bundle: evidence.bundle, result: scan.result.scanResult }, policy, options.preparedRuntime, options.preparedAi);
+            const verification = await independentlyScanPrepared({ bundle: evidence.bundle, result: scan.result.scanResult }, policy, options.preparedRuntime, options.preparedAi, options.scopedPrepared);
             preparedRuntimeTrust = verification.trusted; independentPreparedEvidence = verification.independent;
             await recordPreparedVerification(options.verificationReceiptsPath ?? "data/validator-verifications.jsonl", { chainId: options.chainId, registryContract: options.registryAddress,
               validator: wallet.address, releaseId: scan.releaseId, policyHash: options.policyHash }, verification.comparison);
           } else {
+            if (policy.profile !== undefined) throw Error("UNSUPPORTED_POLICY");
             if (!options.legacySources) throw new Error("VALIDATOR_SOURCES_REQUIRED");
             const identity = await registry.releases(scan.releaseId);
             const baseline = scan.baselineReleaseId ? { releaseId: scan.baselineReleaseId, identity: await registry.releases(scan.baselineReleaseId) } : undefined;
@@ -194,6 +203,9 @@ async function main() {
       model: process.env.VALIDATOR_AI_MODEL, url: process.env.VALIDATOR_AI_URL, token: process.env.VALIDATOR_AI_TOKEN, timeoutMs: Number(process.env.VALIDATOR_AI_TIMEOUT_MS ?? 45000),
       disclosurePolicy: process.env.MCPSHIELD_AI_DISCLOSURE_POLICY as "LOCAL_CONTRACT_TEST" | undefined } : undefined,
     legacySources: process.env.VALIDATOR_SOURCES_PATH ? await loadValidatorSources(process.env.VALIDATOR_SOURCES_PATH) : undefined,
+    scopedPrepared: process.env.VALIDATOR_SCOPED_PROVENANCE_PATH || process.env.VALIDATOR_SCOPED_AI_CONFIG
+      ? checkedScopedValidatorConfig({ provenancePath: process.env.VALIDATOR_SCOPED_PROVENANCE_PATH, sourcesPath: process.env.VALIDATOR_SOURCES_PATH,
+        ai: JSON.parse(process.env.VALIDATOR_SCOPED_AI_CONFIG ?? "null") }) : undefined,
     verificationReceiptsPath: process.env.VALIDATOR_VERIFICATION_RECEIPTS_PATH })));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(() => { console.error("VALIDATOR_OPERATION_FAILED"); process.exitCode = 1; });

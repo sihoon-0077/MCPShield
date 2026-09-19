@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { ControlStore } from "./control-store.js";
 import { saveEvidence, type ControlOptions } from "./control-plane.js";
 import { withSpan } from "../../../packages/telemetry/index.mjs";
-import { policyVerdict, preparedPolicy, ociPolicy, assertRuntimeBudget, validPolicy } from "./control-policy.js";
+import { policyVerdict, ociPolicy, assertRuntimeBudget, validPolicy, isNodePreparedPolicy } from "./control-policy.js";
+import { scopedMetadata, scopedPreparationContext } from "./scoped-config.js";
+import { hash } from "./control-plane.js";
 import { scanPreparedRelease } from "./preparation-worker.js";
 // @ts-expect-error Scanner evidence is shared ESM JavaScript.
 import { verifyEvidenceBundle } from "../../../services/scanner/src/evidence.mjs";
@@ -16,13 +18,14 @@ export async function runControlWorkerOnce(store: ControlStore, options: Control
     const policy = await store.get(scan.tenantId, "policy", scan.policyHash);
     if (!release || !policy || policy.deprecatedAt) throw new Error("INPUT_NO_LONGER_AVAILABLE");
     if (!validPolicy(policy.document)) throw new Error("UNSUPPORTED_POLICY");
-    const oci = release.runtimeProfile === ociPolicy.profile, prepared = release.runtimeProfile === preparedPolicy.profile || oci;
+    const oci = release.runtimeProfile === ociPolicy.profile, prepared = isNodePreparedPolicy({ profile: release.runtimeProfile }) || oci;
     if ((release.runtimeProfile ?? null) !== (policy.document.profile ?? null)) throw new Error("SCAN_PROFILE_MISMATCH");
     assertRuntimeBudget(release, policy.document);
     const baseline = scan.request.baselineReleaseId ? await store.get(scan.tenantId, "release", scan.request.baselineReleaseId) : undefined;
+    const sourceRelease = release.sourceReleaseId ? await store.get(scan.tenantId, "release", release.sourceReleaseId) : undefined;
     // @ts-expect-error Scanner runtime is shared ESM JavaScript.
     const execute = options.scanArtifact ?? (await import("../../../services/scanner/src/scanner.mjs")).scanResolvedArtifact;
-    const result = await withSpan("scan.execute", { "mcpshield.scan_id": scan.scanId, "mcpshield.release_id": scan.releaseId }, () => prepared ? scanPreparedRelease(scan, release, options) : execute({ artifactDir: release.artifactDir, baselineDir: baseline?.artifactDir,
+    const result = await withSpan("scan.execute", { "mcpshield.scan_id": scan.scanId, "mcpshield.release_id": scan.releaseId }, () => prepared ? scanPreparedRelease(scan, release, options, policy.document, sourceRelease) : execute({ artifactDir: release.artifactDir, baselineDir: baseline?.artifactDir,
       scanId: scan.scanId, policy: policy.document, sourceType: release.sourceType,
       // The dedicated scanner entrypoint never executes arbitrary code on the host.
       ...options.scannerOptions,
@@ -37,8 +40,14 @@ export async function runControlWorkerOnce(store: ControlStore, options: Control
     const completedResult = { scanResult: result.result, reportRoot: result.bundle.manifest.root,
       analysis: result.analysis, policyHash: scan.policyHash, validFrom, validUntil, evidenceKey, verdict,
       ...(oci ? { ociRuntimeTrust: result.ociRuntimeTrust, semanticEvidenceMode: policy.document.semanticEvidenceMode, providerQuality: "PROVIDER_QUALITY_NOT_MEASURED" }
-        : prepared ? { preparedRuntimeTrust: result.preparedRuntimeTrust } : {}), state: verdict === "ABSTAIN" ? "REVIEW_REQUIRED" : "READY_FOR_VALIDATORS" };
+        : prepared ? { preparedRuntimeTrust: result.preparedRuntimeTrust, ...scopedMetadata(policy.document) } : {}), state: verdict === "ABSTAIN" ? "REVIEW_REQUIRED" : "READY_FOR_VALIDATORS" };
     await store.forTenant(scan.tenantId, async tx => {
+      if (result.scopedConfigHash) {
+        const current = await scopedPreparationContext(options, scan.tenantId, policy.document, (await tx.get(scan.tenantId, "release", result.scopedSourceReleaseId))!);
+        if (hash(current.frozen) !== result.scopedConfigHash) throw Error("PREPARATION_CONFIG_CHANGED");
+        const currentPolicy = await tx.get(scan.tenantId, "policy", scan.policyHash);
+        if (!currentPolicy || currentPolicy.deprecatedAt || hash(currentPolicy.document) !== scan.policyHash) throw Error("INPUT_NO_LONGER_AVAILABLE");
+      }
       if (await tx.finish(scan, owner, completedResult)) await tx.scanOutcome(scan, "completed", { reportRoot: result.bundle.manifest.root, status: result.result.scanStatus, verdict });
     });
   } catch (error: any) {
