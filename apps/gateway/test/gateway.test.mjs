@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { createArtifactSnapshot, toolSurfaceHash } from "../src/artifact.mjs";
 import { AdmissionBlockedError, createGatewayHttpServer, getAdmission, inspectArtifact, proxyArtifactStdio, runArtifact, runtimeSurfaceGuards } from "../src/index.mjs";
 import { createGatewayClient } from "../../../scripts/demo/mcp-client.mjs";
@@ -330,6 +331,34 @@ test("real stdio child with paginated tools exposes only the client pages after 
     assert.deepEqual(messages.map(({ id, result }) => ({ id, tools: result.tools })), [{ id: 1, tools: [tools[0]] }, { id: 2, tools: [tools[1]] }]);
     assert.doesNotMatch(result.stdout, /mcpshield\./);
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("initialized SDK stdio client preserves raw pages while no-cursor listTools aggregates them", { timeout: 15000 }, async () => {
+  const tools = ["alpha", "beta"].map(name => ({ name, inputSchema: { type: "object", properties: {} } }));
+  const artifact = await syntheticArtifact({ tools });
+  await writeFile(join(artifact, "index.mjs"), artifactSource(tools, undefined, "q.params?.cursor==='page-2'?{tools:[tools[1]]}:{tools:[tools[0]],nextCursor:'page-2'}"));
+  const replay = await allowedReplay(artifact), sent = [], received = [];
+  const client = new Client({ name: "pagination-regression", version: "1" }, { versionNegotiation: { mode: "legacy" } });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [gateway, "stdio"], stderr: "pipe",
+    env: { ...getDefaultEnvironment(), MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact, MCPSHIELD_TELEMETRY_ENABLED: "false" } });
+  transport.stderr?.on("data", () => {});
+  const send = transport.send.bind(transport);
+  transport.send = async (message, options) => { sent.push(structuredClone(message)); return send(message, options); };
+  try {
+    await client.connect(transport);
+    assert.deepEqual(sent.map(message => message.method), ["initialize", "notifications/initialized"]);
+    const onmessage = transport.onmessage;
+    transport.onmessage = (message, extra) => { received.push(structuredClone(message)); onmessage(message, extra); };
+    const first = await client.request({ method: "tools/list" });
+    assert.deepEqual(first, { tools: [tools[0]], nextCursor: "page-2" });
+    const second = await client.listTools({ cursor: first.nextCursor });
+    assert.deepEqual(second, { tools: [tools[1]] });
+    const combined = await client.listTools(undefined, { cacheMode: "bypass" });
+    assert.deepEqual(combined, { tools }); assert.equal(combined.nextCursor, undefined);
+    assert.deepEqual(sent.filter(message => message.method === "tools/list").map(message => message.params?.cursor), [undefined, "page-2", undefined, "page-2"]);
+    assert.deepEqual(received.map(message => message.result), [first, second, first, second], "wire pages keep their cursor even when the SDK aggregates its own return value");
+    assert.doesNotMatch(JSON.stringify(received), /mcpshield\./, "private verification pages must not escape through the Gateway");
+  } finally { await client.close(); await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
 test("runtime tools/list drift is suppressed and terminates the child", async () => {

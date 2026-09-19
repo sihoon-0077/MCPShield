@@ -162,7 +162,7 @@ test("OCI source → worker → independent single-key validators → V2 quorum 
       toolSurfaceHash: release.toolSurfaceHash, policyHash, mode: "strict", operationClass: "READ_PRIVATE" });
     const safe = await prepare("safe"); assert.equal((await admission(safe.release)).decision, "BLOCK"); await vote(safe.scan.scanId);
     assert.equal((await admission(safe.release)).decision, "ALLOW");
-    const safeSince = new Date().toISOString(), client = new Client({ name: "oci-fullcycle", version: "1" });
+    const safeSince = new Date().toISOString(), client = new Client({ name: "oci-fullcycle", version: "1" }, { versionNegotiation: { mode: "legacy" } });
     const transport = new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL("../../apps/gateway/src/index.mjs", import.meta.url)), "stdio", "--prepared-identity", safe.file], stderr: "pipe",
       env: { ...getDefaultEnvironment(), MCPSHIELD_TELEMETRY_ENABLED: "false", MCPSHIELD_PREPARED_IDENTITY: safe.file, MCPSHIELD_MODE: "live", MCPSHIELD_API_URL: apiUrl,
         MCPSHIELD_POLICY_HASH: policyHash, MCPSHIELD_TENANT_ID: tenantId, MCPSHIELD_CONTROL_TOKEN: token, MCPSHIELD_CACHE_PUBLIC_KEY: publicKey, MCPSHIELD_CACHE_KEY_ID: keyId,
@@ -170,8 +170,14 @@ test("OCI source → worker → independent single-key validators → V2 quorum 
     transport.stderr?.on("data", () => {});
     try {
       await client.connect(transport);
-      const first = await client.listTools(); assert.equal(first.tools[0].name, "read_messages"); assert.equal(first.nextCursor, "next");
-      assert.equal((await client.listTools({ cursor: first.nextCursor })).tools[0].name, "read_context");
+      // SDK v2 listTools() drains all pages and removes nextCursor. Inspect the
+      // actual first response separately; retain the real cursor/last-page checks.
+      const first = await client.request({ method: "tools/list" });
+      assert.deepEqual(first.tools.map(tool => tool.name), ["read_messages"]); assert.equal(first.nextCursor, "next");
+      const second = await client.listTools({ cursor: first.nextCursor });
+      assert.deepEqual(second.tools.map(tool => tool.name), ["read_context"]); assert.equal(second.nextCursor, undefined);
+      const combined = await client.listTools(undefined, { cacheMode: "bypass" });
+      assert.deepEqual(combined.tools, [...first.tools, ...second.tools]); assert.equal(combined.nextCursor, undefined);
       const result = await client.callTool({ name: "read_messages", arguments: {} }); assert.equal(result.isError, false);
       assert.match((result.content as any[])[0].text, /Packaged synthetic result/);
     } finally { await client.close(); }
