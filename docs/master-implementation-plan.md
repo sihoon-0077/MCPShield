@@ -9,6 +9,9 @@
 
 ## 통합 체크포인트 (2026-09-19 KST)
 
+- 원격 통합본 `906daa0`의 [CI 35424461690](https://github.com/sihoon-0077/MCPShield/actions/runs/35424461690)를 명시적 workflow_dispatch로 시작했다(반복 데모 포함). PostgreSQL job `105847935420` 완료·성공, 실제 로그 29 PASS/0 FAIL: appeal transaction/WORKER_LOST/감사 실패 rollback, 실제 adapter 내부 same-owner attempt fence, preparation 기존 gate 포함. Node 22/24는 마지막 확인 시 실행 중이며 native OCI·반복 데모·서명 산출물 완료는 아직 주장하지 않는다. push run `35424444462`는 같은 SHA dispatch로 대체되어 concurrency 취소됐고 실패가 아니다.
+- 후속 Backend `3b5afcd`는 preparation 큐에도 tenant/owner/attempt/정확한 미만료 lease를 적용하고 same-owner 재점유 중 이전 성공의 이미지·release·audit 인계 거부 회귀를 추가했다. 별도 브랜치에서 32 PASS/4 PostgreSQL SKIP, backend build 성공. 실행 중인 `906daa0`의 증거를 섞지 않도록 아직 Main에는 통합하지 않았다.
+- 실제 브라우저 QA용 합성 API fixture를 만들었지만 별도 Next preview 시작 명령이 도구 정책에 의해 거부돼 우회하지 않았다. test-owned API는 종료했고 4186/4187 리스너 없음 확인. frontend worktree의 `apps/dashboard/test/manual-rescan-preview.mts`를 미커밋 상태로 보존한다. 브라우저 hydration/연속 클릭/불확실 응답 이후 폼 상태 검증은 미실행이다.
 - 직전 목표 턴의 CI 상태 재확인에 이어 이번 턴은 실제 코드·회귀 검사 통합으로 진행했다. `mcp/main`과 기존 공개 데모를 변경하지 않았다.
 - `a876053`/`726332f`: 소진된 WORKER_LOST의 원본 appeal 이력을 상태 변경과 같은 transaction으로 기록한다. 정상 완료/실패는 tenant·owner·attempt·정확한 미만료 lease를 모두 확인한다. 수동 retry의 자격·quota·상태·감사 기록도 원자적으로 처리한다. Main API/BFF focused 34 PASS/4 PostgreSQL SKIP. `809f7e2`는 동일 owner stale attempt 회귀를 실제 PostgreSQL gate에도 추가했으며 로컬 control-plane 12 PASS/2 SKIP. PostgreSQL 재실행 전에는 성공으로 세지 않는다.
 - `1ef99a2`/`2a26c6d`: 원본 appeal 증거를 유지하며 같은 도구의 변경 digest/정책 재검사를 1회 연결하는 UI 통합. 공통 control client의 한국어 상태별 안내는 code/status/details를 보존하고 네트워크 유실 때 기록 재확인을 안내한다. dashboard 32 PASS/1 native HTTP 조건부 SKIP, backend+Next build 성공. BFF→실제 API의 응답 유실·동일 key 중복 제거·교차 tenant/reader 제한은 확인했지만, 브라우저 hook의 연속 클릭/선택 변경은 별도 검증이다.
