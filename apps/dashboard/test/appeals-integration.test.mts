@@ -107,6 +107,8 @@ test("rescan client uses BFF tenant scope, retains one logical-attempt key after
     loseResponse = true;
     const submit = () => controlApi<{ scan: any; deduplicated: boolean; reusedResult: boolean }>("scans", body, "POST", "synthetic-rescan-stable-attempt");
     await assert.rejects(submit(), (error: any) => error.code === "NETWORK_ERROR" && /접수됐을 수/.test(error.message));
+    assert.equal(calls.filter(call => call.body === JSON.stringify(body)).length, 1, "response loss must not trigger an automatic resubmission");
+    assert.equal((await store.scans(tenantId)).length, 1, "the uncertain response followed one durable enqueue");
     const retry = await submit(); assert.equal(retry.deduplicated, true); assert.equal(retry.reusedResult, false);
     assert.equal(retry.scan.appealId, appeal.appealId); assert.equal(retry.scan.releaseId, corrected.releaseId); assert.equal(retry.scan.policyHash, original.policyHash);
     const posts = calls.filter(call => call.body === JSON.stringify(body)); assert.equal(posts.length, 2);

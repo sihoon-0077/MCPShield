@@ -10,6 +10,13 @@ const messages: Record<string, string> = {
   APPEAL_NEW_DIGEST_OR_POLICY_REQUIRED: "원본과 파일·정책이 같습니다. 수정된 파일 또는 다른 활성 정책을 선택하세요.",
   POLICY_DEPRECATED: "사용이 중단된 정책입니다. 새로고침 후 활성 정책을 선택하세요.",
   SCAN_PROFILE_MISMATCH: "릴리스 실행 환경과 정책이 맞지 않습니다. 같은 프로필의 정책을 선택하세요.",
+  SCAN_SEMANTIC_MODE_MISMATCH: "릴리스와 정책의 검사 방식이 다릅니다. 같은 분석 모드의 정책을 선택하세요.",
+  SCOPED_OPERATOR_PROVENANCE_REQUIRED: "이 파일의 검사 허가를 확인할 수 없습니다. 관리자에게 허가 목록 확인을 요청하세요.",
+  SCOPED_SOURCE_BUDGET_EXCEEDED: "파일 용량이 검사 정책의 한도를 넘었습니다. 관리자에게 파일 용량 한도를 확인하세요.",
+  SCOPED_CONFIG_REQUIRED: "검사에 필요한 관리자 설정이 없습니다. 관리자에게 검사 환경 설정을 요청하세요.",
+  SCOPED_CONFIG_CHANGED: "검사 설정이 변경되었습니다. 새로고침 후 관리자에게 현재 설정을 확인하세요.",
+  PREPARATION_CONFIG_CHANGED: "이미지 준비 설정이 변경되었습니다. 새로고침 후 관리자에게 현재 설정을 확인하세요.",
+  SCOPED_EVIDENCE_MODE_MISMATCH: "선택한 검사 방식과 서버 설정이 다릅니다. 관리자에게 로컬 합성 검사·외부 모델 설정을 확인하세요.",
   SCAN_QUOTA_EXCEEDED: "검사 한도에 도달했습니다. 대기 중인 검사와 조직의 사용 한도를 확인하세요.",
   IDEMPOTENCY_CONFLICT: "재시도 식별키가 다른 요청에 사용되었습니다. 새로고침해 기존 요청을 확인하세요.",
 };
@@ -34,9 +41,10 @@ export async function controlApi<T>(path: string, body?: unknown, method = body 
   if (!response.ok) {
     const original = typeof payload?.error === "string" ? payload.error : payload?.error?.message ?? payload?.message;
     const rawCode = payload?.error?.code ?? original, code = typeof rawCode === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(rawCode) ? rawCode : undefined;
-    // Retain machine-readable diagnostics without putting server detail objects in the user's alert.
-    const message = code && messages[code] || (typeof original === "string" && /[가-힣]/.test(original) ? original : statusMessages[response.status] ?? "서버가 요청을 처리하지 못했습니다. 새로고침해 기록을 확인한 뒤 다시 시도하세요.");
-    throw Object.assign(new Error(`${message}${code ? ` (${code})` : ""}`), { code, status: response.status, serverMessage: original, details: payload?.error?.details });
+    // Only local fixed text reaches alerts. Unknown codes may themselves contain private data.
+    const known = code && Object.hasOwn(messages, code) ? messages[code] : undefined;
+    const message = known ?? statusMessages[response.status] ?? "서버가 요청을 처리하지 못했습니다. 새로고침해 기록을 확인한 뒤 다시 시도하세요.";
+    throw Object.assign(new Error(`${message}${known ? ` (${code})` : ""}`), { code, status: response.status, serverMessage: original, details: payload?.error?.details });
   }
   return payload as T;
 }
