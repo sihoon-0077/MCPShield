@@ -7,7 +7,39 @@
 시작 커밋: `6aa370285154f683989f2bf9b219bd2c052e6cee` (`mcp/main`).
 기존 코드·공개 데모를 보존하고 `master/main`에서 통합한다.
 
-## 통합 체크포인트 (2026-09-19 KST)
+## 최신 통합 체크포인트 — 종합 준비 상태 (2026-09-19 KST)
+
+이번 목표 턴은 **진행(progress)**: 3파트의 실제 기능·회귀 수정 통합과 Main의 연결 검증을
+완료했다. 아래 기록이 이전 체크포인트의 ‘진행 중/미통합’ 표기보다 우선한다. 전체 목표의
+외부 운영·모델 품질·테스트넷·공개 배포 완료를 주장하지 않는다.
+
+- `970cc67`: preparation에도 tenant/owner/attempt/정확한 미만료 lease fence 통합.
+  로컬 prepared/OCI 준비 검사 13 PASS/1 PostgreSQL SKIP. 새 PostgreSQL gate 재실행 필요.
+- `d683b5b` / `9f88d6d` / `92c15bd`: 인증된 `/v1/health`, 실제 DB 읽기·bounded RPC,
+  Worker heartbeat·Docker daemon probe, 별도 운영 콘솔 상태 패널 통합. legacy `/health`
+  유지. READY는 연결 가용성이며 도구 승인이나 외부 AI 품질이 아니다.
+- Main은 단발 readiness CLI, 실제 SQLite→API→BFF→모니터·로컬 EVM 장애 검사를 추가했다.
+  기존 성공 화면 숨김·고정 실패 응답·관측 시각 제한을 검증한다. 교차 리뷰의 오래된 UP
+  재포장 허용/502 응답 원문 노출 두 문제를 고치고 회귀 검사에 넣었다.
+  실제 연결 포함 focused 8 PASS/0 SKIP, 전체 `npm test` 종료 0, backend+Next build 성공.
+  dashboard 37 PASS/1 조건부 HTTP SKIP. 별도 SDK/API health 확인 13 PASS/2 PG·Docker SKIP.
+- [CI 35424461690 / `906daa0`](https://github.com/sihoon-0077/MCPShield/actions/runs/35424461690)
+  종료·전체 실패. Node 24와 실제 PostgreSQL(29 PASS) 성공. Node 22는 native OCI inventory/
+  Trivy·composed scan·지원 safe PASS/canary FAIL 독립 재검사·prepared fullcycle가 통과했다.
+  남은 실패는 OCI fullcycle의 SDK 목록 cursor 기대값(`undefined` vs `next`)이었다.
+  `9a2a832`는 SDK v2의 자동 페이지 합산과 실제 wire cursor를 분리해 검증하며 Gateway
+  보안 경로는 변경하지 않는다. no-Docker SDK→Gateway→child 회귀를 포함한 담당자 검사
+  45 PASS. 수정 후 native Linux 전체 흐름은 아직 재확인 전이다.
+- 같은 CI의 repeat-demo 성공. signed-image **job**도 성공이지만 상위 verify 실패 때문에
+  provenance·SBOM 서명·서명 검증·산출물 보관 단계는 skipped다. ‘서명 이미지 완료’로
+  세지 않는다. 일부 뒤쪽 Compose/관측 검증도 선행 실패로 skipped다.
+- 새 CI에 실제 PostgreSQL heartbeat/준비 큐 fence와 native Docker availability 검사를
+  추가했다. 아직 새 SHA에서 실행한 증거는 아니다. 외부 알림 채널은 사용자 선택 대기이며
+  단발 CLI는 자동 스케줄·외부 발송을 만들지 않는다.
+- 원본 `mcp/main`/공개 데모는 유지했다. HTML 학습 가이드는 `docs/guide/`에 보존한다.
+  브라우저 hydration QA는 별도 정책상 미실행 상태를 유지하며 우회하지 않는다.
+
+## 이전 통합 체크포인트 (`906daa0` 작성 시점, 2026-09-19 KST)
 
 - 원격 통합본 `906daa0`의 [CI 35424461690](https://github.com/sihoon-0077/MCPShield/actions/runs/35424461690)를 명시적 workflow_dispatch로 시작했다(반복 데모 포함). PostgreSQL job `105847935420` 완료·성공, 실제 로그 29 PASS/0 FAIL: appeal transaction/WORKER_LOST/감사 실패 rollback, 실제 adapter 내부 same-owner attempt fence, preparation 기존 gate 포함. Node 22/24는 마지막 확인 시 실행 중이며 native OCI·반복 데모·서명 산출물 완료는 아직 주장하지 않는다. push run `35424444462`는 같은 SHA dispatch로 대체되어 concurrency 취소됐고 실패가 아니다.
 - 후속 Backend `3b5afcd`는 preparation 큐에도 tenant/owner/attempt/정확한 미만료 lease를 적용하고 same-owner 재점유 중 이전 성공의 이미지·release·audit 인계 거부 회귀를 추가했다. 별도 브랜치에서 32 PASS/4 PostgreSQL SKIP, backend build 성공. 실행 중인 `906daa0`의 증거를 섞지 않도록 아직 Main에는 통합하지 않았다.

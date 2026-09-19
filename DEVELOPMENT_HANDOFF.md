@@ -1,7 +1,7 @@
 # MCPShield 개발 인수인계 — 여기서 시작하세요
 
-기준일: **2026-09-19 KST**. 통합 기준 커밋: **`809f7e2` (`master/main`)**.
-9월 10일 이후 보안·백엔드·프론트엔드 후속 변경을 통합했다. 최신 Linux Docker 검증과 공개 배포는 아직 완료되지 않았다.
+기준일: **2026-09-19 KST**. 기능 통합 기준: **`9a2a832` (`master/main`)** 및 후속 readiness 검증 보완.
+9월 10일 이후 보안·백엔드·프론트엔드 후속 변경과 종합 상태 점검을 통합했다. 최신 전체 Linux Docker 검증과 공개 배포는 아직 완료되지 않았다.
 
 ## 1. 현재 어디까지 만들었나
 
@@ -12,7 +12,7 @@
 | 파트 | Main에 구현된 것 | 남은 핵심 작업 |
 |---|---|---|
 | Frontend | Next.js/React 대시보드, `/try`, `/console`, 역할별 로그인, 릴리스 검색·등록, 검사·재처리, 정책, 증거·이력, 이의제기 종결·변경본 재검사 연결, 체인·receipt 표시, 공통 한국어 오류 안내 | 실제 브라우저 조작·시각 검증, 실제 운영 사용자 검증 |
-| Backend | Fastify/TypeScript, 기존 `/api`와 확장 `/v1`, tenant 격리, admin/operator/reader, SQLite/PostgreSQL control store, SQL queue·lease·backoff·DLQ, 멱등성, 암호화 증거, 감사 이벤트, chain outbox, 작업자 중단 이력·시도별 lease 차단 | 최신 PostgreSQL 회귀, preparation 큐의 동일 owner 재사용 검토, 종합 health, 실제 운영 DB·secret 관리·복구·부하 검증 |
+| Backend | Fastify/TypeScript, 기존 `/api`와 확장 `/v1`, tenant 격리, admin/operator/reader, SQLite/PostgreSQL, SQL queue·lease·backoff·DLQ, 멱등성, 암호화 증거·감사 이벤트·chain outbox, scan/preparation 시도별 lease fence, 인증된 종합 health·실제 Worker heartbeat | 최신 PostgreSQL heartbeat/준비 큐 회귀, 실제 운영 DB·secret 관리·복구·부하 검증 |
 | Security·AI | npm/tarball/OCI 수집, 정확한 digest·도구 표면 고정, 정적 규칙·변경점·SBOM/취약점 검사, Docker 격리·canary, 증거 Merkle root, AI analyzer/critic·구조화 JSON 코드 | 최신 OCI 전체 검사 실패 해결, 제한된 정보만 AI에 전송하는 정책 연결, 실제 외부 모델 호출·품질 평가 |
 | Blockchain | Solidity V1/V2·receipt anchor, EIP-712, 2-of-3, 중복·만료·다른 체인 서명 거부, 격리·terminal 폐기, 정책 버전, indexer·reorg/전송 복구 | Base Sepolia 배포·외부 RPC 검증, 독립 기관 validator, 운영 키 관리 |
 | Gateway | 실제 stdio/HTTP MCP, 실행 전 차단, 매 도구 호출 승인 재검사, identity·policy·expiry 검증, signed cache·장애 fallback, 제한된 npm/OCI 실행 프로필 | 최신 OCI 전체 흐름 통과, 지원 대상 확대, 후속 호출 없는 지속 실행의 폐기 즉시 중단 보장 |
@@ -20,7 +20,7 @@
 
 명확한 미완료 사항:
 
-- `/health`는 현재 기본 `status`와 원장 모드를 반환한다. API/DB/체인/스캐너의 종합 readiness가 아니다.
+- `/health`는 기본 liveness로 유지한다. 인증된 `/v1/health`와 `/console`의 별도 상태 패널이 API/DB/체인/스캐너 readiness를 확인한다. 정적 전용 Worker는 LIMITED, 실제 관측이 없으면 UNKNOWN이다. READY는 실행 허가·전체 스캔 성공이 아니다.
 - 공통 control client는 400/401/403/409 등과 이의제기 오류에 한국어 안내를 표시하고 코드를 함께 보존한다. 네트워크 응답 유실 시 자동 재전송하지 않고 기록 재확인을 안내한다. 모든 운영 오류의 UX 검증이 끝났다는 뜻은 아니다.
 - 감사 이벤트 저장과 일부 불변 이의제기/receipt 처리는 있다. 모든 감사 로그를 DB 관리자도 변경하지 못하는 보관 체계는 미완료다.
 - 외부 AI, 실제 Gmail/CRM 계정, 테스트넷, 실제 S3/KMS, 외부 알림 수신자는 clone만으로 구성되지 않는다.
@@ -43,10 +43,11 @@ git log -1 --oneline
 
 | 브랜치 | 인수인계 시 기능 HEAD | 용도 |
 |---|---|---|
-| `master/main` | `809f7e2` + 검증 문서 | 새 작업의 기본 출발점 |
-| `master/backend-appeals` | `718b8fb` | `9217faf`와 함께 Main `a876053`/`726332f`로 통합 |
-| `master/frontend-appeals` | `207d73b` | `859e727`과 함께 Main `1ef99a2`/`2a26c6d`로 통합 |
-| `master/security-ai` | `2660ee5` | `e46c3ed`와 함께 Main `9b3742f`/`8155bb0`로 통합 |
+| `master/main` | `9a2a832` + readiness 보완·검증 문서 | 새 작업의 기본 출발점 |
+| `master/backend-appeals` | `7da231f` | preparation fence·종합 API·heartbeat는 Main `970cc67`/`9f88d6d`로 통합 |
+| `master/frontend-appeals` | `5225030` | health UI는 Main `92c15bd`; 후속 원문 오류 정제는 Main 별도 보완 |
+| `master/security-health` | `433c903` | Main `d683b5b`로 체인 가용성 probe 통합. 이전 security-ai는 보존 |
+| `master/gateway-pagination` | `303870c` | Main `9a2a832`로 SDK 합산/실제 wire pagination 검사 수정 |
 | `mcp/main` | `6aa3702` | 보존한 기존 MCP 데모 기준점 |
 | `main` | `0831a55` | 이전 기본 브랜치. 최신 master 통합본 아님 |
 
@@ -166,6 +167,14 @@ AI의 도구 호출 → Gateway → 최신 실행 허가 확인
 
 ### 최신 원격 결과와 수정 상태
 
+[CI 35424461690 — 906daa0](https://github.com/sihoon-0077/MCPShield/actions/runs/35424461690)는 종료·전체 실패다.
+실제 PostgreSQL 29 PASS와 Node 24, 반복 데모는 성공했다. Node 22의 native OCI inventory/Trivy,
+composed scan, 정상 PASS·악성 FAIL 독립 재검사는 통과했지만 OCI fullcycle의 목록 cursor 단언에서 실패했다.
+SDK v2 `listTools()`는 전체 페이지를 합치므로 `9a2a832`에서 실제 첫 페이지·후속 cursor·합산 목록을
+분리 검증하도록 수정했다. Gateway 보안 판단을 완화하지 않았다. 최신 SHA의 native 재실행은 필요하다.
+signed-image job 성공과 달리 provenance/SBOM 서명·검증·artifact 보관 단계는 상위 verify 실패로
+skipped였다. 서명 이미지나 최신 배포 완료가 아니다. 아래는 더 오래된 실패의 원인 기록이다.
+
 [CI 34439175673 — f957451](https://github.com/sihoon-0077/MCPShield/actions/runs/34439175673)를 2026-09-19 GitHub API와 실제 job 로그로 확인했다. 아래는 수정 전 결과이며 새 통합본 성공 증거가 아니다.
 
 - PostgreSQL job: 성공.
@@ -179,6 +188,12 @@ AI의 도구 호출 → Gateway → 최신 실행 허가 확인
 실제 진단: 지원 정상 fixture는 승인 base와 일치하는 527개 `Directory`의 mode `02755` 때문에 `SET_ID_BITS`로 보류됐다. `8155bb0`은 후보가 없는 trusted builder 생성 단계에서만 `/usr/local`, `/home/node` 디렉터리의 set-ID 비트를 제거한다. 후보 검사 규칙과 base 일치 검사는 유지한다. 별도 composed 검사는 패키지 없는 Trivy 보고서가 `Results`를 생략해 실패했다. 생략을 빈 원본 증거로 보존하되 `INCONCLUSIVE / OCI_TRIVY_PACKAGE_COVERAGE_INCOMPLETE`로 처리한다. 정상 지원 프로필 PASS, 악성 FAIL 및 독립 validator→Gateway 전체 경로는 새 Linux CI에서 재확인해야 한다.
 
 ### 로컬에서 확인한 범위
+
+최신 통합 `9a2a832` + readiness 보완에서 전체 `npm test` 종료 0, backend+Next build 성공.
+상태 API/BFF/CLI focused 8 PASS/0 SKIP는 실제 SQLite·로컬 EVM·정적 Worker의 상태와 RPC/Worker
+종료, tenant 분리 및 명령행 종료 코드까지 확인한다. dashboard 37 PASS/1 조건부 HTTP SKIP.
+Linux Docker·실제 새 PostgreSQL heartbeat·실제 브라우저 클릭 검증을 대신하지 않는다.
+사용법과 종료 코드 0/1/2는 [운영 가이드의 종합 준비 상태](docs/operations-runbook.md#종합-준비-상태와-단발-점검)를 따른다.
 
 2026-09-19 `8155bb0`의 전체 `npm test` 성공: backend 112 PASS/8 SKIP, security·Gateway·기존 dashboard·replay·실제 stdio·합성 LIVE smoke 완료. 이후 UI 통합본 `2a26c6d`에서 dashboard 32 PASS/1 조건부 HTTP SKIP와 `npm run build` 성공. `809f7e2`의 control-plane 회귀는 12 PASS/2 PostgreSQL SKIP. Linux Docker·실제 PostgreSQL·외부 AI 실행 증거는 아니다.
 
@@ -211,7 +226,7 @@ npm test
 |---|---|---|
 | P0 | 위 OCI 실패 세 단계 재현·수정 | 지원 정상 fixture PASS, 악성 fixture FAIL, 독립 validator 정족수, 두 Gateway에서 폐기 이미지 실행 0건, 같은 SHA의 Linux CI 성공 |
 | P0 | 통합본의 실제 PostgreSQL·브라우저 검증 | PostgreSQL worker-lost/동시성/동일 owner stale attempt, 실제 브라우저 재검사 흐름과 응답 유실 처리 |
-| P1 | 종합 health·실제 장애 알림 | DB/RPC/worker 장애 주입 반영, 설정된 수신자의 실제 알림 확인. 현재 worker heartbeat가 없으므로 설정 존재나 빈 큐만으로 healthy라 하지 않는다. |
+| P1 | 종합 health 운영 검증·실제 장애 알림 | API/Worker/RPC·BFF·단발 CLI는 통합됨. 최신 PG/Docker 회귀와 설정된 수신자의 실제 알림 확인은 남음. |
 | P1 | 외부 AI를 제한된 정보 공개 정책에 연결 | 실제 모델 호출, 원문/secret 전송 제한, analyzer·critic·probe 전 경로 일관성, 실패 시 ABSTAIN, 비용·탐지/오탐 평가 |
 | P1 | 테스트넷·실제 저장소·키/백업 운영 | 배포 주소·tx·chain ID·explorer, 실제 암호화 증거 저장/조회, 별도 DB 복원과 복구 시간 측정 |
 | P2 | 지원 MCP 실사용·부하·배포 | 실제 정상 업무와 악성 업데이트 차단, 명시한 동시성·대기시간 목표 검증, 같은 SHA의 release image·보안 검사·배포 smoke |
