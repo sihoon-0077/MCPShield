@@ -7,6 +7,9 @@ import { GET, POST } from "../app/api/control/[...path]/route";
 import { AppealRecords } from "../components/appeal-records";
 import { buildApp } from "../../api/src/app.js";
 import { ControlStore } from "../../api/src/control-store.js";
+import { defaultPolicy } from "../../api/src/control-policy.js";
+import { hash } from "../../api/src/control-plane.js";
+import { controlApi } from "../lib/control-client";
 
 test("appeal conclusion uses admin API scope, preserves original prose and history, and never grants release execution", async () => {
   const store = await ControlStore.open();
@@ -66,6 +69,60 @@ test("appeal conclusion uses admin API scope, preserves original prose and histo
     assert.equal(history.filter((event: any) => event.eventName === "appeal.opened").length, 1); assert.equal(history.filter((event: any) => event.eventName === "appeal.resolved").length, 1);
     assert.doesNotMatch(JSON.stringify(history), /Synthetic original reason|Synthetic review conclusion|synthetic-appeal-admin-token/);
     const foreignBody = await (await request(`releases/${release.releaseId}/history`, foreign)).text(); assert.doesNotMatch(foreignBody, /Synthetic|resolution|appealId/);
+  } finally {
+    names.forEach((name, index) => previous[index] === undefined ? delete process.env[name] : process.env[name] = previous[index]);
+    await app.close();
+  }
+});
+
+test("rescan client uses BFF tenant scope, retains one logical-attempt key after response loss and never changes original release", async context => {
+  const store = await ControlStore.open(), tenantId = "appeal-rescan-console", token = "synthetic-rescan-operator-token";
+  const app = await buildApp({ adminApiToken: "synthetic-legacy-admin-token", scannerApiToken: "synthetic-legacy-scanner-token", controlPlane: {
+    store, credentials: [{ tenantId, token, role: "operator" }, { tenantId, token: "synthetic-rescan-reader-token", role: "reader" }, { tenantId: "foreign-rescan-console", token: "synthetic-foreign-rescan-token", role: "operator" }], artifactPath: "unused", evidencePath: "unused", evidenceKey: "1".repeat(64),
+  } });
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const original = { releaseId: "0x" + "1".repeat(64), toolId: "synthetic-tool", status: "REVOKED", artifactDigest: "sha256:" + "2".repeat(64), policyHash: hash(defaultPolicy), reportRoot: "0x" + "3".repeat(64) };
+  const corrected = { ...original, releaseId: "0x" + "a".repeat(64), artifactDigest: "sha256:" + "b".repeat(64), status: "UNVERIFIED" };
+  for (const item of [original, corrected]) await store.put(tenantId, "release", item.releaseId, item);
+  const names = ["MCPSHIELD_API_URL", "MCPSHIELD_PUBLIC_ORIGIN"], previous = names.map(name => process.env[name]);
+  process.env.MCPSHIELD_API_URL = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`; process.env.MCPSHIELD_PUBLIC_ORIGIN = "https://console.test";
+  const nativeFetch = globalThis.fetch, calls: RequestInit[] = [];
+  let cookie = "", loseResponse = false;
+  // Intercept only the browser-relative BFF call; BFF -> API remains actual loopback HTTP.
+  context.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (typeof input !== "string" || !input.startsWith("/api/control/")) return nativeFetch(input, init);
+    calls.push(init ?? {});
+    const path = input.slice("/api/control/".length), headers = new Headers(init?.headers);
+    headers.set("origin", "https://console.test"); headers.set("cookie", cookie);
+    const response = await (init?.method === "POST" ? POST : GET)(new NextRequest(`https://console.test${input}`, { ...init, headers }), { params: Promise.resolve({ path: path.split("/") }) });
+    const nextCookie = response.headers.get("set-cookie"); if (nextCookie) cookie = nextCookie.split(";")[0];
+    if (loseResponse && path === "scans" && response.status === 202) { loseResponse = false; throw Error("SYNTHETIC_RESPONSE_LOST_AFTER_COMMIT"); }
+    return response;
+  });
+  try {
+    await controlApi("session", { token });
+    const { appeal } = await controlApi<{ appeal: any }>(`releases/${original.releaseId}/appeals`, { reason: "Synthetic reason requesting fresh evidence" });
+    const body = { releaseId: corrected.releaseId, policyHash: original.policyHash, appealId: appeal.appealId };
+    await assert.rejects(controlApi("scans", { ...body, releaseId: original.releaseId }), (error: any) => error.status === 409 && error.code === "APPEAL_NEW_DIGEST_OR_POLICY_REQUIRED" && /수정된 파일/.test(error.message));
+    loseResponse = true;
+    const submit = () => controlApi<{ scan: any; deduplicated: boolean; reusedResult: boolean }>("scans", body, "POST", "synthetic-rescan-stable-attempt");
+    await assert.rejects(submit(), (error: any) => error.code === "NETWORK_ERROR" && /접수됐을 수/.test(error.message));
+    const retry = await submit(); assert.equal(retry.deduplicated, true); assert.equal(retry.reusedResult, false);
+    assert.equal(retry.scan.appealId, appeal.appealId); assert.equal(retry.scan.releaseId, corrected.releaseId); assert.equal(retry.scan.policyHash, original.policyHash);
+    const posts = calls.filter(call => call.body === JSON.stringify(body)); assert.equal(posts.length, 2);
+    for (const call of posts) assert.equal(new Headers(call.headers).get("idempotency-key"), "synthetic-rescan-stable-attempt");
+    const current = await controlApi<{ scan: any }>(`scans/${retry.scan.scanId}`); assert.equal(current.scan.scanId, retry.scan.scanId);
+    await assert.rejects(controlApi("scans", body), (error: any) => error.code === "APPEAL_RESCAN_ALREADY_REQUESTED" && /이미 연결/.test(error.message));
+    const list = await controlApi<{ items: any[] }>(`releases/${original.releaseId}/appeals`); assert.equal(list.items[0].rescan.scanId, retry.scan.scanId); assert.deepEqual(list.items[0].original, appeal.original);
+    const history = await controlApi<{ items: any[] }>(`releases/${original.releaseId}/history`); assert.equal(history.items.filter(item => item.eventName === "appeal.rescan.queued").length, 1);
+    assert.equal((await store.scans(tenantId)).length, 1); assert.deepEqual(await store.get(tenantId, "release", original.releaseId), original);
+    await controlApi("session", { token: "synthetic-rescan-reader-token" });
+    await assert.rejects(controlApi("scans", body), (error: any) => error.status === 403 && error.code === "FORBIDDEN" && /계정 권한/.test(error.message));
+    assert.equal((await controlApi<{ scan: any }>(`scans/${retry.scan.scanId}`)).scan.status, "QUEUED");
+    await controlApi("session", { token: "synthetic-foreign-rescan-token" });
+    await assert.rejects(submit(), (error: any) => error.status === 404);
+    await assert.rejects(controlApi(`scans/${retry.scan.scanId}`), (error: any) => error.status === 404);
+    assert.deepEqual((await controlApi<{ items: any[] }>("scans")).items, []);
   } finally {
     names.forEach((name, index) => previous[index] === undefined ? delete process.env[name] : process.env[name] = previous[index]);
     await app.close();

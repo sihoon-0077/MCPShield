@@ -42,6 +42,6 @@ test("caller-supplied idempotency key survives an uncertain response and is not 
   const calls: RequestInit[] = [];
   context.mock.method(globalThis, "fetch", async (_path: string, init: RequestInit) => { calls.push(init); return calls.length === 1 ? Response.json({ error: "synthetic-response-lost" }, { status: 503 }) : Response.json({ ledger: record }); });
   const register = () => controlApi("receipt-ledgers", { writer: record.writer }, "POST", "synthetic-stable-attempt");
-  await assert.rejects(register(), /synthetic-response-lost/); await register();
+  await assert.rejects(register(), (error: any) => error.status === 503 && error.serverMessage === "synthetic-response-lost" && /기록을 확인/.test(error.message)); await register();
   for (const call of calls) { assert.equal((call.headers as Record<string, string>)["idempotency-key"], "synthetic-stable-attempt"); assert.equal(call.body, JSON.stringify({ writer: record.writer })); }
 });
