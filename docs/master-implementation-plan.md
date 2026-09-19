@@ -7,7 +7,44 @@
 시작 커밋: `6aa370285154f683989f2bf9b219bd2c052e6cee` (`mcp/main`).
 기존 코드·공개 데모를 보존하고 `master/main`에서 통합한다.
 
-## 최신 통합 체크포인트 — 종합 준비 상태 (2026-09-19 KST)
+## 최신 통합 체크포인트 — scoped 검사 연결 및 Linux 실패 분리 (2026-09-19 KST)
+
+이번 목표 턴은 **진행(progress)**이다. 기존 데모를 보존하면서 아래 변경·검증을 추가했다.
+전체 목표 완료나 실제 외부 모델·고객 환경 검증을 의미하지 않는다.
+
+- 원격 `0351567`의 [CI 35425746994](https://github.com/sihoon-0077/MCPShield/actions/runs/35425746994)는
+  **완료·전체 실패**다. Node 24, PostgreSQL, 10회 실제 격리 검사→EVM→Gateway 반복 데모는 성공했다.
+  Node 22의 기존 OCI worker→독립 single-key validator→V2→두 Gateway는 **2 PASS/0 SKIP**,
+  prepared npm 전체 흐름은 **3 PASS/0 SKIP**였다. 마지막 실패는 Compose dashboard 빌드의
+  `Can't resolve './scoped-policy.mjs'`이며, 기존 OCI 정족수 실패가 아니다.
+- 누락된 Docker COPY 및 browser-safe 공유 serializer는 Main `b9f591a`에서 수정했다.
+  실제 실패 로그와 수정 대상이 일치한다. 후속 Linux 실행 전까지 수정 성공의 native 증거는 없다.
+  Grafana 실제 파이프라인·후속 production audit/secret scan은 이 Node 22 실행에서 건너뛰었다.
+- `signed-image` job 자체는 성공했지만, 이미지 실행·취약점 검사·SBOM까지만 성공했다.
+  상위 verify 실패 때문에 provenance/SBOM 서명·서명 검증·이미지 보관은 **SKIPPED**다.
+  서명된 배포 산출물 완성으로 집계하지 않는다.
+- Main `ee4d908`는 Node scoped-v2의 실제 제한 DTO 검토와 생성 probe 실행·평가자를 통합했다.
+  별도 원본 provenance, 전체 정책, 실제 전달 인자의 digest를 확인하고 unknown/budget/config
+  실패는 호출 전에 보류한다. Tier 3는 두 요청뿐 아니라 실제 응답 모델 ID도 달라야 한다.
+  `b605311`은 실제 Linux scanner gate를 추가했다. 외부 유료 모델 대신 loopback 계약 응답을 쓴다.
+- Main `db9e28b`는 정확한 profile·mode 정책 선택과 Gateway identity/cache 분리 회귀를 통합했다.
+  `semanticEvidenceMode`는 정책이지 모델 호출 성공 증명이 아니다. Main 전체 build(기본 Turbopack 포함)
+  성공, scoped scanner 22 PASS/1 native SKIP, UI/BFF/Gateway 집중 16 PASS/0 SKIP,
+  실제 built Next HTTP 폼 3 PASS/0 SKIP. API/독립 validator 연결은 별도 Backend 교차 리뷰 중이다.
+- `98146a7`의 기술 가이드는 실제 브라우저에서 8개 구성요소와 4개 workflow 버튼을 확인했다.
+  390px 화면의 가로 넘침 없음도 확인했다. 이는 설명 HTML 검증이지 운영 콘솔 hydration 검증이 아니다.
+- `e55c1ab`는 별도 tenant-local provenance·원본 용량·독립 validator source 재취득을 Node v2에 연결했다.
+  새 전체 Linux gate는 `MCPSHIELD_SCOPED_DOCKER_TESTS=1`로 별도 실행한다. Main scoped 회귀 7 PASS,
+  전체 npm test 종료 0, backend+기본 Next build 성공. Windows native Docker skip은 통과가 아니다.
+  교차 리뷰에서 발견된 chainUnavailable 필드 누락과 mode 불일치 appeal slot 소비를 수정하고
+  실제 API에서 409·queue 0건·정상 재요청 202를 재확인했다.
+- `1686547`는 새 실패의 한국어 안내와 서버 원문/unknown code 화면 반사 차단을 통합했다.
+  client/BFF·release gate 14 PASS/0 SKIP, backend 타입 검사 성공. 네트워크 오류 후 자동 재전송 없음.
+- 사용자 추가 조건: 주간 잔여 한도 50%에서 현재 작업만 마무리하고 신규 구현을 중단한다.
+  원본 SHA와 마지막 빈 줄 포함 5,997줄을 다시 확인했으며 전체 요구사항 재감사를 준비한다.
+  완료/부분/미완료 근거와 중복 제거한 분모·계산식을 공개한다. 진행 계획은 완료로 세지 않는다.
+
+## 이전 통합 체크포인트 — 종합 준비 상태 (2026-09-19 KST)
 
 이번 목표 턴은 **진행(progress)**: 3파트의 실제 기능·회귀 수정 통합과 Main의 연결 검증을
 완료했다. 아래 기록이 이전 체크포인트의 ‘진행 중/미통합’ 표기보다 우선한다. 전체 목표의

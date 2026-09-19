@@ -78,7 +78,7 @@ endpoint for both analyzer and critic. `allowRemoteAi` alone grants no exception
 API callers cannot supply this setting. Raw source and environment stay in the
 private encrypted evidence/local declared test boundary, never a remote provider.
 
-### Scoped semantic v2 commitment (not an executable approval profile yet)
+### Scoped semantic v2 commitment and restricted Node integration
 
 `restricted-node-docker-v2` and `restricted-oci-offline-v2` bind the exact
 `scopedReviewPolicy()` object from `services/scanner/src/scoped-policy.mjs`.
@@ -88,13 +88,14 @@ the same runtime bytes therefore get a different manifest and Control release ID
 Runtime isolation is unchanged. The operator's exact-source catalogue declaration
 must be checked independently; a package field or public API opt-in is not authority.
 
-This is a commitment-only interface. Current v1 evidence assessors explicitly
-return ABSTAIN for v2, including when every v1 evidence hash is recomputed to match
-the new policy. End-to-end scoped caller/validator integration, provider execution
-and provider quality measurement remain unfinished. Do not advertise these helpers
-as externally reviewed or execution-ready releases.
+The restricted Node scanner, API/worker, independent validator and Gateway/UI
+contracts are integrated; the new native Linux fullcycle and actual provider quality
+remain separate verification gates. OCI v2 is not activated in the API. V1 evidence
+assessors still return ABSTAIN for v2, including when every v1 evidence hash is
+recomputed to match the new policy. A commitment or local synthetic HTTP response
+does not establish an externally reviewed, execution-ready release.
 
-#### Approved additive v2 integration work (not activated)
+#### Additive Node v2 integration contract
 
 The prepared-Node slice preserves the existing `executionPolicy.semantic` member
 and whole-object validation; it does not add a `scopedReview` alias or reinterpret
@@ -120,9 +121,9 @@ Semantic review itself remains ABSTAIN. Only the aggregate evidence evaluator ma
 return restricted-profile PASS after static/SBOM/identity/dynamic checks; permanent
 FAIL still needs bound deterministic evidence, not an AI-only warning.
 
-API preparation, source catalogue reacquisition, independent validator verification,
-Gateway exact profile/identity validation and OCI follow-through remain separate
-required integration gates. A local HTTP contract server is labelled
+API preparation, source catalogue reacquisition, independent validator verification
+and Gateway exact profile/identity validation have portable tests; native Linux
+evidence and OCI follow-through remain required integration gates. A local HTTP contract server is labelled
 LOCAL_CONTRACT_TEST, never actual provider-quality evidence. No private keys,
 live customer data or paid provider requests are part of the integration tests.
 
@@ -147,6 +148,18 @@ Validators reacquire their own original source and compare the exact source iden
 before reviewing their own runtime export. Existing PreparedConfig and source-identity
 schemas do not gain private catalogue fields.
 
+API/worker configuration uses `CONTROL_SCOPED_PROVENANCE_PATHS` (tenant-to-absolute
+file JSON map) and `CONTROL_SCOPED_AI_CONFIG`. Validators separately use
+`VALIDATOR_SCOPED_PROVENANCE_PATH`, `VALIDATOR_SOURCES_PATH` and
+`VALIDATOR_SCOPED_AI_CONFIG`. These are operator-only settings, never API body fields.
+At prepare, rescan, acceptance/template and independent signing boundaries, a fresh
+original-source acquisition supplies private `sourceBudget: {sourceArtifactDigest,
+sourceBytes}`. Missing, changed, invalid or over-policy size cannot authorize PASS;
+archive size and installed-closure size do not substitute for original file bytes.
+Removing a declaration fails at the next check, not by cancelling a provider request
+that was already sent. Ordinary scan and appeal transactions reject mismatched or
+absent v2 evidence modes before consuming queue quota or the appeal rescan slot.
+
 Public Node v2 summaries reuse only `semanticEvidenceMode` and fixed
 `providerQuality: "PROVIDER_QUALITY_NOT_MEASURED"`, derived from the validated policy.
 Paths, provider configuration, credentials and runtime trust objects stay private.
@@ -156,7 +169,8 @@ dispatched argument object by `argumentsDigest`, in addition to tool name/result
 digest. Sharing a name does not establish that the generated scenario ran.
 
 This slice does not activate OCI v2 or baseline support. Tier 3's distinct model
-requirement must reflect actual transmitted model selectors; the current custom
+requirement must reflect actual transmitted model selectors and distinct nonempty
+model identities in the responses; different aliases alone are insufficient. The current custom
 transport has no such selector and cannot satisfy that requirement. Local Responses
 contract tests do not become real-model quality evidence.
 

@@ -167,6 +167,14 @@ jobs:
         env:
           MCPSHIELD_DOCKER_TESTS: "1"
         run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/api/prepared-fullcycle.test.ts
+      - name: Exercise scoped Node v2 API and independent source validators through V2 and Gateway
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
+        timeout-minutes: 11
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+          MCPSHIELD_SCOPED_DOCKER_TESTS: "1"
+        # Real local Docker/EVM/HTTP; Responses replies are a synthetic contract, not provider-quality evidence.
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test --test-name-pattern="scoped Node v2 source" tests/api/prepared-fullcycle.test.ts
       - name: Retain failed builder security evidence without publishing its image
         if: failure() && matrix.node == 22
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

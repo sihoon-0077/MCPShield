@@ -40,6 +40,13 @@ test('independent CI diagnostics never remove upstream success gates from image 
   assert.match(scoped, /^          MCPSHIELD_DOCKER_TESTS: "1"\r?$/m);
   assert.match(scoped, /^        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE=.* node --import tsx --test tests\/security\/scoped-prepared\.test\.mjs\r?$/m);
   assert.doesNotMatch(scoped, /continue-on-error|OPENAI_API_KEY|CONTROL_AI_TOKEN/);
+  const scopedCycle = steps.find(step => step.startsWith('Exercise scoped Node v2 API and independent source validators through V2 and Gateway'));
+  assert.ok(scopedCycle);
+  assert.match(scopedCycle, /matrix\.node == 22 && steps\.runtime_builder\.outcome == 'success'/);
+  assert.match(scopedCycle, /^          MCPSHIELD_DOCKER_TESTS: "1"\r?$/m);
+  assert.match(scopedCycle, /^          MCPSHIELD_SCOPED_DOCKER_TESTS: "1"\r?$/m);
+  assert.match(scopedCycle, /--test-name-pattern="scoped Node v2 source" tests\/api\/prepared-fullcycle\.test\.ts/);
+  assert.doesNotMatch(scopedCycle, /continue-on-error|OPENAI_API_KEY|CONTROL_AI_TOKEN/);
   for (const name of ['Sign build provenance for the actual image archive', 'Sign image SBOM attestation',
     'Verify build signature against this repository identity', 'Retain bounded downloadable image and evidence']) {
     const matches = steps.filter((step) => step.startsWith(`${name}\n`) || step.startsWith(`${name}\r\n`));

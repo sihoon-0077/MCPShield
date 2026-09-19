@@ -1,6 +1,6 @@
 # MCPShield 개발 인수인계 — 여기서 시작하세요
 
-기준일: **2026-09-19 KST**. 기능 통합 기준: **`9a2a832` (`master/main`)** 및 후속 readiness 검증 보완.
+기준일: **2026-09-19 KST**. 기능 통합 기준: **`1686547` (`master/main`)** 및 후속 검증·문서 보완.
 9월 10일 이후 보안·백엔드·프론트엔드 후속 변경과 종합 상태 점검을 통합했다. 최신 전체 Linux Docker 검증과 공개 배포는 아직 완료되지 않았다.
 
 ## 1. 현재 어디까지 만들었나
@@ -12,10 +12,10 @@
 | 파트 | Main에 구현된 것 | 남은 핵심 작업 |
 |---|---|---|
 | Frontend | Next.js/React 대시보드, `/try`, `/console`, 역할별 로그인, 릴리스 검색·등록, 검사·재처리, 정책, 증거·이력, 이의제기 종결·변경본 재검사 연결, 체인·receipt 표시, 공통 한국어 오류 안내 | 실제 브라우저 조작·시각 검증, 실제 운영 사용자 검증 |
-| Backend | Fastify/TypeScript, 기존 `/api`와 확장 `/v1`, tenant 격리, admin/operator/reader, SQLite/PostgreSQL, SQL queue·lease·backoff·DLQ, 멱등성, 암호화 증거·감사 이벤트·chain outbox, scan/preparation 시도별 lease fence, 인증된 종합 health·실제 Worker heartbeat | 최신 PostgreSQL heartbeat/준비 큐 회귀, 실제 운영 DB·secret 관리·복구·부하 검증 |
-| Security·AI | npm/tarball/OCI 수집, 정확한 digest·도구 표면 고정, 정적 규칙·변경점·SBOM/취약점 검사, Docker 격리·canary, 증거 Merkle root, AI analyzer/critic·구조화 JSON 코드 | 최신 OCI 전체 검사 실패 해결, 제한된 정보만 AI에 전송하는 정책 연결, 실제 외부 모델 호출·품질 평가 |
+| Backend | Fastify/TypeScript, 기존 `/api`와 확장 `/v1`, tenant 격리, admin/operator/reader, SQLite/PostgreSQL, SQL queue·lease·backoff·DLQ, 멱등성, 암호화 증거·감사 이벤트·chain outbox, scan/preparation 시도별 lease fence, 인증된 종합 health·실제 Worker heartbeat | scoped-v2 원본 catalogue·독립 validator 연결 통합, 실제 운영 DB·secret 관리·복구·부하 검증 |
+| Security·AI | npm/tarball/OCI 수집, 정확한 digest·도구 표면 고정, 정적 규칙·변경점·SBOM/취약점 검사, Docker 격리·canary, 증거 Merkle root, Node scoped-v2의 제한 DTO·독립 critic·생성 probe 인자 연결 | 새 scoped-v2 전체 Linux 검증, OCI scoped-v2 연결, 실제 외부 모델 호출·품질 평가 |
 | Blockchain | Solidity V1/V2·receipt anchor, EIP-712, 2-of-3, 중복·만료·다른 체인 서명 거부, 격리·terminal 폐기, 정책 버전, indexer·reorg/전송 복구 | Base Sepolia 배포·외부 RPC 검증, 독립 기관 validator, 운영 키 관리 |
-| Gateway | 실제 stdio/HTTP MCP, 실행 전 차단, 매 도구 호출 승인 재검사, identity·policy·expiry 검증, signed cache·장애 fallback, 제한된 npm/OCI 실행 프로필 | 최신 OCI 전체 흐름 통과, 지원 대상 확대, 후속 호출 없는 지속 실행의 폐기 즉시 중단 보장 |
+| Gateway | 실제 stdio/HTTP MCP, 실행 전 차단, 매 도구 호출 승인 재검사, identity·policy·expiry 검증, signed cache·장애 fallback, 제한된 npm/OCI 실행 프로필, v1/local-v2/provider-v2 identity 분리 회귀 | 새 scoped-v2 Linux 연결, 지원 대상 확대, 후속 호출 없는 지속 실행의 폐기 즉시 중단 보장 |
 | DevOps·관측 | Compose, GitHub Actions, 테스트·빌드·secret/image 검사, 이미지 서명 절차, OTel trace/metric, Prometheus/Grafana·알림 규칙, 복원 절차 | 최신 전체 CI 성공·서명 이미지·공개 배포, 실제 알림 수신자, 운영 collector·백업·부하 검증 |
 
 명확한 미완료 사항:
@@ -43,7 +43,7 @@ git log -1 --oneline
 
 | 브랜치 | 인수인계 시 기능 HEAD | 용도 |
 |---|---|---|
-| `master/main` | `9a2a832` + readiness 보완·검증 문서 | 새 작업의 기본 출발점 |
+| `master/main` | `1686547` + 후속 검증·문서 | 새 작업의 기본 출발점. 로컬 변경은 push 전까지 원격과 다름 |
 | `master/backend-appeals` | `7da231f` | preparation fence·종합 API·heartbeat는 Main `970cc67`/`9f88d6d`로 통합 |
 | `master/frontend-appeals` | `5225030` | health UI는 Main `92c15bd`; 후속 원문 오류 정제는 Main 별도 보완 |
 | `master/security-health` | `433c903` | Main `d683b5b`로 체인 가용성 probe 통합. 이전 security-ai는 보존 |
@@ -59,9 +59,21 @@ git log -1 --oneline
 - Frontend `859e727`: `apps/dashboard/components/scan-request-form.tsx`, `appeal-records.tsx`, `operations-console.tsx`, `release-workflow.tsx`.
 - Security `e46c3ed`: `services/scanner/src/scoped-policy.mjs`, prepared/OCI binding·policy와 해당 테스트.
 
-Main은 추가로 `365efcf`에서 v1 증거를 재해시해 v2 승인으로 재사용하는 경로를 검사하고, `809f7e2`에서 stale attempt 회귀를 PostgreSQL gate에도 연결했다. v2 commitment는 아직 실제 외부 AI caller 통합이나 실행 승인이 아니다.
+Main은 `365efcf`에서 v1 증거를 재해시해 v2 승인으로 재사용하는 경로를 검사하고, `809f7e2`에서 stale attempt 회귀를 PostgreSQL gate에도 연결했다. `ee4d908`/`db9e28b`는 Node scoped-v2 scanner·UI·Gateway 경계를 추가했다. 실제 외부 AI 호출·품질 및 새 API/validator 전체 실행 증거는 별도다.
 
 ## 3. 다음 개발자의 첫 실행
+
+### 사용자 지정 구현 중단 조건 (2026-09-19)
+
+계정 주간 잔여 한도가 **50% 이하**가 되면 진행 중인 bounded 작업만 안전하게 마무리한다.
+새 기능은 시작하지 않고, 원본 마스터 문서 전체의 `완료 / 부분 / 미완료` 재감사와 MD 보고를
+수행한다. 감사 후 사용자 재개 요청 없이 자동으로 신규 구현을 확장하지 않는다.
+한도는 계정 공용 실제 usage 도구로 확인하며 기존 70% 추정치를 요구사항 완료율로 재사용하지 않는다.
+
+Node scoped-v2 API/worker·독립 validator는 `e55c1ab`에 통합됐다. 기존 v1 설정은 바꾸지 않고,
+별도 원본 허가 catalogue와 검사 설정을 준비해야 한다. 설정·철회·롤백 및 실제 Linux 명령은
+[API README의 Additive Node scoped v2](apps/api/README.md#additive-node-scoped-v2)를 따른다.
+정책의 `PROVIDER_EXECUTION` 표시는 실제 외부 AI 호출 성공이나 품질을 의미하지 않는다.
 
 ### 준비
 
@@ -167,13 +179,15 @@ AI의 도구 호출 → Gateway → 최신 실행 허가 확인
 
 ### 최신 원격 결과와 수정 상태
 
-[CI 35424461690 — 906daa0](https://github.com/sihoon-0077/MCPShield/actions/runs/35424461690)는 종료·전체 실패다.
-실제 PostgreSQL 29 PASS와 Node 24, 반복 데모는 성공했다. Node 22의 native OCI inventory/Trivy,
-composed scan, 정상 PASS·악성 FAIL 독립 재검사는 통과했지만 OCI fullcycle의 목록 cursor 단언에서 실패했다.
-SDK v2 `listTools()`는 전체 페이지를 합치므로 `9a2a832`에서 실제 첫 페이지·후속 cursor·합산 목록을
-분리 검증하도록 수정했다. Gateway 보안 판단을 완화하지 않았다. 최신 SHA의 native 재실행은 필요하다.
-signed-image job 성공과 달리 provenance/SBOM 서명·검증·artifact 보관 단계는 상위 verify 실패로
-skipped였다. 서명 이미지나 최신 배포 완료가 아니다. 아래는 더 오래된 실패의 원인 기록이다.
+[CI 35425746994 — 0351567](https://github.com/sihoon-0077/MCPShield/actions/runs/35425746994)는 종료·전체 실패다.
+PostgreSQL 40 PASS/1 native Docker SKIP, Node 24, 10회 반복 데모는 성공했다.
+Node 22의 기존 OCI worker→독립 single-key validator→V2→두 Gateway는 **2 PASS/0 SKIP**,
+prepared npm 전체 흐름은 **3 PASS/0 SKIP**다. 과거 SDK cursor 단언 실패는 해결됐다.
+남은 실패는 Compose dashboard 빌드에서 공유 `scoped-policy.mjs`를 못 찾은 것이다.
+Main `b9f591a`는 Docker COPY와 client-safe serializer를 고쳤으며 로컬 build/import closure 검사가 통과했다.
+이 수정과 새 scoped-v2 통합본의 후속 Linux 실행은 별도로 확인해야 한다.
+signed-image job은 이미지 실행·취약점 검사·SBOM까지만 성공했고 provenance/SBOM 서명·검증·artifact
+보관 단계는 상위 verify 실패로 skipped였다. 아래 기록은 이전 실패의 원인이며 현재 실패 목록이 아니다.
 
 [CI 34439175673 — f957451](https://github.com/sihoon-0077/MCPShield/actions/runs/34439175673)를 2026-09-19 GitHub API와 실제 job 로그로 확인했다. 아래는 수정 전 결과이며 새 통합본 성공 증거가 아니다.
 
@@ -188,6 +202,14 @@ skipped였다. 서명 이미지나 최신 배포 완료가 아니다. 아래는 
 실제 진단: 지원 정상 fixture는 승인 base와 일치하는 527개 `Directory`의 mode `02755` 때문에 `SET_ID_BITS`로 보류됐다. `8155bb0`은 후보가 없는 trusted builder 생성 단계에서만 `/usr/local`, `/home/node` 디렉터리의 set-ID 비트를 제거한다. 후보 검사 규칙과 base 일치 검사는 유지한다. 별도 composed 검사는 패키지 없는 Trivy 보고서가 `Results`를 생략해 실패했다. 생략을 빈 원본 증거로 보존하되 `INCONCLUSIVE / OCI_TRIVY_PACKAGE_COVERAGE_INCOMPLETE`로 처리한다. 정상 지원 프로필 PASS, 악성 FAIL 및 독립 validator→Gateway 전체 경로는 새 Linux CI에서 재확인해야 한다.
 
 ### 로컬에서 확인한 범위
+
+`e55c1ab`에서 전체 `npm test` 종료 0과 `npm run build`(기본 Next Turbopack 포함)가 성공했다.
+이는 원격 Docker/PostgreSQL gate의 대체가 아니다. Node scoped API/validator 집중 회귀는
+7 PASS/0 SKIP이며 Docker 관찰은 명시적으로 synthetic이다. Frontend 교차 리뷰로
+`chainUnavailable` 보존과 mode 불일치 409/queue·appeal slot 미소비를 실제 API에서 재확인했다.
+후속 `1686547`은 고정 한국어 안내 외 원문 오류·unknown code 반사를 막고, 관련 client/BFF 및
+release gate 14 PASS/0 SKIP와 backend 타입 검사를 통과했다. 자동 재전송은 추가하지 않았다.
+2026-09-19 생산 의존성 `npm audit --omit=dev --audit-level=high` 결과 0 vulnerabilities.
 
 최신 통합 `9a2a832` + readiness 보완에서 전체 `npm test` 종료 0, backend+Next build 성공.
 상태 API/BFF/CLI focused 8 PASS/0 SKIP는 실제 SQLite·로컬 EVM·정적 Worker의 상태와 RPC/Worker
@@ -224,9 +246,9 @@ npm test
 
 | 순서 | 할 일 | 완료를 판단할 증거 |
 |---|---|---|
-| P0 | 위 OCI 실패 세 단계 재현·수정 | 지원 정상 fixture PASS, 악성 fixture FAIL, 독립 validator 정족수, 두 Gateway에서 폐기 이미지 실행 0건, 같은 SHA의 Linux CI 성공 |
-| P0 | 통합본의 실제 PostgreSQL·브라우저 검증 | PostgreSQL worker-lost/동시성/동일 owner stale attempt, 실제 브라우저 재검사 흐름과 응답 유실 처리 |
-| P1 | 종합 health 운영 검증·실제 장애 알림 | API/Worker/RPC·BFF·단발 CLI는 통합됨. 최신 PG/Docker 회귀와 설정된 수신자의 실제 알림 확인은 남음. |
+| P0 | 수정된 Compose와 새 scoped Node v2 전체 Linux 검증 | 기존 OCI/npm 회귀 유지, scoped-v2 원본 확인·독립 validator 정족수·두 Gateway, Compose·Grafana·서명 이미지까지 같은 SHA 성공 |
+| P0 | 통합본의 실제 PostgreSQL·브라우저 검증 | 기존 PG worker-lost/동시성/heartbeat native 성공 유지, scoped mode 오류의 무변경 거부와 실제 브라우저 재검사·응답 유실 처리 |
+| P1 | 종합 health 운영 검증·실제 장애 알림 | API/Worker/RPC·BFF·단발 CLI와 PG/Docker readiness 검증 있음. 설정된 수신자의 실제 알림 확인은 남음. |
 | P1 | 외부 AI를 제한된 정보 공개 정책에 연결 | 실제 모델 호출, 원문/secret 전송 제한, analyzer·critic·probe 전 경로 일관성, 실패 시 ABSTAIN, 비용·탐지/오탐 평가 |
 | P1 | 테스트넷·실제 저장소·키/백업 운영 | 배포 주소·tx·chain ID·explorer, 실제 암호화 증거 저장/조회, 별도 DB 복원과 복구 시간 측정 |
 | P2 | 지원 MCP 실사용·부하·배포 | 실제 정상 업무와 악성 업데이트 차단, 명시한 동시성·대기시간 목표 검증, 같은 SHA의 release image·보안 검사·배포 smoke |
