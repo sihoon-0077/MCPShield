@@ -126,6 +126,40 @@ required integration gates. A local HTTP contract server is labelled
 LOCAL_CONTRACT_TEST, never actual provider-quality evidence. No private keys,
 live customer data or paid provider requests are part of the integration tests.
 
+The approved Node control policy is an additive `version: "2.0.0"` document with
+`profile: "restricted-node-docker-v2"` and the exact `semantic: scopedReviewPolicy(mode)`
+object. V1 policy bytes/hashes stay unchanged. `POST /v1/releases/:id/prepare` still
+accepts only `{policyHash}`; clients cannot choose provider endpoints, credentials,
+provenance or execution-policy bytes. Scanner entry points take the separate trusted
+option `scopedReview: {executionPolicy, sourceProvenance}`; this call option is **not**
+an alias in the committed execution policy. The assessor independently requires
+operator-local `trusted.sourceProvenance`.
+
+The local catalogue envelope is `mcpshield.scoped-provenance-catalogue.v1` with an
+`artifacts` array of the existing exact four-field provenance declarations. The API
+maps tenant IDs to local files; each validator uses its own file and existing
+`ValidatorSources.v1` immutable-locator catalogue. Reopen bounded files at execution
+and acceptance/signing boundaries; a missing, withdrawn or changed declaration
+cannot reuse a stored approval. The provenance digest is the original source tree
+digest (`source.artifactDigest`, `descriptor.sourceTreeDigest`,
+`binding.sourceArtifactDigest`), **not** an archive digest or prepared descriptor hash.
+Validators reacquire their own original source and compare the exact source identity
+before reviewing their own runtime export. Existing PreparedConfig and source-identity
+schemas do not gain private catalogue fields.
+
+Public Node v2 summaries reuse only `semanticEvidenceMode` and fixed
+`providerQuality: "PROVIDER_QUALITY_NOT_MEASURED"`, derived from the validated policy.
+Paths, provider configuration, credentials and runtime trust objects stay private.
+UI policy selection must match both v2 profile and evidence mode; absent/unknown
+mode is not an inferred match. The collector's v2 probe evidence binds the exact
+dispatched argument object by `argumentsDigest`, in addition to tool name/result
+digest. Sharing a name does not establish that the generated scenario ran.
+
+This slice does not activate OCI v2 or baseline support. Tier 3's distinct model
+requirement must reflect actual transmitted model selectors; the current custom
+transport has no such selector and cannot satisfy that requirement. Local Responses
+contract tests do not become real-model quality evidence.
+
 ### Explicit local emergency execution
 
 `mcpshield.break-glass-grant.v1` is separate from normal admission and FR407 receipts.

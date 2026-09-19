@@ -16,16 +16,24 @@
 - 최신 원격 `0351567`의 [CI 35425746994](https://github.com/sihoon-0077/MCPShield/actions/runs/35425746994)를
   반복 데모 포함 dispatch했다. 실제 PostgreSQL job `105851290825`는 **40 PASS/1 native Docker SKIP**,
   실패 0이며 새 heartbeat의 실제 Worker/API 별도 연결과 preparation 세대 fence를 포함한다.
-  별도 빈 DB 백업/복원 drill도 성공했다. Node 22/24는 마지막 확인 시 실행 중이다.
+  별도 빈 DB 백업/복원 drill도 성공했다. Node 24는 성공 종료했다. Node 22에서 실제
+  OCI worker→독립 single-key validator→V2→두 Gateway 단계는 **06:23:22 UTC 성공**,
+  npm prepared 전체 흐름은 **06:24:39 UTC 성공**으로 확인했다. 최신 전체 job·Compose·
+  반복 데모·서명 이미지가 모두 끝났다는 뜻은 아니다.
   같은 SHA push run은 dispatch로 대체·취소됐다. `844b8c0`의 첫 dispatch는 YAML의 `run`이
   env 하위로 들어간 오류로 422 거부됐고 `0351567`에서 고쳤다. 설치된 YAML parser로 전체
   51 step 실행 속성을 검사하고 release-readiness 회귀 9 PASS를 확인했다.
 - 최신 built Next HTTP 폼 검사는 opt-in 3 PASS/0 SKIP. 아래 dashboard 일반 실행의
   1 SKIP는 이 별도 실행으로 확인했지만 실제 브라우저 hydration 검증은 여전히 남는다.
-- 다음 3파트 작업은 scoped-v2 실제 호출 연결이다. Security의 prepared-Node scanner/evaluator
-  구현을 승인했고, Backend는 독립 source catalogue·API/validator 연결을, Frontend/Gateway는
-  정확한 v2 profile·identity/정책 선택 경계를 조사한다. 기존 commitment의
+- 다음 3파트 작업은 scoped-v2 실제 호출 연결이다. Security의 prepared-Node scanner/evaluator,
+  Backend의 독립 source catalogue·API/validator 연결, Frontend/Gateway의 정확한 v2
+  profile·mode별 identity/정책 선택 구현을 승인했다. 기존 commitment의
   `executionPolicy.semantic`은 유지하며 full-source fallback이나 v1 승인 재사용은 금지한다.
+- `b9f591a`: Frontend의 의존성 점검으로 dashboard Docker COPY에서 `scoped-policy.mjs`
+  누락을 발견했다. 공유 canonical serializer를 변경 없이 순수 모듈로 추출하고 evidence의
+  기존 export를 유지해 브라우저에서 Node crypto 없이 정책을 검사한다. Docker에 실제
+  import closure를 포함하고 누락 mutation 회귀를 추가했다. 로컬 12 PASS/0 SKIP,
+  backend 타입 검사와 Next build 성공. 실행 중인 `0351567` Linux에는 아직 이 수정이 없다.
 
 - `970cc67`: preparation에도 tenant/owner/attempt/정확한 미만료 lease fence 통합.
   로컬 prepared/OCI 준비 검사 13 PASS/1 PostgreSQL SKIP. 새 PostgreSQL gate 재실행 필요.

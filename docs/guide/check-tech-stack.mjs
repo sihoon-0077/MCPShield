@@ -40,4 +40,7 @@ const ids = Array.from(html.matchAll(/\bid="([^"]+)"/g), match => match[1]);
 assert.equal(new Set(ids).size, ids.length, 'Duplicate HTML IDs');
 for (const [, id] of html.matchAll(/href="#([^"]+)"/g)) assert.ok(ids.includes(id), `Missing anchor: ${id}`);
 assert.ok(!/<(?:script|link|img)\b[^>]*(?:src|href)=["']https?:/i.test(html), 'Keep the guide usable offline');
+for (const term of ['/v1/health', 'LIMITED', 'UNKNOWN', 'READY']) {
+  assert.ok(html.includes(`<code>${term}</code>`), `Missing readiness distinction: ${term}`);
+}
 console.log('PASS: 4 teaching flows, fail-closed boundaries, 8 architecture nodes, script syntax and offline document anchors.');
