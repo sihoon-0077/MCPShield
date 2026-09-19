@@ -94,6 +94,38 @@ the new policy. End-to-end scoped caller/validator integration, provider executi
 and provider quality measurement remain unfinished. Do not advertise these helpers
 as externally reviewed or execution-ready releases.
 
+#### Approved additive v2 integration work (not activated)
+
+The prepared-Node slice preserves the existing `executionPolicy.semantic` member
+and whole-object validation; it does not add a `scopedReview` alias or reinterpret
+v1 evidence. Its explicit scanner exports are `buildScopedSemanticInputV2`,
+`verifyScopedSemanticInputV2`, `reviewScopedSemanticsV2` and
+`assessScopedPreparedPolicy`. Reuse v1 privacy/transport primitives where correct,
+but do not change existing v1 behavior or enable a public API policy implicitly.
+
+The full validated execution policy and independently obtained operator-local
+exact-source provenance bind the selection. The local tier decision chooses one
+bounded DTO; analyzer, blind critic and probe generator receive that same input
+digest. Tier 3 additionally requires explicitly different analyzer2 model
+configuration. Neither source text nor provider responses choose a lower tier.
+Unknown classification/authority or disclosure-budget failure sends zero provider
+requests. Raw source, runtime values and arbitrary customer data are not a fallback.
+This is bounded disclosure under operator scope, not automatic privacy proof.
+
+After closure verification and MCP discovery, run the scoped review once and
+execute only its validated synthetic probe plan. The v2 evaluator reconstructs
+source selection, provenance, policy/tier, prompt commitments and all required
+role results, and matches planned scenarios to actual isolated observations.
+Semantic review itself remains ABSTAIN. Only the aggregate evidence evaluator may
+return restricted-profile PASS after static/SBOM/identity/dynamic checks; permanent
+FAIL still needs bound deterministic evidence, not an AI-only warning.
+
+API preparation, source catalogue reacquisition, independent validator verification,
+Gateway exact profile/identity validation and OCI follow-through remain separate
+required integration gates. A local HTTP contract server is labelled
+LOCAL_CONTRACT_TEST, never actual provider-quality evidence. No private keys,
+live customer data or paid provider requests are part of the integration tests.
+
 ### Explicit local emergency execution
 
 `mcpshield.break-glass-grant.v1` is separate from normal admission and FR407 receipts.

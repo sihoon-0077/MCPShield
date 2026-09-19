@@ -13,6 +13,20 @@
 완료했다. 아래 기록이 이전 체크포인트의 ‘진행 중/미통합’ 표기보다 우선한다. 전체 목표의
 외부 운영·모델 품질·테스트넷·공개 배포 완료를 주장하지 않는다.
 
+- 최신 원격 `0351567`의 [CI 35425746994](https://github.com/sihoon-0077/MCPShield/actions/runs/35425746994)를
+  반복 데모 포함 dispatch했다. 실제 PostgreSQL job `105851290825`는 **40 PASS/1 native Docker SKIP**,
+  실패 0이며 새 heartbeat의 실제 Worker/API 별도 연결과 preparation 세대 fence를 포함한다.
+  별도 빈 DB 백업/복원 drill도 성공했다. Node 22/24는 마지막 확인 시 실행 중이다.
+  같은 SHA push run은 dispatch로 대체·취소됐다. `844b8c0`의 첫 dispatch는 YAML의 `run`이
+  env 하위로 들어간 오류로 422 거부됐고 `0351567`에서 고쳤다. 설치된 YAML parser로 전체
+  51 step 실행 속성을 검사하고 release-readiness 회귀 9 PASS를 확인했다.
+- 최신 built Next HTTP 폼 검사는 opt-in 3 PASS/0 SKIP. 아래 dashboard 일반 실행의
+  1 SKIP는 이 별도 실행으로 확인했지만 실제 브라우저 hydration 검증은 여전히 남는다.
+- 다음 3파트 작업은 scoped-v2 실제 호출 연결이다. Security의 prepared-Node scanner/evaluator
+  구현을 승인했고, Backend는 독립 source catalogue·API/validator 연결을, Frontend/Gateway는
+  정확한 v2 profile·identity/정책 선택 경계를 조사한다. 기존 commitment의
+  `executionPolicy.semantic`은 유지하며 full-source fallback이나 v1 승인 재사용은 금지한다.
+
 - `970cc67`: preparation에도 tenant/owner/attempt/정확한 미만료 lease fence 통합.
   로컬 prepared/OCI 준비 검사 13 PASS/1 PostgreSQL SKIP. 새 PostgreSQL gate 재실행 필요.
 - `d683b5b` / `9f88d6d` / `92c15bd`: 인증된 `/v1/health`, 실제 DB 읽기·bounded RPC,
