@@ -7,6 +7,7 @@ import { ReleaseWorkflow, type Release, type Scan, type ChainAction } from "./re
 import { PreparationConsole, type Preparation } from "./preparation-console";
 import { AppealRecords, type Appeal } from "./appeal-records";
 import { ScanRequestForm } from "./scan-request-form";
+import { HealthPanel } from "./health-panel";
 import { controlApi as api } from "../lib/control-client";
 
 type Session = { tenantId: string; role: string; capabilities: { read: boolean; scan: boolean; evidence: boolean; manage: boolean } };
@@ -36,9 +37,11 @@ export function OperationsConsole() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("운영 계정으로 연결하면 현재 조직의 실제 데이터를 불러옵니다.");
   const [error, setError] = useState("");
+  const [healthRefresh, setHealthRefresh] = useState(0);
   const release = releases.find((item) => item.releaseId === selected);
 
   async function refresh() {
+    setHealthRefresh(value => value + 1);
     const sequence = ++refreshSequence.current, id = selectedRef.current;
     try {
       const [nextReleases, nextScans, nextPolicies, nextOperations, nextActions, nextPreparations, events, requests] = await Promise.all([
@@ -103,6 +106,7 @@ export function OperationsConsole() {
     {!session ? <section className="ops-panel ops-login"><h2>조직에 연결</h2><p>관리자가 발급한 운영 액세스 토큰을 입력하세요. 계정에 지정된 조직과 역할만 접근할 수 있습니다.</p><form method="post" onSubmit={(event) => submit(event, async (data) => { const current = await api<Session>("session", { token: field(data, "token") }); setSession(current); await refresh(); })}><label>액세스 토큰<input name="token" type="password" required minLength={16} maxLength={2048} autoComplete="off" /></label><button disabled={busy}>운영 콘솔 연결</button></form><small>토큰은 JavaScript에서 읽을 수 없는 HttpOnly 쿠키로 보관하며, 주소나 localStorage에 기록하지 않습니다.</small></section> : <>
       <div className="ops-session"><span><b>{session.tenantId}</b> · {session.role}</span><span>실제 API · 체인 증빙은 릴리스별 표시</span><button disabled={busy} onClick={() => void action(refresh)}>새로고침</button></div>
       <p className="ops-data-note" role="status">{streamState}. 변경 알림은 상태·승인 증거가 아니며 공개 체험 데이터와 섞이지 않습니다.</p>
+      <HealthPanel key={`${session.tenantId}:${session.role}`} refreshVersion={healthRefresh} />
       <section className="ops-stats" aria-label="현재 조직 운영 현황"><article><span>등록 릴리스</span><strong>{releases.length}</strong></article><article><span>검사 대기 / 실행</span><strong>{operations ? (operations.counts.QUEUED ?? 0) + (operations.counts.RUNNING ?? 0) : "—"}</strong></article><article><span>재처리 필요</span><strong>{operations?.counts.DEAD_LETTER ?? "—"}</strong></article><article><span>격리 / 폐기</span><strong>{releases.filter((item) => ["QUARANTINED", "REVOKED"].includes(item.status)).length}</strong></article></section>
       {operations && <p className="ops-data-note">{operations.driver} 연결 · 조직 전체 검사 {operations.total}개 · 목록은 최근 최대 250개 · 릴리스·폐기 개수는 불러온 목록 기준</p>}
       {release && <section id="ops-workflow" className="ops-panel"><h2>{release.legacyReleaseId || release.toolId} · 검증 흐름</h2><ReleaseWorkflow key={release.releaseId} release={release} scans={scans} policies={policies} actions={chainActions} manage={session.capabilities.manage} onRefresh={refresh} /></section>}

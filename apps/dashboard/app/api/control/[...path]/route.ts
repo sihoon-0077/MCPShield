@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { receiptEvidenceSummary, validReceiptWriter } from "../../../../lib/receipt-summary";
 import { controlEventStream } from "../../../../lib/control-events";
 import { preparedDownload } from "../../../../lib/prepared-download";
+import { parseControlHealth } from "../../../../lib/control-health";
 
 export const dynamic = "force-dynamic";
 const COOKIE = "mcpshield_control";
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
 const routes = {
-  GET: [/^session$/, /^operations$/, /^releases$/, /^releases\/[^/]+\/(history|appeals|gateway-config)$/, /^scans$/, /^scans\/[^/]+(?:\/evidence)?$/, /^policies$/, /^chain\/actions(?:\/[^/]+)?$/, /^receipt-ledgers(?:\/[^/]+(?:\/batches)?)?$/, /^receipt-batches\/[^/]+(?:\/evidence)?$/, /^preparations(?:\/[^/]+(?:\/evidence)?)?$/, /^events\/stream$/],
+  GET: [/^session$/, /^health$/, /^operations$/, /^releases$/, /^releases\/[^/]+\/(history|appeals|gateway-config)$/, /^scans$/, /^scans\/[^/]+(?:\/evidence)?$/, /^policies$/, /^chain\/actions(?:\/[^/]+)?$/, /^receipt-ledgers(?:\/[^/]+(?:\/batches)?)?$/, /^receipt-batches\/[^/]+(?:\/evidence)?$/, /^preparations(?:\/[^/]+(?:\/evidence)?)?$/, /^events\/stream$/],
   POST: [/^releases\/resolve$/, /^releases\/[^/]+\/(appeals|register|prepare)$/, /^appeals\/[^/]+\/resolve$/, /^scans$/, /^scans\/[^/]+\/retry$/, /^policies$/, /^policies\/[^/]+\/(deprecate|publish)$/, /^admission\/check$/, /^receipt-ledgers$/, /^preparations\/[^/]+\/retry$/],
 };
 
@@ -104,6 +105,10 @@ async function handle(request: NextRequest, context: Context) {
     // these authenticated evidence routes that budget plus a small JSON envelope.
     const evidenceRoute = /^(preparations|scans)\/[^/]+\/evidence$/.test(route);
     const payload = await boundedJson(upstream.body, upstream.ok && evidenceRoute ? 32 * 1024 * 1024 + 1024 : 4 * 1024 * 1024);
+    if (route === "health" && (upstream.ok || upstream.status === 503)) {
+      try { return json(parseControlHealth(payload, upstream.status), upstream.status); }
+      catch { return json({ error: "종합 상태 응답을 검증하지 못했습니다." }, 503); }
+    }
     if (upstream.ok && /^releases\/[^/]+\/gateway-config$/.test(route)) return preparedDownload(payload, path[1]);
     const preparedScanEvidence = /^scans\/[^/]+\/evidence$/.test(route) && Object.keys((payload as { bundle?: { files?: object } })?.bundle?.files ?? {}).some(path => path.startsWith("prepared/"));
     if (upstream.ok && route.startsWith("scans/") && evidenceRoute && !preparedScanEvidence && Buffer.byteLength(JSON.stringify(payload)) > 4 * 1024 * 1024) throw new Error("LEGACY_EVIDENCE_TOO_LARGE");

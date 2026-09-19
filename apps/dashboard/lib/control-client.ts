@@ -1,3 +1,5 @@
+import { parseControlHealth } from "./control-health";
+
 const messages: Record<string, string> = {
   APPEAL_NOT_OPEN: "이미 종결된 이의제기입니다. 목록을 새로고침해 검토 결과를 확인하세요.",
   APPEAL_ALREADY_RESOLVED: "이미 다른 검토 결론이 기록되어 있습니다. 새로고침해 기존 결론을 확인하세요.",
@@ -21,10 +23,14 @@ const statusMessages: Record<number, string> = {
   429: "요청 한도에 도달했습니다. 잠시 후 현재 상태를 확인하세요.",
 };
 
-export async function controlApi<T>(path: string, body?: unknown, method = body === undefined ? "GET" : "POST", idempotencyKey?: string): Promise<T> {
-  const response = await fetch(`/api/control/${path}`, { method, cache: "no-store", headers: body === undefined ? {} : { "content-type": "application/json", "idempotency-key": idempotencyKey ?? crypto.randomUUID() }, body: body === undefined ? undefined : JSON.stringify(body) })
+export async function controlApi<T>(path: string, body?: unknown, method = body === undefined ? "GET" : "POST", idempotencyKey?: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(`/api/control/${path}`, { method, cache: "no-store", signal, headers: body === undefined ? {} : { "content-type": "application/json", "idempotency-key": idempotencyKey ?? crypto.randomUUID() }, body: body === undefined ? undefined : JSON.stringify(body) })
     .catch(() => { throw Object.assign(new Error("서버에 연결하지 못했습니다. 요청이 접수됐을 수 있으니 새로고침해 기록부터 확인하세요."), { code: "NETWORK_ERROR" }); });
   const payload = await response.json().catch(() => { throw Object.assign(new Error("서버 응답을 확인할 수 없습니다. 새로고침해 요청 기록을 확인하세요."), { code: "INVALID_RESPONSE", status: response.status }); });
+  if (path === "health" && method === "GET" && (response.ok || response.status === 503)) {
+    try { return parseControlHealth(payload, response.status) as T; }
+    catch { throw Object.assign(new Error("종합 상태 응답을 검증하지 못했습니다. 이전 정상 표시는 사용하지 않습니다."), { code: "INVALID_HEALTH_RESPONSE", status: response.status }); }
+  }
   if (!response.ok) {
     const original = typeof payload?.error === "string" ? payload.error : payload?.error?.message ?? payload?.message;
     const rawCode = payload?.error?.code ?? original, code = typeof rawCode === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(rawCode) ? rawCode : undefined;
