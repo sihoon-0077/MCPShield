@@ -133,5 +133,62 @@ export function v2ChainReader(config) {
       throw new V2ChainUnavailableError(!closed && transportFailures === urls.length ? "TRANSPORT_UNAVAILABLE" : "TRUST_REJECTED");
     } finally { clearTimeout(timer); controller.abort(); running.delete(controller); }
   };
-  return Object.assign(read, { close: () => { closed = true; running.forEach(controller => controller.abort()); } });
+  // Availability snapshot only: no release decision, attestation or authorization.
+  // Raw requests use the same envelope/URL/size checks without ethers' background
+  // network-startup retries. Only transport failure may try another endpoint.
+  const health = async () => {
+    const down = code => ({ status: "DOWN", code });
+    if (closed) return down("CHAIN_READER_CLOSED");
+    const controller = new AbortController(); running.add(controller);
+    const deadline = performance.now() + timeoutMs, timer = setTimeout(() => controller.abort(new TransportUnavailableError()), timeoutMs);
+    const quantity = value => typeof value === "string" && /^0x(?:0|[1-9a-f][0-9a-f]{0,13})$/i.test(value)
+      && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+    const registry = createReleaseRegistryV2(registryContract), unavailableRegistry = Symbol("REGISTRY_UNAVAILABLE");
+    try {
+      for (const [index, url] of urls.entries()) {
+        const remaining = deadline - performance.now(); if (controller.signal.aborted || remaining <= 0) break;
+        const budget = Math.max(1, Math.floor(remaining / (urls.length - index))), endpointDeadline = performance.now() + budget;
+        const endpoint = new AbortController(), endpointTimer = setTimeout(() => endpoint.abort(new TransportUnavailableError()), budget);
+        const signal = AbortSignal.any([controller.signal, endpoint.signal]);
+        let id = 0;
+        const rpc = async (method, params = []) => {
+          const request = v2RpcRequest(url, { timeoutMs: budget, signal, allowedHttpHosts });
+          request.method = "POST"; request.setHeader("content-type", "application/json");
+          request.body = JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params });
+          return JSON.parse(Buffer.from((await request.send()).body).toString()).result;
+        };
+        try {
+          const observedChain = quantity(await rpc("eth_chainId"));
+          if (observedChain === null) return down("CHAIN_TRUST_REJECTED");
+          if (observedChain !== chainId) return down("CHAIN_ID_MISMATCH");
+          const block = await rpc("eth_getBlockByNumber", ["latest", false]);
+          const head = { number: quantity(block?.number), timestamp: quantity(block?.timestamp), hash: block?.hash };
+          if (head.number === null || head.number < confirmations || head.timestamp === null ||
+            typeof head.hash !== "string" || !hash.test(head.hash) || /^0x0+$/.test(head.hash)) return down("CHAIN_HEAD_INVALID");
+          if (!freshHead(head)) return down("CHAIN_HEAD_STALE");
+          await completeReads([
+            rpc("eth_getCode", [registryContract, block.number]).then(code => {
+              if (typeof code !== "string" || !/^0x(?:[0-9a-f]{2})+$/i.test(code)) throw unavailableRegistry;
+            }),
+            rpc("eth_call", [{ to: registryContract, data: registry.interface.encodeFunctionData("validators") }, block.number]).then(value => {
+              let validator;
+              try { [validator] = registry.interface.decodeFunctionResult("validators", value); }
+              catch { throw unavailableRegistry; }
+              if (/^0x0+$/i.test(validator)) throw unavailableRegistry;
+            }),
+          ]);
+          if (closed) return down("CHAIN_READER_CLOSED");
+          if (signal.aborted || performance.now() >= deadline || performance.now() >= endpointDeadline) throw new TransportUnavailableError();
+          if (!freshHead(head)) return down("CHAIN_HEAD_STALE");
+          return { status: "UP", code: "CHAIN_READY" };
+        } catch (error) {
+          if (closed) return down("CHAIN_READER_CLOSED");
+          if (error === unavailableRegistry) return down("CHAIN_REGISTRY_UNAVAILABLE");
+          if (!(error instanceof TransportUnavailableError)) return down("CHAIN_TRUST_REJECTED");
+        } finally { clearTimeout(endpointTimer); endpoint.abort(); }
+      }
+      return down(closed ? "CHAIN_READER_CLOSED" : "CHAIN_TRANSPORT_UNAVAILABLE");
+    } finally { clearTimeout(timer); controller.abort(); running.delete(controller); }
+  };
+  return Object.assign(read, { health, close: () => { closed = true; running.forEach(controller => controller.abort()); } });
 }
