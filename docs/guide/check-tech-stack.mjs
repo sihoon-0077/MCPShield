@@ -12,6 +12,12 @@ new vm.Script(ui);
 const { flows, nodes, getStep } = vm.runInNewContext(`${model}\n;({flows,nodes,getStep});`, Object.create(null));
 assert.equal(Object.keys(nodes).length, 8);
 assert.deepEqual(Object.keys(flows), ['safe', 'malicious', 'uncertain', 'outage']);
+for (const [attribute, expected] of [['node', nodes], ['scenario', flows]]) {
+  const buttons = Array.from(html.matchAll(new RegExp(`data-${attribute}="([^"]+)"`, 'g')), match => match[1]);
+  assert.deepEqual(buttons, Object.keys(expected), `${attribute} controls must match their explanation model`);
+}
+assert.equal((html.match(/class="stack-card"/g) ?? []).length, 12);
+for (const term of ['Nginx', 'Redis', 'RabbitMQ', 'Kafka']) assert.ok(html.includes(`<td>${term}<p>`));
 for (const flow of Object.values(flows)) {
   assert.ok(flow.description && flow.summary && flow.steps.length);
   for (const stage of flow.steps) {
