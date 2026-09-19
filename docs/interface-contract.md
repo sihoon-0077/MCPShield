@@ -107,6 +107,43 @@ Public HTTP rejects emergency options. Audit usage timestamps/normal decisions a
 Gateway-recorded, not separately operator-signed; the ledger is local and unanchored.
 See the Gateway README for exact private-file configuration and remaining limits.
 
+### Composite readiness (additive contract)
+
+The existing public `/health` remains the legacy liveness contract. The new
+authenticated `GET /v1/health` is available to all three tenant roles and uses
+`Cache-Control: no-store`. Its exact response shape is:
+
+```json
+{
+  "schemaVersion": "mcpshield.health.v1",
+  "status": "DEGRADED",
+  "checkedAt": "2026-09-19T00:00:00.000Z",
+  "components": {
+    "api": {"status": "UP", "code": "API_READY", "checkedAt": "2026-09-19T00:00:00.000Z"},
+    "database": {"status": "UP", "code": "DATABASE_READY", "checkedAt": "2026-09-19T00:00:00.000Z"},
+    "chain": {"status": "NOT_CONFIGURED", "code": "CHAIN_NOT_CONFIGURED", "checkedAt": null},
+    "scanner": {"status": "UNKNOWN", "code": "SCANNER_HEARTBEAT_MISSING", "checkedAt": null}
+  }
+}
+```
+
+Overall `READY`/HTTP 200 requires every component to be `UP`; otherwise
+`DEGRADED`/HTTP 503. Component status is one of `UP`, `DOWN`, `UNKNOWN`,
+`NOT_CONFIGURED`, `LIMITED`; codes are bounded fixed machine identifiers,
+never arbitrary exception messages. Do not expose tenant IDs, RPC URLs,
+credentials, paths, hostnames, worker IDs or raw daemon/provider output.
+
+Checks must use an actual DB read, a bounded read-only chain probe and fresh
+worker-reported scanner connectivity. Configuration alone or an empty queue
+does not prove readiness. Static-only workers report LIMITED; missing/stale,
+future or malformed observations do not become UP. Chain-only workers cannot
+satisfy scanner readiness. Short caching (at most five seconds) and coalescing
+bound probe load; component timestamps retain the original observation time.
+The dashboard must treat a valid 503 report as degraded status independently
+of normal inventory, hide stale success when a read fails, and never turn
+readiness into release execution authorization. Auth errors remain ordinary
+401/403; arbitrary 503 bodies are not trusted health reports.
+
 ## Original demo `/api` contract
 
 All JSON payloads use `schemaVersion: "1.0.0"`. Canonical JSON Schemas live in `packages/protocol/schemas`; TypeScript types live in `packages/protocol/api/types.ts`. Unknown fields are rejected where a shared schema is used.

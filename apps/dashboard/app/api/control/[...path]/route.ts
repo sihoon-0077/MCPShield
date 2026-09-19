@@ -101,6 +101,16 @@ async function handle(request: NextRequest, context: Context) {
       headers: { accept: "application/json", authorization: `Bearer ${token}`, ...(mutating && !login ? { "content-type": "application/json", "idempotency-key": request.headers.get("idempotency-key") ?? crypto.randomUUID() } : {}) },
       body: login ? undefined : body, cache: "no-store", signal: controller.signal, redirect: "error",
     });
+    if (route === "health" && ![200, 503].includes(upstream.status)) {
+      // Dependency diagnostics, proxy error bodies and unauthorized payloads must
+      // never escape this fixed health boundary, even when they are valid JSON.
+      void upstream.body?.cancel().catch(() => {});
+      const status = [401, 403].includes(upstream.status) ? upstream.status : 503;
+      const code = status === 401 ? "UNAUTHORIZED" : status === 403 ? "FORBIDDEN" : "HEALTH_UNAVAILABLE";
+      const response = json({ error: { code, message: status === 401 ? "운영 로그인이 만료되었습니다." : status === 403 ? "종합 상태를 조회할 권한이 없습니다." : "종합 상태를 확인하지 못했습니다." } }, status);
+      if (status === 401) response.cookies.set(COOKIE, "", { ...cookieOptions, maxAge: 0 });
+      return response;
+    }
     // Prepared closure evidence is privately stored up to 32 MiB; allow only
     // these authenticated evidence routes that budget plus a small JSON envelope.
     const evidenceRoute = /^(preparations|scans)\/[^/]+\/evidence$/.test(route);

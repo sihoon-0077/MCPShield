@@ -42,6 +42,11 @@ test("only the authenticated exact BFF health route forwards valid READY/DEGRADE
     for (const [body, http] of [[ready, 200], [degraded, 503]] as const) { payload = body; status = http; const response = await request(); assert.equal(response.status, http); assert.deepEqual(await response.json(), body); assert.equal(response.headers.get("cache-control"), "no-store"); }
     for (const body of badReports()) { payload = body; status = 503; const response = await request(); assert.equal(response.status, 503); const text = await response.text(); assert.match(text, /종합 상태 응답을 검증하지 못했습니다/); assert.doesNotMatch(text, /SYNTHETIC_PRIVATE|onerror/); }
     status = 201; payload = ready; assert.equal((await request()).status, 503);
+    for (const http of [400, 403, 429, 500, 502, 504]) {
+      status = http; payload = { rpcUrl: "https://private.invalid/secret", workerID: "SYNTHETIC_PRIVATE", error: "SYNTHETIC_UPSTREAM_DIAGNOSTIC" };
+      const sanitized = await request(); assert.equal(sanitized.status, http === 403 ? 403 : 503);
+      assert.doesNotMatch(await sanitized.text(), /private\.invalid|workerID|SYNTHETIC/);
+    }
     status = 401; payload = { error: { code: "UNAUTHORIZED", message: "UNAUTHORIZED" } }; const expired = await request(); assert.equal(expired.status, 401); assert.match(expired.headers.get("set-cookie")!, /Max-Age=0/);
   } finally { previous === undefined ? delete process.env.MCPSHIELD_PUBLIC_ORIGIN : process.env.MCPSHIELD_PUBLIC_ORIGIN = previous; }
 });

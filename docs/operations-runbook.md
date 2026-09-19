@@ -234,6 +234,51 @@ release-image smoke는 500,000,000 bytes·1 CPU·swap 없음에서 웹/MCP/9단�
 DB migration은 추가 방식으로 적용하고, 백업을 확인한 후 새 버전을 배포한다.
 실패 시 이전 이미지로 롤백한다. 데이터 삭제나 기존 schema 재설계는 롤백 수단으로 쓰지 않는다.
 
+## 종합 준비 상태와 단발 점검
+
+공개 `GET /health`는 기존 liveness다. 인증된 `GET /v1/health`는 `reader`·`operator`·`admin`
+각 토큰의 tenant 기준으로 API/DB/chain/scanner 연결 상태를 확인한다. 운영 콘솔의
+‘서비스 연결 상태’도 같은 응답을 사용하며, 실패해도 릴리스 목록을 함께 지우지 않는다.
+화면은 마지막 조회 시각을 표시하고 새 조회 중·실패 시 이전 READY를 숨긴다.
+자동 반복 조회는 없고 최초·목록 갱신·수동 갱신을 15초에 한 번으로 제한한다.
+
+| 상태 | 운영자가 읽어야 할 뜻 |
+|---|---|
+| `READY` / HTTP 200 | 네 구성요소 모두 실제 가용성 관측 `UP`. 도구 안전 판정·admission 허가와는 별개 |
+| `DEGRADED` / HTTP 503 | 연결 실패·미설정·관측 누락 또는 정적 전용 검사처럼 일부 기능 제한 |
+| `UNKNOWN` | 최신 신뢰 관측 없음. 빈 작업 큐나 설정 존재만으로 정상으로 바꾸지 않음 |
+| `LIMITED / SCANNER_STATIC_ONLY` | Worker는 동작하지만 Docker 동적 검사를 하는 구성이 아님 |
+
+API는 실제 DB 읽기와 read-only RPC를 2초 deadline/공유 관측 캐시로 제한한다. 시간 초과된
+원래 작업은 종료될 때까지 점유를 유지해 요청이 쌓여도 무한 probe를 시작하지 않는다.
+체인은 chain ID·최신 블록·registry 코드·validator contract 참조를 읽는다. 지갑 거래를
+만들지 않고, 다른 체인·잘못된 결과를 healthy 대체 RPC로 감추지 않는다.
+
+실제 Worker CLI는 eligible tenant마다 DB에 5초 간격 heartbeat를 기록한다. 원래 관측이
+20초를 넘거나 미래 시각·손상·STOPPED이면 정상으로 표시하지 않는다. Docker 모드는
+시간 제한 있는 실제 Linux daemon 연결을 확인하며, daemon 응답은 후보 이미지·외부 AI·
+검사 정책의 완전한 성공 증거가 아니다. chain-only Worker는 scanner를 광고하지 않는다.
+heartbeat는 감사 증거가 아닌 임시 가용성 자료이며, 활성 writer가 2분 지난 관측을 정리한다.
+
+기존 배포 gate/외부 모니터에서 한 번 확인하려면 `MCPSHIELD_HEALTH_URL`을 정확한 HTTPS
+`/v1/health` 주소로, `MCPSHIELD_HEALTH_TOKEN`을 조회 전용 토큰으로 secret 주입한 뒤 실행한다.
+로컬 검사는 loopback HTTP만 허용한다. 토큰을 명령행 인수·URL·Git 파일에 넣지 않는다.
+
+```sh
+node --import tsx scripts/ops/check-control-health.ts
+```
+
+종료 코드: `0` 신선한 READY, `1` 유효한 DEGRADED, `2` 인증/연결/형식/시간 제한 실패.
+응답은 최대 16 KiB, 전체 요청 5초, redirect와 자동 재시도는 없다. 보고 시각은 15초 이내,
+UP 관측은 API/DB/chain 10초 이내·scanner 25초 이내인지 다시 확인한다. scanner 허용치는
+서버의 20초 TTL에 최대 전송 시간 5초를 더한 것이며, 오래된 UP을 새 보고 시각으로 포장해도
+통과하지 않는다. 출력에는 고정 이름·상태·시각만 남기고 URL·토큰·원문 오류는 제외한다.
+
+이 명령은 스케줄러나 Slack/Discord/email 전송기가 아니다. 외부 수신 경로·secret 설정과
+실제 장애 전달 확인이 남았다. 이번 통합 검사는 SQLite·실제 로컬 EVM·BFF·정적 전용 Worker를
+연결해 RPC 종료·Worker 종료·tenant 격리·CLI 비정상 종료를 확인했으며 브라우저 클릭 검증,
+실제 운영 PostgreSQL·외부 RPC·Docker 완전 스캔 성공의 대체 증거는 아니다.
+
 ## 재현 가능한 성능·장애 측정
 
 ```sh
