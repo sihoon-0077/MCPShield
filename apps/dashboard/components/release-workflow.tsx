@@ -1,5 +1,7 @@
 import React, { useEffect, useState, type FormEvent } from "react";
 import { controlApi } from "../lib/control-client";
+// @ts-expect-error Shared browser-safe exact semantic policy validation is ESM JavaScript.
+import { SCOPED_NODE_PROFILE, validateScopedReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
 
 export type SemanticEvidenceScope = { semanticEvidenceMode?: string; providerQuality?: string };
 export type Release = SemanticEvidenceScope & { releaseId: string; legacyReleaseId: string; toolId: string; version: string; status: string; artifactDigest: string; toolSurfaceHash: string; policyHash: string | null; reportRoot: string | null; validUntil: string | null; sourceType?: string; runtimeProfile?: string; sourceReleaseId?: string; chainUnavailable?: boolean; chain: null | { chainId: number; registryContract: string; observedBlock: number; blockHash: string; txHash: string | null } };
@@ -10,13 +12,23 @@ const date = (value?: string | null) => value ? new Date(value).toLocaleString("
 const short = (value?: string | null) => value ? `${value.slice(0, 12)}…${value.slice(-8)}` : "없음";
 const actionName: Record<string, string> = { REGISTER_RELEASE: "릴리스 등록", PUBLISH_POLICY: "정책 공개", DEPRECATE_POLICY: "정책 폐기", ATTEST: "검증자 서명 제출", QUARANTINE: "긴급 격리", SYNC_EXPIRY: "만료 반영" };
 const actionStatus: Record<string, string> = { NEW: "전송 대기", PREPARED: "서명 준비 · 전송 미확인", SUBMITTED: "전송됨 · 영수증 대기", COMPLETED: "처리됨 · 최종성은 별도 확인", FAILED: "실패" };
-export const policyMatchesRelease = (release: Pick<Release, "runtimeProfile"> | undefined, policy: { document?: unknown }) => Boolean(release) && (policy.document as { profile?: string } | undefined)?.profile === release?.runtimeProfile;
+export function scopedNodePolicyMode(document: unknown): string | undefined {
+  const value = document as { profile?: string; version?: string; semantic?: { evidenceMode?: string } } | undefined;
+  return value && value.profile === SCOPED_NODE_PROFILE && value.version === "2.0.0" && validateScopedReviewPolicy(value.semantic) ? value.semantic!.evidenceMode : undefined;
+}
+export function policyMatchesRelease(release: Pick<Release, "runtimeProfile" | "semanticEvidenceMode"> | undefined, policy: { document?: unknown }) {
+  if (!release || (policy.document as { profile?: string } | undefined)?.profile !== release.runtimeProfile) return false;
+  const mode = scopedNodePolicyMode(policy.document);
+  return release.runtimeProfile !== SCOPED_NODE_PROFILE || Boolean(mode) && mode === release.semanticEvidenceMode;
+}
+export const semanticModeLabel = (mode?: string) => mode === "LOCAL_CONTRACT_TEST" ? "로컬 합성 검사 정책" : mode === "PROVIDER_EXECUTION" ? "외부 모델 검토 정책" : "분석 모드 확인 불가";
 
-export function SemanticEvidenceNotice({ evidence, oci = false }: { evidence?: SemanticEvidenceScope; oci?: boolean }) {
-  if (!oci && !evidence?.semanticEvidenceMode && !evidence?.providerQuality) return null;
-  return <p className="ops-data-note"><b>AI 증거의 범위 · API 제공 메타데이터</b><br />
-    분석 출처: <code>{evidence?.semanticEvidenceMode ?? "미제공"}</code><br />모델 품질: <code>{evidence?.providerQuality ?? "미제공"}</code><br />
-    {evidence?.semanticEvidenceMode === "LOCAL_CONTRACT_TEST" ? "로컬 합성 응답으로 분석 연동을 검사한 범위입니다. 상용 AI 모델의 탐지 품질을 측정하거나 승인한 결과가 아닙니다." : "분석 출처가 확인된 로컬 합성 모드인지 알 수 없습니다. 미제공·알 수 없는 출처를 임의로 추정하지 않습니다."}
+export function SemanticEvidenceNotice({ evidence, required = false }: { evidence?: SemanticEvidenceScope; required?: boolean }) {
+  if (!required && !evidence?.semanticEvidenceMode && !evidence?.providerQuality) return null;
+  const mode = evidence?.semanticEvidenceMode, known = mode === "LOCAL_CONTRACT_TEST" || mode === "PROVIDER_EXECUTION";
+  return <p className="ops-data-note"><b>AI 분석 모드 · API 제공 메타데이터</b><br />
+    적용 정책: {semanticModeLabel(mode)} · <code>{known ? mode : "미제공 또는 알 수 없는 값"}</code><br />모델 품질: <code>{evidence?.providerQuality === "PROVIDER_QUALITY_NOT_MEASURED" ? evidence.providerQuality : "미제공 또는 알 수 없는 값"}</code><br />
+    {mode === "LOCAL_CONTRACT_TEST" ? "로컬 합성 응답으로 분석 연동을 검사하는 정책입니다. 모드 표시는 실제 분석 수행·성공을 증명하지 않습니다. 상용 AI 모델의 탐지 품질을 측정하거나 승인한 결과가 아닙니다." : mode === "PROVIDER_EXECUTION" ? "외부 모델 검토 정책이 적용된 결과입니다. 이 모드 표시는 호출 수행·성공이나 탐지 품질을 증명하지 않습니다." : "미제공·알 수 없는 분석 모드를 임의로 추정하지 않습니다."}
     {evidence?.providerQuality === "PROVIDER_QUALITY_NOT_MEASURED" ? " 모델 품질은 미측정입니다." : " 모델 품질 수준은 이 화면에서 검증하지 않습니다."}
     {" "}네이티브 Docker 검사·검증자 서명·현재 실행 허가는 별도로 확인합니다.</p>;
 }
@@ -74,7 +86,7 @@ export function ReleaseWorkflow({ release, scans, policies, actions, manage, onR
   return <section className="ops-workflow" aria-label="V2 검증에서 실행 판정까지">
     <div className="ops-section-heading"><h3>검사 → 검증자 → 체인 → 실행 판정</h3><span className="ops-badge">V2 운영 API · REPLAY 아님</span></div>
     <p>연결된 API의 실제 기록입니다. 로컬 체인도 chain ID로 구분하며, 전송 접수와 실행 허용을 혼동하지 않습니다.</p>
-    <SemanticEvidenceNotice evidence={scan?.result ?? release} oci={release.runtimeProfile === "restricted-oci-offline-v1"} />
+    <SemanticEvidenceNotice evidence={scan?.result ?? release} required={release.runtimeProfile === "restricted-oci-offline-v1" || release.runtimeProfile === SCOPED_NODE_PROFILE} />
     <div className="ops-flow-select"><label>확인할 검사<select value={scan?.scanId ?? ""} onChange={(event) => setScanId(event.target.value)} disabled={busy || !releaseScans.length}><option value="">검사 내역 없음</option>{releaseScans.map((item) => <option key={item.scanId} value={item.scanId}>{date(item.createdAt)} · {item.status} · {short(item.scanId)}</option>)}</select></label>{!scan && <label>실행 판정 정책<select value={fallbackPolicy} onChange={(event) => setFallbackPolicy(event.target.value)} disabled={busy}><option value="">정책 선택</option>{policies.map((item) => <option key={item.policyHash} value={item.policyHash}>{item.alias}{item.deprecatedAt ? " (폐기됨)" : ""}</option>)}</select></label>}</div>
     <p className="ops-data-note">현재 정책: {policy?.alias ?? "목록에서 확인 불가"} · <code>{policyHash || "선택 없음"}</code>{policy?.deprecatedAt ? " · DEPRECATED" : ""}</p>
     <ol className="ops-flow" aria-label="현재 증빙 단계">

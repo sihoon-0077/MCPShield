@@ -18,6 +18,11 @@ import { preparedPolicy } from "../../api/src/control-policy.js";
 import { runPreparationWorkerOnce } from "../../api/src/preparation-worker.js";
 import { claimPreparation, failPreparation } from "../../api/src/preparation-store.js";
 import { syntheticPreparedFixture } from "../../../tests/api/prepared-fixture.js";
+import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2-identity.mjs";
+// @ts-expect-error Shared pure binding constructor; no candidate execution.
+import { createPreparedReleaseBinding, scopedPreparedExecutionPolicy } from "../../../services/scanner/src/prepared-binding.mjs";
+// @ts-expect-error Shared exact semantic policy constructor.
+import { scopedReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
 // @ts-expect-error Shared Merkle helper.
 import { createEvidenceBundle } from "../../../services/scanner/src/evidence.mjs";
 
@@ -94,6 +99,19 @@ test("real preparation API/BFF keeps source identity, roles, evidence privacy an
     const config = JSON.parse(await download.text()); assert.equal(config.releaseId, derived.releaseId); assert.deepEqual(config.tools, fixture.documents["runtime/tools.json"]);
     assert.doesNotMatch(JSON.stringify(config), /SYNTHETIC_PRIVATE_PATH_NOT_FOR_BROWSER|synthetic-prepared-operator-token|privateKey|apiToken/);
     for (const mutated of [{ ...config, privateKey: "forbidden" }, { ...config, releaseId: source.releaseId }, { ...config, binding: { ...config.binding, finalImageDigest: "image:latest" } }]) assert.throws(() => preparedDownload(mutated, derived.releaseId), /PREPARED_EXPORT_INVALID/);
+    // Pure export-envelope regressions only: these synthetic commitments are not v2 API/worker approvals.
+    for (const mode of ["LOCAL_CONTRACT_TEST", "PROVIDER_EXECUTION"]) {
+      const { collectorDigest, observerDigest, egressAllowHosts } = config.binding.executionPolicy;
+      const binding = createPreparedReleaseBinding({ sourceReleaseId: config.binding.sourceReleaseId, descriptor: config.binding.descriptor,
+        executionPolicy: scopedPreparedExecutionPolicy({ collectorDigest, observerDigest, egressAllowHosts }, scopedReviewPolicy(mode)) });
+      const scoped = { ...config, ...exactReleaseIdentity({ toolId: config.toolId, ...binding }), binding };
+      assert.notEqual(scoped.releaseId, config.releaseId);
+      assert.deepEqual(await preparedDownload(scoped, scoped.releaseId).json(), scoped);
+      assert.throws(() => preparedDownload({ ...scoped, releaseId: config.releaseId }, config.releaseId), /PREPARED_EXPORT_INVALID/);
+      const changed = structuredClone(scoped); changed.binding.executionPolicy.semantic.evidenceMode = mode === "LOCAL_CONTRACT_TEST" ? "PROVIDER_EXECUTION" : "LOCAL_CONTRACT_TEST";
+      assert.throws(() => preparedDownload(changed, scoped.releaseId), /PREPARED_EXPORT_INVALID/);
+      assert.throws(() => preparedDownload({ ...scoped, privateKey: "forbidden" }, scoped.releaseId), /PREPARED_EXPORT_INVALID/);
+    }
     const html = renderToStaticMarkup(React.createElement(PreparationRecords, { jobs: [queued, completed], releases, operator: false }));
     assert.match(html, /COMPLETED ≠ VERIFIED/); assert.match(html, /UNVERIFIED/); assert.match(html, /ABSTAIN/); assert.doesNotMatch(html, /실패 작업 재시도|SYNTHETIC_PRIVATE/);
     const detailHtml = renderToStaticMarkup(React.createElement(PreparationDetail, { job: completed, operator: true, summary: null }));

@@ -24,7 +24,7 @@ function AppealRescan({ appeal, scans, releases, policies, operator, busy, onRef
     {appeal.rescan ? <>
       <dl className="ops-facts">{[["새 검사 ID", appeal.rescan.scanId], ["검사 대상 릴리스 ID", appeal.rescan.releaseId], ["새 검사 정책", appeal.rescan.policyHash], ["요청 일시", date(appeal.rescan.requestedAt)]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       {scan ? <><p><b>{scan.status}</b> · {scan.status === "QUEUED" ? "검사 대기 중" : scan.status === "RUNNING" ? "검사 진행 중" : scan.status === "DEAD_LETTER" ? "검사 처리 실패 · 검사 작업에서 원인과 재처리 가능 여부 확인" : scan.status === "COMPLETED" ? "검사 작업 완료 · 실행 승인 아님" : "알 수 없는 작업 상태"}<br />단계 {scan.stage} · 시도 {scan.attempts}/{scan.maxAttempts} · 마지막 API 기록 {date(scan.updatedAt)}</p>
-        {scan.status === "COMPLETED" && <><p>새 결과 상태: {scan.result?.state ?? "미제공"} · 권고: {scan.result?.verdict ?? "미제공"} · 분석: {scan.result?.scanResult?.scanStatus ?? "미제공"}<br />새 증거 루트: <code>{scan.result?.reportRoot ?? "미제공"}</code></p><SemanticEvidenceNotice evidence={scan.result} /></>}
+        {scan.status === "COMPLETED" && <><p>새 결과 상태: {scan.result?.state ?? "미제공"} · 권고: {scan.result?.verdict ?? "미제공"} · 분석: {scan.result?.scanResult?.scanStatus ?? "미제공"}<br />새 증거 루트: <code>{scan.result?.reportRoot ?? "미제공"}</code></p><SemanticEvidenceNotice evidence={scan.result} required /></>}
       </> : <p className="ops-empty">현재 검사 상태 미확인 · 연결 식별자와 일치하는 결과를 조회해야 합니다. 누락을 완료나 승인으로 간주하지 않습니다.</p>}
       {current?.error && <p className="ops-message error" role="alert">{current.error}</p>}
       <button type="button" disabled={busy || pending} onClick={() => {

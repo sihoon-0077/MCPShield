@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AbiCoder, id, keccak256 } from "ethers";
 import { bytes32, exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2-identity.mjs";
-import { createPreparedReleaseBinding, preparedExecutionPolicy } from "../../../services/scanner/src/prepared-binding.mjs";
+import { createPreparedReleaseBinding, preparedExecutionPolicy, scopedPreparedExecutionPolicy } from "../../../services/scanner/src/prepared-binding.mjs";
+import { scopedReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
 import { createPreparedSnapshot, preparedDockerArgs, validatePreparedIdentity, validatePreparedImage } from "../src/prepared.mjs";
 import { toolSurfaceHash } from "../src/artifact.mjs";
 import { runArtifact } from "../src/index.mjs";
+import { getSignedAdmission, verifyAdmissionSnapshot } from "../src/signed-admission.mjs";
 
 const sha = (letter) => `sha256:${letter.repeat(64)}`;
 const tools = ["first", "second"].map(name => ({ name, inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false } }));
@@ -21,6 +24,11 @@ const descriptor = { schemaVersion: "mcpshield.prepared-runtime.v1", stage: "CLO
 const binding = createPreparedReleaseBinding({ sourceReleaseId: `0x${"1".repeat(64)}`, descriptor,
   executionPolicy: preparedExecutionPolicy({ collectorDigest: sha("2"), observerDigest: sha("3"), egressAllowHosts: [] }) });
 const identity = { schemaVersion: "mcpshield.gateway-prepared.v1", ...exactReleaseIdentity({ toolId: "npm:synthetic-prepared", ...binding }), binding, tools };
+const partitions = [identity, ...["LOCAL_CONTRACT_TEST", "PROVIDER_EXECUTION"].map(mode => {
+  const binding = createPreparedReleaseBinding({ sourceReleaseId: identity.binding.sourceReleaseId, descriptor,
+    executionPolicy: scopedPreparedExecutionPolicy({ collectorDigest: sha("2"), observerDigest: sha("3"), egressAllowHosts: [] }, scopedReviewPolicy(mode)) });
+  return { ...identity, ...exactReleaseIdentity({ toolId: identity.toolId, ...binding }), binding };
+})];
 const image = () => ({ Id: binding.finalImageDigest, Os: "linux", Architecture: "amd64", Config: { User: "1000:1000", Env: ["PATH=/usr/local/bin:/usr/bin:/bin"], Volumes: null } });
 const OWNER_LABEL = "io.mcpshield.gateway.owner", CID = "c".repeat(64);
 
@@ -93,6 +101,58 @@ test("actual image identity and executable environment must match the bound non-
   for (const flag of ["--pull=never", "--network=none", "--read-only", "--user=1000:1000", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--memory=128m", "--memory-swap=128m", "--cpus=0.5", "--pids-limit=64"]) assert.ok(args.includes(flag), flag);
   assert.deepEqual(args.slice(-5), [binding.finalImageDigest, ...binding.executionPolicy.gateway.nodeArguments, "/app/server.js"]);
   assert.equal(args.some(arg => /^--(?:mount|volume|env|publish|privileged)(?:=|$)/.test(arg)), false);
+});
+
+test("v1 and both scoped Node v2 modes retain separate identities with identical restricted Gateway arguments", () => {
+  assert.equal(new Set(partitions.map(value => value.releaseId)).size, 3);
+  const owner = "12345678-1234-1234-1234-123456789abc", args = preparedDockerArgs(identity, owner);
+  for (const value of partitions) {
+    assert.deepEqual(validatePreparedIdentity(value), value);
+    assert.deepEqual(preparedDockerArgs(value, owner), args);
+    for (const other of partitions.filter(other => other !== value)) {
+      assert.throws(() => validatePreparedIdentity({ ...value, binding: other.binding }), /PREPARED_RELEASE_ID_MISMATCH/);
+    }
+  }
+  for (const value of partitions.slice(1)) for (const mutate of [
+    changed => { changed.binding.executionPolicy.semantic.evidenceMode = value.binding.executionPolicy.semantic.evidenceMode === "LOCAL_CONTRACT_TEST" ? "PROVIDER_EXECUTION" : "LOCAL_CONTRACT_TEST"; },
+    changed => { changed.binding.executionPolicy.semantic.privacyScope.providerQuality = "CERTIFIED"; },
+    changed => { delete changed.binding.executionPolicy.semantic; },
+    changed => { changed.binding.executionPolicy.gateway.network = "HOST"; },
+  ]) { const changed = structuredClone(value); mutate(changed); assert.throws(() => validatePreparedIdentity(changed), /PREPARED_IDENTITY_INVALID/); }
+});
+
+test("signed admission and cache cannot reuse v1 or cross-mode approvals, outlive expiry or undo revocation", async () => {
+  const keys = generateKeyPairSync("ed25519"), now = Date.now();
+  const shared = { publicKey: keys.publicKey.export({ type: "spki", format: "pem" }), keyId: "synthetic-scoped-key",
+    policyHash: `0x${"8".repeat(64)}`, chainId: 31337, registryContract: `0x${"9".repeat(40)}`, validatorSetVersion: 1,
+    tenantId: "synthetic-scoped-tenant", operationClass: "READ_PRIVATE", apiToken: "synthetic-token", cacheFile: null };
+  // Keep even policyHash identical here to prove identity alone partitions the cache.
+  const contexts = partitions.map(value => ({ ...shared, identity: { releaseId: value.releaseId, artifactDigest: value.binding.artifactDigest, toolSurfaceHash: value.binding.toolSurfaceHash } }));
+  const snapshots = contexts.map(context => ({ schemaVersion: "1.0.0", keyId: shared.keyId, ...context.identity,
+    decision: "ALLOW", status: "VERIFIED", reasonCode: "RELEASE_VERIFIED", policyHash: shared.policyHash,
+    tenantId: shared.tenantId, operationClass: shared.operationClass, chainId: shared.chainId, registryContract: shared.registryContract,
+    validatorSetVersion: 1, reportUrl: `/v1/releases/${context.identity.releaseId}`, observedBlock: 12, blockHash: `0x${"7".repeat(64)}`,
+    issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 30_000).toISOString() }));
+  const signed = snapshot => ({ snapshot, signature: sign(null, Buffer.from(JSON.stringify(Object.fromEntries(Object.keys(snapshot).sort().map(key => [key, snapshot[key]])))), keys.privateKey).toString("base64url") });
+  const response = snapshot => async () => new Response(JSON.stringify(signed(snapshot)), { headers: { "content-type": "application/json" } });
+  const offline = async () => { throw new TypeError("synthetic offline"); };
+  for (let i = 0; i < contexts.length; i++) {
+    const context = contexts[i], snapshot = snapshots[i], options = { ...context, apiBaseUrl: "http://127.0.0.1:3199", timeoutMs: 100, admissionMode: "balanced", now: () => now };
+    assert.equal(verifyAdmissionSnapshot(signed(snapshot), { ...context, now }).decision, "ALLOW");
+    for (let j = 0; j < contexts.length; j++) if (i !== j) assert.throws(() => verifyAdmissionSnapshot(signed(snapshot), { ...contexts[j], now }), /identity or policy mismatch/);
+    assert.throws(() => verifyAdmissionSnapshot(signed(snapshot), { ...context, now: now + 30_000 }), /expired/);
+    for (const change of [{ policyHash: `0x${"6".repeat(64)}` }, { tenantId: "other-tenant" }]) assert.throws(() => verifyAdmissionSnapshot(signed(snapshot), { ...context, ...change, now }), /identity or policy mismatch/);
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: offline }), /no matching signed cache/);
+    assert.equal((await getSignedAdmission({ ...options, fetchImpl: response(snapshot) })).decision, "ALLOW");
+    assert.equal((await getSignedAdmission({ ...options, fetchImpl: offline })).cacheHit, true);
+  }
+  for (let i = 0; i < contexts.length; i++) {
+    const snapshot = snapshots[i], options = { ...contexts[i], apiBaseUrl: "http://127.0.0.1:3199", timeoutMs: 100, admissionMode: "balanced", now: () => now };
+    await assert.rejects(getSignedAdmission({ ...options, now: () => now + 30_000, fetchImpl: offline }), /expired/);
+    assert.equal((await getSignedAdmission({ ...options, fetchImpl: response({ ...snapshot, decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED" }) })).decision, "BLOCK");
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: response(snapshot) }), /previously revoked/);
+    await assert.rejects(getSignedAdmission({ ...options, fetchImpl: offline }), /no matching signed cache/);
+  }
 });
 
 test("operator identity files are bounded regular files; replay, missing MCP framing and ambiguous modes fail before Docker", async () => {

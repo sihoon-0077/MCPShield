@@ -41,6 +41,7 @@ test("appeal records gate rescan controls by role/state and only show fully boun
   assert.equal(linkedAppealScan(linked, scan), true);
   const html = render({ appeals: [linked], scans: [scan] });
   assert.match(html, /new-report-root/); assert.ok(html.includes(release.reportRoot!)); assert.match(html, /검사 작업 완료 · 실행 승인 아님/); assert.match(html, /상용 AI 모델의 탐지 품질을 측정하거나 승인한 결과가 아닙니다/); assert.doesNotMatch(html, /<form/);
+  assert.match(render({ appeals: [linked], scans: [{ ...scan, result: { ...scan.result, semanticEvidenceMode: undefined, providerQuality: undefined } }] }), /분석 모드 확인 불가/);
   for (const invalid of [undefined, { ...scan, scanId: "other" }, { ...scan, releaseId: release.releaseId }, { ...scan, policyHash: "other" }, { ...scan, appealId: "other" }]) {
     assert.equal(linkedAppealScan(linked, invalid), false);
     const unknown = render({ appeals: [linked], scans: invalid ? [invalid] : [] });
