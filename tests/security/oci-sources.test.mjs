@@ -10,7 +10,8 @@ import { scanOciRuntime } from '../../services/scanner/src/oci-scan.mjs';
 import { readTrustedOciRuntime } from '../../services/scanner/src/oci-trust.mjs';
 import { readOciObservationPolicy } from '../../services/scanner/src/oci-observer.mjs';
 import { assessOciPolicy, ociSandboxFindings } from '../../services/scanner/src/oci-policy.mjs';
-import { ociExecutionPolicy, createOciReleaseBinding } from '../../services/scanner/src/oci-binding.mjs';
+import { ociExecutionPolicy, scopedOciExecutionPolicy, createOciReleaseBinding } from '../../services/scanner/src/oci-binding.mjs';
+import { scopedReviewPolicy } from '../../services/scanner/src/scoped-policy.mjs';
 import { assessTrivyDocuments } from '../../services/scanner/src/oci-trivy.mjs';
 import { validateProbePlan } from '../../services/scanner/src/probes.mjs';
 import { toolSurfaceHash } from '../../services/scanner/src/tool-surface.mjs';
@@ -120,6 +121,16 @@ test('independent OCI reconstruction and policy reject rewritten source, omitted
     assert.equal(assess().verdict, 'PASS', JSON.stringify(assess()));
     assert.equal(assess().semanticEvidenceMode, 'LOCAL_CONTRACT_TEST');
     assert.equal(assess().fullBehaviorCoverage, false);
+    for (const mode of ['LOCAL_CONTRACT_TEST', 'PROVIDER_EXECUTION']) {
+      const scoped = createOciReleaseBinding({ sourceReleaseId: binding.sourceReleaseId, descriptor,
+        executionPolicy: scopedOciExecutionPolicy(anchors, scopedReviewPolicy(mode)) });
+      const rebound = structuredClone(docs);
+      rebound['oci/binding.json'] = scoped;
+      rebound['runtime/execution-policy.json'] = scoped.executionPolicy;
+      const rejected = assessOciPolicy(createEvidenceBundle(rebound), result, scoped, trusted);
+      assert.equal(rejected.verdict, 'ABSTAIN');
+      assert.deepEqual(rejected.issues, ['OCI_EVIDENCE_OR_BINDING_INVALID'], 'Rehashing v1 evidence cannot authorize scoped v2 review.');
+    }
     for (const mutate of [(d) => d['oci/private-image-evidence.json'].sources.pop(),
       (d) => d['oci/private-image-evidence.json'].sources[0].contentBase64 = Buffer.from('forged benign code').toString('base64'),
       (d) => d['semantic/reviews.json'].reviews[0].critic = null, (d) => delete d['semantic/reviews.json'].disclosure,

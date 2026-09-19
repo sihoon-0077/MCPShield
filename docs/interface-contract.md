@@ -78,6 +78,22 @@ endpoint for both analyzer and critic. `allowRemoteAi` alone grants no exception
 API callers cannot supply this setting. Raw source and environment stay in the
 private encrypted evidence/local declared test boundary, never a remote provider.
 
+### Scoped semantic v2 commitment (not an executable approval profile yet)
+
+`restricted-node-docker-v2` and `restricted-oci-offline-v2` bind the exact
+`scopedReviewPolicy()` object from `services/scanner/src/scoped-policy.mjs`.
+It fixes disclosure limits, analyzer/critic/probe roles, risk-tier policy and
+`LOCAL_CONTRACT_TEST|PROVIDER_EXECUTION` provenance. These modes hash differently;
+the same runtime bytes therefore get a different manifest and Control release ID.
+Runtime isolation is unchanged. The operator's exact-source catalogue declaration
+must be checked independently; a package field or public API opt-in is not authority.
+
+This is a commitment-only interface. Current v1 evidence assessors explicitly
+return ABSTAIN for v2, including when every v1 evidence hash is recomputed to match
+the new policy. End-to-end scoped caller/validator integration, provider execution
+and provider quality measurement remain unfinished. Do not advertise these helpers
+as externally reviewed or execution-ready releases.
+
 ### Explicit local emergency execution
 
 `mcpshield.break-glass-grant.v1` is separate from normal admission and FR407 receipts.

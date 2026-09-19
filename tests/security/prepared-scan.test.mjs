@@ -4,7 +4,8 @@ import { createServer } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import { closureManifest } from '../../services/resolver/src/closure-files.mjs';
 import { hashPreparedRuntimeDescriptor } from '../../services/resolver/src/runtime-descriptor.mjs';
-import { createPreparedReleaseBinding, preparedExecutionPolicy } from '../../services/scanner/src/prepared-binding.mjs';
+import { createPreparedReleaseBinding, preparedExecutionPolicy, scopedPreparedExecutionPolicy } from '../../services/scanner/src/prepared-binding.mjs';
+import { scopedReviewPolicy } from '../../services/scanner/src/scoped-policy.mjs';
 import { inspectPreparedSources, reviewPreparedSemantics } from '../../services/scanner/src/prepared-review.mjs';
 import { assessPreparedPolicy } from '../../services/scanner/src/prepared-policy.mjs';
 import { canonicalJson, createEvidenceBundle } from '../../services/scanner/src/evidence.mjs';
@@ -96,6 +97,17 @@ test('independent prepared policy rejects forged source/raw hashes, omitted crit
     'static/findings.json': [], 'static/sbom.json': reviewed.sbom, 'semantic/reviews.json': semantic };
   const assessed = assessPreparedPolicy(createEvidenceBundle(docs), result, binding, trusted);
   assert.equal(assessed.verdict, 'PASS', JSON.stringify(assessed));
+  for (const mode of ['LOCAL_CONTRACT_TEST', 'PROVIDER_EXECUTION']) {
+    const scoped = createPreparedReleaseBinding({ sourceReleaseId: binding.sourceReleaseId, descriptor,
+      executionPolicy: scopedPreparedExecutionPolicy({ collectorDigest: digest, observerDigest: digest, egressAllowHosts: [] }, scopedReviewPolicy(mode)) });
+    const rebound = structuredClone(docs);
+    rebound['prepared/binding.json'] = scoped;
+    rebound['runtime/execution-policy.json'] = scoped.executionPolicy;
+    rebound['prepared/observation.json'].identity.executionPolicyDigest = scoped.executionPolicyDigest;
+    const rejected = assessPreparedPolicy(createEvidenceBundle(rebound), result, scoped, trusted);
+    assert.equal(rejected.verdict, 'ABSTAIN');
+    assert.deepEqual(rejected.issues, ['PREPARED_EVIDENCE_OR_BINDING_INVALID'], 'Rehashing v1 evidence cannot authorize scoped v2 review.');
+  }
   for (const mutate of [(d) => d['runtime/tools.json'][0].description = 'new raw surface',
     (d) => delete d['semantic/reviews.json'].disclosure,
     (d) => delete d['semantic/reviews.json'].reviews[0].critic.execution.disclosure,
