@@ -99,22 +99,25 @@ test("durable queue claims fence workers and retryable failures reach DLQ", asyn
   } finally { await f.close(); }
 });
 
+async function attemptFence(store: ControlStore, tenantId: string) {
+    const queued = await store.enqueue(tenantId, { releaseId: release.releaseId, policyHash: hash(defaultPolicy) }, "stale", "hash", "trace");
+    const stale = (await store.claim("same-worker"))!;
+    assert.equal(stale.scanId, queued.scan.scanId);
+    stale.leaseExpiresAt = new Date(Date.now() - 1).toISOString();
+    await store.query("UPDATE cp_scans SET lease_expires_at=? WHERE tenant_id=? AND scan_id=?", [stale.leaseExpiresAt, tenantId, stale.scanId]);
+    assert.equal(await store.finish(stale, "same-worker", { verdict: "PASS" }), false);
+    assert.equal(await store.fail(stale, "same-worker", "LATE_FAILURE", false), false);
+    const current = (await store.claim("same-worker"))!;
+    assert.equal(current.scanId, stale.scanId);
+    assert.equal(current.attempts, stale.attempts + 1);
+    assert.equal(await store.finish(stale, "same-worker", { verdict: "PASS" }), false);
+    assert.equal(await store.fail(stale, "same-worker", "LATE_FAILURE", false), false);
+    assert.equal((await store.scan(tenantId, current.scanId))?.lastError, undefined);
+    assert.equal(await store.finish(current, "same-worker", { verdict: "ABSTAIN" }), true);
+}
 test("scan outcomes reject expired leases and prior attempts even when a worker owner is reused", async () => {
   const f = await setup();
-  try {
-    await f.store.enqueue(tenant, { releaseId: release.releaseId, policyHash: hash(defaultPolicy) }, "stale", "hash", "trace");
-    const stale = (await f.store.claim("same-worker"))!;
-    stale.leaseExpiresAt = new Date(Date.now() - 1).toISOString();
-    await f.store.query("UPDATE cp_scans SET lease_expires_at=? WHERE scan_id=?", [stale.leaseExpiresAt, stale.scanId]);
-    assert.equal(await f.store.finish(stale, "same-worker", { verdict: "PASS" }), false);
-    assert.equal(await f.store.fail(stale, "same-worker", "LATE_FAILURE", false), false);
-    const current = (await f.store.claim("same-worker"))!;
-    assert.equal(current.attempts, stale.attempts + 1);
-    assert.equal(await f.store.finish(stale, "same-worker", { verdict: "PASS" }), false);
-    assert.equal(await f.store.fail(stale, "same-worker", "LATE_FAILURE", false), false);
-    assert.equal((await f.store.scan(tenant, current.scanId))?.lastError, undefined);
-    assert.equal(await f.store.finish(current, "same-worker", { verdict: "ABSTAIN" }), true);
-  } finally { await f.close(); }
+  try { await attemptFence(f.store, tenant); } finally { await f.close(); }
 });
 
 test("admission trace correlation is exact, indexed, caller-independent and never changes chain decisions", async () => {
@@ -312,6 +315,7 @@ test("PostgreSQL real adapter persists and atomically dequeues", { skip: !proces
     assert.equal(leased?.scanId, first.scan.scanId);
     assert.equal(await store.finish(leased!, tenantId, { check: "POSTGRESQL" }), true);
     assert.equal((await store.scan(tenantId, first.scan.scanId))?.status, "COMPLETED");
+    await attemptFence(store, tenantId);
     await intakeChecks(store, tenantId);
   } finally {
     await store.query("DELETE FROM cp_scans WHERE tenant_id = ?", [tenantId]);
