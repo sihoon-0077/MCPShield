@@ -286,14 +286,17 @@ export class ControlStore {
   }
   async finish(scan: ScanJob, owner: string, result: Record<string, any>) {
     return (await this.query(`UPDATE cp_scans SET state = 'COMPLETED', stage = 'DONE', result_json = ?, lease_owner = NULL,
-      lease_expires_at = NULL, updated_at = ? WHERE scan_id = ? AND state = 'RUNNING' AND lease_owner = ? AND lease_expires_at > ? RETURNING scan_id`,
-      [JSON.stringify(result), new Date().toISOString(), scan.scanId, owner, new Date().toISOString()])).length === 1;
+      lease_expires_at = NULL, updated_at = ? WHERE tenant_id = ? AND scan_id = ? AND state = 'RUNNING' AND lease_owner = ?
+      AND attempts = ? AND lease_expires_at = ? AND lease_expires_at > ? RETURNING scan_id`,
+      [JSON.stringify(result), new Date().toISOString(), scan.tenantId, scan.scanId, owner, scan.attempts, scan.leaseExpiresAt ?? null, new Date().toISOString()])).length === 1;
   }
   async fail(scan: ScanJob, owner: string, code: string, retryable: boolean, backoffMs = 1000 * 2 ** scan.attempts) {
     const state = retryable && scan.attempts < scan.maxAttempts ? "QUEUED" : "DEAD_LETTER";
     return (await this.query(`UPDATE cp_scans SET state = ?, last_error = ?, next_attempt_at = ?, lease_owner = NULL,
-      lease_expires_at = NULL, updated_at = ? WHERE scan_id = ? AND state = 'RUNNING' AND lease_owner = ? RETURNING scan_id`,
-      [state, JSON.stringify({ code, retryable }), new Date(Date.now() + backoffMs).toISOString(), new Date().toISOString(), scan.scanId, owner])).length === 1;
+      lease_expires_at = NULL, updated_at = ? WHERE tenant_id = ? AND scan_id = ? AND state = 'RUNNING' AND lease_owner = ?
+      AND attempts = ? AND lease_expires_at = ? AND lease_expires_at > ? RETURNING scan_id`,
+      [state, JSON.stringify({ code, retryable }), new Date(Date.now() + backoffMs).toISOString(), new Date().toISOString(),
+        scan.tenantId, scan.scanId, owner, scan.attempts, scan.leaseExpiresAt ?? null, new Date().toISOString()])).length === 1;
   }
   async retry(tenantId: string, scanId: string) {
     return (await this.query(`UPDATE cp_scans SET state = 'QUEUED', attempts = 0, stage = 'PENDING', last_error = NULL,

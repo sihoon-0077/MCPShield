@@ -199,6 +199,42 @@ async function workerLoss(databaseUrl?: string) {
 }
 test("abrupt worker loss atomically records one terminal appeal failure per tenant and preserves live leases", () => workerLoss());
 
+async function retryExhaustedAppeal(databaseUrl?: string) {
+  const f = await setup(databaseUrl);
+  try {
+    const appeal = await f.appeal();
+    const submitted = await f.request("/v1/scans", { releaseId: release("c").releaseId, policyHash: hash(defaultPolicy), appealId: appeal.appealId });
+    assert.equal(submitted.statusCode, 202);
+    const scanId = submitted.json().scan.scanId;
+    f.options.scanArtifact = async () => { throw new Error("SCANNER_TIMEOUT"); };
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await runControlWorkerOnce(f.store, f.options);
+      const current = (await f.store.scan(f.tenantA, scanId))!;
+      assert.equal(current.attempts, attempt);
+      assert.equal(current.status, attempt < 3 ? "QUEUED" : "DEAD_LETTER");
+      assert.equal(current.lastError?.code, "SCANNER_TIMEOUT");
+      if (attempt < 3) await f.store.query("UPDATE cp_scans SET next_attempt_at=? WHERE scan_id=?", [new Date(Date.now() - 1).toISOString(), scanId]);
+    }
+    assert.equal((await f.history()).filter((event: any) => event.eventName === "appeal.rescan.failed").length, 3);
+    if (f.store.driver === "POSTGRESQL") {
+      await f.store.query("CREATE FUNCTION test_scan_retry_failure() RETURNS trigger AS $$ BEGIN IF NEW.event_name='scan.retried' THEN RAISE EXCEPTION 'SYNTHETIC_RETRY_AUDIT_FAILURE'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql");
+      await f.store.query("CREATE TRIGGER test_scan_retry_failure BEFORE INSERT ON cp_events FOR EACH ROW EXECUTE FUNCTION test_scan_retry_failure()");
+    } else await f.store.query("CREATE TRIGGER test_scan_retry_failure BEFORE INSERT ON cp_events WHEN NEW.event_name='scan.retried' BEGIN SELECT RAISE(ABORT,'SYNTHETIC_RETRY_AUDIT_FAILURE'); END");
+    assert.ok((await f.request(`/v1/scans/${scanId}/retry`, {})).statusCode >= 400);
+    const rolledBack = (await f.store.scan(f.tenantA, scanId))!;
+    assert.equal(rolledBack.status, "DEAD_LETTER"); assert.equal(rolledBack.attempts, 3);
+    assert.equal((await f.history(release("c").releaseId)).filter((event: any) => event.eventName === "scan.retried").length, 0);
+    await f.store.query(`DROP TRIGGER test_scan_retry_failure${f.store.driver === "POSTGRESQL" ? " ON cp_events" : ""}`);
+    if (f.store.driver === "POSTGRESQL") await f.store.query("DROP FUNCTION test_scan_retry_failure()");
+    const retried = await f.request(`/v1/scans/${scanId}/retry`, {});
+    assert.equal(retried.statusCode, 200); assert.equal(retried.json().scan.status, "QUEUED"); assert.equal(retried.json().scan.attempts, 0);
+    assert.equal((await f.history(release("c").releaseId)).filter((event: any) => event.eventName === "scan.retried").length, 1);
+    assert.equal((await f.store.get(f.tenantA, "appeal", appeal.appealId))?.rescan.scanId, scanId);
+    assert.equal((await f.store.get(f.tenantA, "release", release("a").releaseId))?.status, "REVOKED");
+  } finally { await f.close(); }
+}
+test("appeal transient exhaustion is bounded and manual retry rolls back when its audit write fails", () => retryExhaustedAppeal());
+
 test("PostgreSQL appeal queue/link/history and disposition serialize with tenant-scoped native transactions", { skip: !process.env.MCPSHIELD_POSTGRES_TEST_URL }, async () => {
   const { Pool } = await import("pg"), pool = new Pool({ connectionString: process.env.MCPSHIELD_POSTGRES_TEST_URL });
   const schema = `mcpshield_appeal_${randomUUID().replace(/-/g, "")}`;
@@ -210,6 +246,7 @@ test("PostgreSQL appeal queue/link/history and disposition serialize with tenant
     const target = new URL(process.env.MCPSHIELD_POSTGRES_TEST_URL!); target.searchParams.set("options", `-csearch_path=${schema}`);
     await concurrentTenants(target.href);
     await workerLoss(target.href);
+    await retryExhaustedAppeal(target.href);
   } finally { await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); await pool.end(); }
 });
 

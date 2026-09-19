@@ -174,17 +174,16 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
     });
     api.post("/scans/:scanId/retry", async (request) => {
       const user = authenticate(request.headers.authorization); authorize(user, "operator");
-      const scan = await store.scan(user.tenantId, (request.params as any).scanId); if (!scan) throw err("SCAN_NOT_FOUND", 404);
-      if (!scan.lastError?.retryable) throw err("SCAN_NOT_RETRYABLE", 409);
-      const retried = await store.forTenant(user.tenantId, async (transaction) => {
+      return store.forTenant(user.tenantId, async (transaction) => {
+        const scan = await transaction.scan(user.tenantId, (request.params as any).scanId); if (!scan) throw err("SCAN_NOT_FOUND", 404);
+        if (!scan.lastError?.retryable) throw err("SCAN_NOT_RETRYABLE", 409);
         const policy = await transaction.get(user.tenantId, "policy", scan.policyHash);
         if (!policy || policy.deprecatedAt) throw err("POLICY_DEPRECATED", 409);
         if ((await transaction.scanUsage(user.tenantId)).queued >= policy.document.maxQueuedScans) throw err("SCAN_QUOTA_EXCEEDED", 429);
-        return transaction.retry(user.tenantId, scan.scanId);
+        if (!await transaction.retry(user.tenantId, scan.scanId)) throw err("SCAN_NOT_IN_DLQ", 409);
+        await transaction.event(user.tenantId, scan.releaseId, "scan.retried", { scanId: scan.scanId }, scan.traceId);
+        return { scan: publicScan((await transaction.scan(user.tenantId, scan.scanId))!) };
       });
-      if (!retried) throw err("SCAN_NOT_IN_DLQ", 409);
-      await store.event(user.tenantId, scan.releaseId, "scan.retried", { scanId: scan.scanId }, scan.traceId);
-      return { scan: publicScan((await store.scan(user.tenantId, scan.scanId))!) };
     });
     api.get("/scans/:scanId/evidence", async (request) => {
       const user = authenticate(request.headers.authorization); authorize(user, "operator");
