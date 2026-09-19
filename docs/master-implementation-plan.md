@@ -1,11 +1,23 @@
 # MCPShield 마스터 문서 구현 현황
 
-기준일: 2026-09-10 KST. 상태: **구현 진행 중 — 전체 완료 아님**.
+기준일: 2026-09-19 KST. 상태: **구현 진행 중 — 전체 완료 아님**.
 
 기준 문서: 사용자가 제공한 `MCPShield_전체_시스템디자인_해커톤_마스터문서.md`.
 원본 SHA-256: `702268984174af450276b5292a4afccd6a4d5dce79738fe3abde41c4d30d4ea2`.
 시작 커밋: `6aa370285154f683989f2bf9b219bd2c052e6cee` (`mcp/main`).
 기존 코드·공개 데모를 보존하고 `master/main`에서 통합한다.
+
+## 통합 체크포인트 (2026-09-19 KST)
+
+- 직전 목표 턴의 CI 상태 재확인에 이어 이번 턴은 실제 코드·회귀 검사 통합으로 진행했다. `mcp/main`과 기존 공개 데모를 변경하지 않았다.
+- `a876053`/`726332f`: 소진된 WORKER_LOST의 원본 appeal 이력을 상태 변경과 같은 transaction으로 기록한다. 정상 완료/실패는 tenant·owner·attempt·정확한 미만료 lease를 모두 확인한다. 수동 retry의 자격·quota·상태·감사 기록도 원자적으로 처리한다. Main API/BFF focused 34 PASS/4 PostgreSQL SKIP. `809f7e2`는 동일 owner stale attempt 회귀를 실제 PostgreSQL gate에도 추가했으며 로컬 control-plane 12 PASS/2 SKIP. PostgreSQL 재실행 전에는 성공으로 세지 않는다.
+- `1ef99a2`/`2a26c6d`: 원본 appeal 증거를 유지하며 같은 도구의 변경 digest/정책 재검사를 1회 연결하는 UI 통합. 공통 control client의 한국어 상태별 안내는 code/status/details를 보존하고 네트워크 유실 때 기록 재확인을 안내한다. dashboard 32 PASS/1 native HTTP 조건부 SKIP, backend+Next build 성공. BFF→실제 API의 응답 유실·동일 key 중복 제거·교차 tenant/reader 제한은 확인했지만, 브라우저 hook의 연속 클릭/선택 변경은 별도 검증이다.
+- `9b3742f`/`365efcf`: 새 scoped v2 정책의 정확한 disclosure/role/tier/provenance commitment 통합. 같은 원본·새 정책은 다른 manifest/release ID를 갖는다. v1 증거를 새 정책에 맞춰 재해시해도 v1 assessor는 ABSTAIN. scoped/binding 15 PASS 및 prepared/OCI assessor 6 PASS. 실제 외부 AI caller·독립 validator의 v2 실행 통합은 여전히 남았다.
+- [수정 전 CI 34439175673](https://github.com/sihoon-0077/MCPShield/actions/runs/34439175673) 실제 로그: 지원 safe fixture에서 base 일치 Directory 527개 mode 02755 → SET_ID_BITS, composed fixture에서 native Trivy Results MISSING → 보고서 거부. `8155bb0`은 trusted builder 생성 시에만 set-ID directory 비트를 제거하고, Trivy의 빈 inventory 생략을 원본 hash 그대로 보관하되 INCONCLUSIVE로 남긴다. 후보 코드/권한을 정규화하거나 안전 기준을 낮추지 않았다. Main OCI 18 PASS/6 native SKIP. 새 Linux builder 재빌드와 세 실패 gate 재통과가 필요하다.
+- `8155bb0` 전체 npm test 성공: backend 112 PASS/8 환경 SKIP, Security/Gateway/dashboard/replay/stdio/LIVE smoke 완료. 이후 UI 통합본에서 dashboard와 build 별도 재검사 성공. 두 담당자의 교차 리뷰에서 조치할 회귀 발견 없음. 로컬 Windows에 실행 가능한 Docker가 없어 native skip을 완료로 바꾸지 않았다.
+- 빌드 뒤 native Next HTTP 폼 검사도 명시적 opt-in으로 3 PASS/0 SKIP. native POST 값의 비노출과 BFF CSRF 거부를 검증했으며 실제 브라우저 hydration 검증은 별개다.
+- 기존 공개 `/try`와 HTML Accept의 `/mcp` GET 200 확인. 최신 개발본 배포·MCP 도구 호출·종합 health 증거가 아니라 기존 화면 가용성만 확인한 것이다. Railway를 덮어쓰지 않았다.
+- 종합 readiness/worker heartbeat, preparation 큐 세대별 fence, 실제 외부 AI 품질/테스트넷/운영 저장소·키/알림/부하/최신 배포 검증은 계속 미완료다. 약 70% 추정치를 측정 완료율로 갱신하지 않는다.
 
 ## 인수인계 체크포인트 (2026-09-10 KST)
 

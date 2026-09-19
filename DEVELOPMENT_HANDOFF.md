@@ -1,7 +1,7 @@
 # MCPShield 개발 인수인계 — 여기서 시작하세요
 
-기준일: **2026-09-10 KST**. 기능 기준 커밋: **`c9f8798` (`master/main`)**.
-이 인수인계 변경은 문서와 미활성 초안 보관이며 기능 수정·브랜치 병합·운영 배포가 아니다.
+기준일: **2026-09-19 KST**. 통합 기준 커밋: **`809f7e2` (`master/main`)**.
+9월 10일 이후 보안·백엔드·프론트엔드 후속 변경을 통합했다. 최신 Linux Docker 검증과 공개 배포는 아직 완료되지 않았다.
 
 ## 1. 현재 어디까지 만들었나
 
@@ -11,8 +11,8 @@
 
 | 파트 | Main에 구현된 것 | 남은 핵심 작업 |
 |---|---|---|
-| Frontend | Next.js/React 대시보드, `/try`, `/console`, 역할별 로그인, 릴리스 검색·등록, 검사·재처리, 정책, 증거·이력, 이의제기 종결, 체인·receipt 표시 | 재검사 UI 작업 브랜치 통합, 쉬운 오류 문구 통일, 실제 브라우저 조작·시각 검증 |
-| Backend | Fastify/TypeScript, 기존 `/api`와 확장 `/v1`, tenant 격리, admin/operator/reader, SQLite/PostgreSQL control store, SQL queue·lease·backoff·DLQ, 멱등성, 암호화 증거, 감사 이벤트, chain outbox | 워커 비정상 종료 이력 수정 통합, 종합 health, 실제 운영 DB·secret 관리·복구·부하 검증 |
+| Frontend | Next.js/React 대시보드, `/try`, `/console`, 역할별 로그인, 릴리스 검색·등록, 검사·재처리, 정책, 증거·이력, 이의제기 종결·변경본 재검사 연결, 체인·receipt 표시, 공통 한국어 오류 안내 | 실제 브라우저 조작·시각 검증, 실제 운영 사용자 검증 |
+| Backend | Fastify/TypeScript, 기존 `/api`와 확장 `/v1`, tenant 격리, admin/operator/reader, SQLite/PostgreSQL control store, SQL queue·lease·backoff·DLQ, 멱등성, 암호화 증거, 감사 이벤트, chain outbox, 작업자 중단 이력·시도별 lease 차단 | 최신 PostgreSQL 회귀, preparation 큐의 동일 owner 재사용 검토, 종합 health, 실제 운영 DB·secret 관리·복구·부하 검증 |
 | Security·AI | npm/tarball/OCI 수집, 정확한 digest·도구 표면 고정, 정적 규칙·변경점·SBOM/취약점 검사, Docker 격리·canary, 증거 Merkle root, AI analyzer/critic·구조화 JSON 코드 | 최신 OCI 전체 검사 실패 해결, 제한된 정보만 AI에 전송하는 정책 연결, 실제 외부 모델 호출·품질 평가 |
 | Blockchain | Solidity V1/V2·receipt anchor, EIP-712, 2-of-3, 중복·만료·다른 체인 서명 거부, 격리·terminal 폐기, 정책 버전, indexer·reorg/전송 복구 | Base Sepolia 배포·외부 RPC 검증, 독립 기관 validator, 운영 키 관리 |
 | Gateway | 실제 stdio/HTTP MCP, 실행 전 차단, 매 도구 호출 승인 재검사, identity·policy·expiry 검증, signed cache·장애 fallback, 제한된 npm/OCI 실행 프로필 | 최신 OCI 전체 흐름 통과, 지원 대상 확대, 후속 호출 없는 지속 실행의 폐기 즉시 중단 보장 |
@@ -21,7 +21,7 @@
 명확한 미완료 사항:
 
 - `/health`는 현재 기본 `status`와 원장 모드를 반환한다. API/DB/체인/스캐너의 종합 readiness가 아니다.
-- 오류 표시 영역은 있지만 일부 응답은 `FORBIDDEN` 같은 내부 코드다. 사용자용 한 줄 설명 통일이 남았다.
+- 공통 control client는 400/401/403/409 등과 이의제기 오류에 한국어 안내를 표시하고 코드를 함께 보존한다. 네트워크 응답 유실 시 자동 재전송하지 않고 기록 재확인을 안내한다. 모든 운영 오류의 UX 검증이 끝났다는 뜻은 아니다.
 - 감사 이벤트 저장과 일부 불변 이의제기/receipt 처리는 있다. 모든 감사 로그를 DB 관리자도 변경하지 못하는 보관 체계는 미완료다.
 - 외부 AI, 실제 Gmail/CRM 계정, 테스트넷, 실제 S3/KMS, 외부 알림 수신자는 clone만으로 구성되지 않는다.
 - Redis/Kafka/RabbitMQ/Nginx는 현재 필수 의존성이 아니다. SQL 큐·기존 캐시로 시작하고 측정된 요구에 따라 도입한다.
@@ -43,22 +43,22 @@ git log -1 --oneline
 
 | 브랜치 | 인수인계 시 기능 HEAD | 용도 |
 |---|---|---|
-| `master/main` | `c9f8798` + 인수인계 문서 커밋 | 새 작업의 기본 출발점 |
-| `master/backend-appeals` | `9217faf` | 워커가 사라져 재시도 한도를 소진할 때 원본 이의제기 실패 이력을 원자적으로 남기는 후속 변경 |
-| `master/frontend-appeals` | `859e727` | 공통 검사 요청 폼, 이의제기와 새 검사 연결 UI |
-| `master/security-ai` | `e46c3ed` | 별도 v2 정보 공개 정책을 정확히 고정하고 기존 v1 증거로 승인하지 않는 후속 변경 |
+| `master/main` | `809f7e2` + 검증 문서 | 새 작업의 기본 출발점 |
+| `master/backend-appeals` | `718b8fb` | `9217faf`와 함께 Main `a876053`/`726332f`로 통합 |
+| `master/frontend-appeals` | `207d73b` | `859e727`과 함께 Main `1ef99a2`/`2a26c6d`로 통합 |
+| `master/security-ai` | `2660ee5` | `e46c3ed`와 함께 Main `9b3742f`/`8155bb0`로 통합 |
 | `mcp/main` | `6aa3702` | 보존한 기존 MCP 데모 기준점 |
 | `main` | `0831a55` | 이전 기본 브랜치. 최신 master 통합본 아님 |
 
-파트 브랜치는 **통합 대기 작업 보관본**이지 각각 최신 Main의 상위 버전이 아니다. 이미 Main에 다른 SHA로 cherry-pick된 변경이 많다. `git log main..branch`의 모든 커밋을 신규 작업으로 세거나 브랜치 전체를 무검토 병합하지 않는다.
+파트 브랜치는 각각 최신 Main의 상위 버전이 아니다. 이미 Main에 다른 SHA로 cherry-pick된 변경이 많다. `git log main..branch`의 모든 커밋을 신규 작업으로 세거나 브랜치 전체를 무검토 병합하지 않는다.
 
-후속 작업 후보와 비교 경로:
+이번 통합의 주요 비교 경로:
 
 - Backend `9217faf`: `apps/api/src/control-store.ts`, `tests/api/appeals.test.ts`.
 - Frontend `859e727`: `apps/dashboard/components/scan-request-form.tsx`, `appeal-records.tsx`, `operations-console.tsx`, `release-workflow.tsx`.
 - Security `e46c3ed`: `services/scanner/src/scoped-policy.mjs`, prepared/OCI binding·policy와 해당 테스트.
 
-각 후보는 현재 Main과 diff를 보고 의존성·테스트를 확인한 뒤 작은 단위로 통합한다. 이번 인수인계에서 이 변경들의 통합 성공을 주장하지 않는다.
+Main은 추가로 `365efcf`에서 v1 증거를 재해시해 v2 승인으로 재사용하는 경로를 검사하고, `809f7e2`에서 stale attempt 회귀를 PostgreSQL gate에도 연결했다. v2 commitment는 아직 실제 외부 AI caller 통합이나 실행 승인이 아니다.
 
 ## 3. 다음 개발자의 첫 실행
 
@@ -164,9 +164,9 @@ AI의 도구 호출 → Gateway → 최신 실행 허가 확인
 
 ## 5. 검증 결과와 알려진 실패
 
-### 마지막 기능 커밋의 원격 검사
+### 최신 원격 결과와 수정 상태
 
-[CI 34286988002 — c9f8798](https://github.com/sihoon-0077/MCPShield/actions/runs/34286988002)를 2026-09-10 GitHub API로 확인했다.
+[CI 34439175673 — f957451](https://github.com/sihoon-0077/MCPShield/actions/runs/34439175673)를 2026-09-19 GitHub API와 실제 job 로그로 확인했다. 아래는 수정 전 결과이며 새 통합본 성공 증거가 아니다.
 
 - PostgreSQL job: 성공.
 - Node 24 job: 성공.
@@ -176,11 +176,15 @@ AI의 도구 호출 → Gateway → 최신 실행 허가 확인
   3. `Exercise native OCI worker and independent single-key validators through V2 and both Gateways`
 - repeat-demo와 signed-image: 이번 run에서는 skipped. 최신 서명 이미지 생성/배포 성공 증거 없음.
 
-이전 기록에는 private Trivy 산출물 미생성과 `OCI_UNSUPPORTED_FILESYSTEM_ENTRY`에 따른 ABSTAIN이 있다. **최신 실패의 원인을 추측으로 확정하지 말고 위 run의 단계별 진단을 확인한다.** 지원하지 않는 입력을 허용으로 바꾸거나 보안 gate를 건너뛰어 해결하지 않는다.
+실제 진단: 지원 정상 fixture는 승인 base와 일치하는 527개 `Directory`의 mode `02755` 때문에 `SET_ID_BITS`로 보류됐다. `8155bb0`은 후보가 없는 trusted builder 생성 단계에서만 `/usr/local`, `/home/node` 디렉터리의 set-ID 비트를 제거한다. 후보 검사 규칙과 base 일치 검사는 유지한다. 별도 composed 검사는 패키지 없는 Trivy 보고서가 `Results`를 생략해 실패했다. 생략을 빈 원본 증거로 보존하되 `INCONCLUSIVE / OCI_TRIVY_PACKAGE_COVERAGE_INCOMPLETE`로 처리한다. 정상 지원 프로필 PASS, 악성 FAIL 및 독립 validator→Gateway 전체 경로는 새 Linux CI에서 재확인해야 한다.
 
 ### 로컬에서 확인한 범위
 
-2026-09-10 같은 기능 커밋에서 `npm run build:backend` 성공. 아래 focused 검사는 **15 PASS / 1 PostgreSQL 선택 SKIP / 0 FAIL**였다. 인수인계 작성 중 `npm run demo:live-smoke`도 다시 실행해 **정상 ALLOW / 악성 BLOCK_BEFORE_SPAWN / 종료 코드 0**을 확인했다. 전체 테스트 재실행이나 실제 Linux 검사 결과는 아니다.
+2026-09-19 `8155bb0`의 전체 `npm test` 성공: backend 112 PASS/8 SKIP, security·Gateway·기존 dashboard·replay·실제 stdio·합성 LIVE smoke 완료. 이후 UI 통합본 `2a26c6d`에서 dashboard 32 PASS/1 조건부 HTTP SKIP와 `npm run build` 성공. `809f7e2`의 control-plane 회귀는 12 PASS/2 PostgreSQL SKIP. Linux Docker·실제 PostgreSQL·외부 AI 실행 증거는 아니다.
+
+추가 통합 검사: scoped/binding 15 PASS, v1/v2 정책 격리 6 PASS, Backend/API/BFF 34 PASS/4 PostgreSQL SKIP, OCI 18 PASS/6 native SKIP. 두 담당자의 읽기 전용 교차 리뷰에서 조치할 회귀는 발견되지 않았다. 실제 브라우저 폼의 클릭·연속 제출·응답 유실 시 hook 상태 유지는 별도 QA가 남았다.
+
+빌드 뒤 `MCPSHIELD_FORM_HTTP_TESTS=1 node --import tsx --test apps/dashboard/test/forms.test.mts`도 3 PASS/0 SKIP로 재확인했다. 실제 Next HTTP의 native POST/CSRF/비밀값 비반사 검사이며 브라우저 hydration QA의 대체 증거는 아니다.
 
 ```sh
 node --import tsx --test tests/api/appeals.test.ts apps/dashboard/test/appeals-integration.test.mts tests/integration/release-readiness.test.ts
@@ -206,8 +210,8 @@ npm test
 | 순서 | 할 일 | 완료를 판단할 증거 |
 |---|---|---|
 | P0 | 위 OCI 실패 세 단계 재현·수정 | 지원 정상 fixture PASS, 악성 fixture FAIL, 독립 validator 정족수, 두 Gateway에서 폐기 이미지 실행 0건, 같은 SHA의 Linux CI 성공 |
-| P0 | Backend/Frontend/Security 후속 커밋 검토·통합 | Main에서 관련 회귀·build 성공, PostgreSQL worker-lost/동시성, BFF·실제 브라우저 재검사 흐름, v1/v2 증거 혼용 거부 |
-| P1 | 쉬운 오류 설명·종합 health·실제 장애 알림 | 입력/인증/권한/충돌별 안내, DB/RPC/worker 장애 주입 반영, 설정된 수신자의 실제 알림 확인 |
+| P0 | 통합본의 실제 PostgreSQL·브라우저 검증 | PostgreSQL worker-lost/동시성/동일 owner stale attempt, 실제 브라우저 재검사 흐름과 응답 유실 처리 |
+| P1 | 종합 health·실제 장애 알림 | DB/RPC/worker 장애 주입 반영, 설정된 수신자의 실제 알림 확인. 현재 worker heartbeat가 없으므로 설정 존재나 빈 큐만으로 healthy라 하지 않는다. |
 | P1 | 외부 AI를 제한된 정보 공개 정책에 연결 | 실제 모델 호출, 원문/secret 전송 제한, analyzer·critic·probe 전 경로 일관성, 실패 시 ABSTAIN, 비용·탐지/오탐 평가 |
 | P1 | 테스트넷·실제 저장소·키/백업 운영 | 배포 주소·tx·chain ID·explorer, 실제 암호화 증거 저장/조회, 별도 DB 복원과 복구 시간 측정 |
 | P2 | 지원 MCP 실사용·부하·배포 | 실제 정상 업무와 악성 업데이트 차단, 명시한 동시성·대기시간 목표 검증, 같은 SHA의 release image·보안 검사·배포 smoke |
