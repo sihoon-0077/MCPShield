@@ -814,6 +814,21 @@ At most five exact task-owned tool containers are removed (separate bounded
 workspace produces `OCI_TRIVY_CLEANUP_FAILED`, INCONCLUSIVE and null private
 evidence. Diagnostics contain counts/booleans only, never raw daemon/source text.
 
+Native Trivy's [`Report.Results`](https://github.com/aquasecurity/trivy/blob/v0.74.0/pkg/types/report.go)
+is omitted when no packages are detected. That valid empty inventory is retained
+in encrypted evidence with its original report digest, but stays INCONCLUSIVE
+(`OCI_TRIVY_PACKAGE_COVERAGE_INCOMPLETE`); it never becomes complete coverage or
+PASS. Null/malformed results and mismatched image identities are still rejected.
+
+The pinned Node base contains setgid directories under `/usr/local` and
+`/home/node`. `services/resolver/Dockerfile.builder` removes their set-ID bits
+while constructing the trusted toolchain image. No candidate is present then;
+candidate exports are never normalized, and even exact approved-base set-ID
+entries remain unsupported. Native catalogue acceptance checks for zero set-ID
+entries before Trivy; rebuilding changes the builder CID/catalogue and requires
+new runtime bindings/scans, not reuse of prior attestations. On Windows the
+native acceptance is skipped and must be revalidated by the Linux Docker gate.
+
 The shared integration fixture `tests/security/oci-profile-fixture.mjs` exports
 `createOciProfileFixture({builderImageDigest,variant:'safe'|'malicious'})` and
 `OCI_PROFILE_PROBE_PLAN`. It returns `{root,sourceTreeDigest,platform,sourceBytes,

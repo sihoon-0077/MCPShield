@@ -18,6 +18,10 @@ RUN set -eu; node --input-type=module -e "import {writeFile} from 'node:fs/promi
  done; \
  node --input-type=module -e "import {readFile} from 'node:fs/promises';for(const [name,version]of [['brace-expansion','5.0.9'],['ip-address','10.3.1'],['tar','7.5.22']]){if(JSON.parse(await readFile('/usr/local/lib/node_modules/npm/node_modules/'+name+'/package.json')).version!==version)throw Error('PATCH_VERSION_MISMATCH')}"; \
  test "$(npm --version)" = '12.0.2'
+# The pinned Node base carries setgid directories under these trusted paths.
+# Drop inheritance bits while constructing the approved base, never while
+# inspecting a candidate; OCI coverage must still reject every set-ID entry.
+RUN find /usr/local /home/node -type d -exec chmod u-s,g-s {} +
 COPY services/resolver/src/prepare-container.mjs services/resolver/src/closure-files.mjs /trusted/
 COPY services/resolver/src/lock-container.mjs services/resolver/src/registry-broker.mjs /trusted/
 RUN mkdir /work && chown 1000:1000 /work

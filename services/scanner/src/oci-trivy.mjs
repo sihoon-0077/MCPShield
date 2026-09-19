@@ -53,14 +53,17 @@ export function assessTrivyDocuments(report, sbom, imageDigest) {
   // Native Trivy 0.74 emits 1.7; the consumed component name/group/version
   // fields retain their types: https://cyclonedx.org/schema/bom-1.7.schema.json
   if (report?.SchemaVersion !== 2 || report.ArtifactType !== 'container_image' || report.Metadata?.ImageID !== imageDigest ||
-    !Array.isArray(report.Results) || report.Results.length > 1024 || sbom?.bomFormat !== 'CycloneDX' ||
+    report.Results !== undefined && (!Array.isArray(report.Results) || report.Results.length > 1024) || sbom?.bomFormat !== 'CycloneDX' ||
     !['1.4', '1.5', '1.6', '1.7'].includes(sbom.specVersion) || !Array.isArray(sbom.components) || sbom.components.length > 50_000) throw Error('OCI_TRIVY_REPORT_IDENTITY_INVALID');
-  if (report.Results.some((result) => !result || typeof result !== 'object' ||
+  // Native Trivy omits Results when no packages are detected (Report.Results
+  // uses json:",omitempty"). Retain that evidence, but never claim coverage.
+  const results = report.Results ?? [];
+  if (results.some((result) => !result || typeof result !== 'object' ||
     result.Packages !== undefined && !Array.isArray(result.Packages) || result.Vulnerabilities !== undefined && !Array.isArray(result.Vulnerabilities)) ||
     sbom.components.some((item) => !item || typeof item.name !== 'string' || item.version !== undefined && typeof item.version !== 'string' ||
       item.group !== undefined && typeof item.group !== 'string')) throw Error('OCI_TRIVY_REPORT_INVALID');
-  const packages = report.Results.flatMap((result) => result.Packages ?? []);
-  const vulnerabilities = report.Results.flatMap((result) => result.Vulnerabilities ?? []);
+  const packages = results.flatMap((result) => result.Packages ?? []);
+  const vulnerabilities = results.flatMap((result) => result.Vulnerabilities ?? []);
   if (packages.length > 50_000 || vulnerabilities.length > 50_000 || packages.some((pkg) =>
     typeof pkg.Name !== 'string' || typeof pkg.Version !== 'string') || vulnerabilities.some((item) =>
     typeof item.VulnerabilityID !== 'string' || !['UNKNOWN', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(item.Severity))) throw Error('OCI_TRIVY_REPORT_INVALID');

@@ -52,6 +52,13 @@ test('OCI base catalogue binds path, ownership, permission and link structure, n
   const matchedSetId = inspectOciCoverage(inspectOciFilesystem(archive(sameSetId)), setIdCatalogue);
   assert.equal(matchedSetId.coverage.sourceClassificationComplete, false);
   assert.deepEqual(matchedSetId.diagnostics.unsupportedGroups[0], { type: 'File', mode: 0o4555, baseMatch: true, reason: 'SET_ID_BITS', count: 1 });
+  // The pinned Node base originally shipped 02755 directories. Trusted-base
+  // provenance does not exempt them from the restricted runtime policy.
+  const setGidDirs = entries.map((entry) => entry.type === 'Directory' ? { ...entry, mode: 0o2755 } : entry);
+  const dirCatalogue = createOciRuntimeCatalogue({ baseImageDigest: imageDigest, platform, filesystem: inspectOciFilesystem(archive(setGidDirs)) });
+  const matchedDirs = inspectOciCoverage(inspectOciFilesystem(archive(setGidDirs)), dirCatalogue);
+  assert.equal(matchedDirs.coverage.sourceClassificationComplete, false);
+  assert.deepEqual(matchedDirs.diagnostics.unsupportedGroups[0], { type: 'Directory', mode: 0o2755, baseMatch: true, reason: 'SET_ID_BITS', count: 1 });
   assert.equal(JSON.stringify(changedMode.diagnostics).includes('bin/runtime'), false);
   const many = coverage([...entries, ...Array.from({ length: 70 }, (_, index) => ({ path: `PRIVATE_PATH_${index}`, type: 'Directory', mode: index }))]);
   assert.equal(many.diagnostics.unsupportedGroups.length, 64);
@@ -143,6 +150,22 @@ test('CycloneDX 1.4 through native Trivy 1.7 retain exact component coverage; un
   assert.equal(assessTrivyDocuments(packageReport(), bom, imageDigest).packageListComplete, false);
 });
 
+test('native Trivy omitted Results preserves empty package evidence without granting coverage or mutating the signed document', () => {
+  const report = packageReport(); delete report.Results;
+  const bom = { ...sbom(), specVersion: '1.7', components: [] };
+  for (const candidate of [report, { ...report, Results: [] }]) {
+    const before = canonicalJson(candidate), result = assessTrivyDocuments(candidate, bom, imageDigest);
+    assert.equal(result.status, 'INCONCLUSIVE');
+    assert.equal(result.packageListComplete, false); assert.equal(result.packages, 0); assert.equal(result.components, 0);
+    assert.deepEqual(result.issues, ['OCI_TRIVY_PACKAGE_COVERAGE_INCOMPLETE']);
+    assert.equal(result.reportDigest, ociHash(before)); assert.equal(canonicalJson(candidate), before);
+  }
+  for (const Results of [null, {}, '', 0, false]) {
+    assert.throws(() => assessTrivyDocuments({ ...report, Results }, bom, imageDigest), /IDENTITY_INVALID/);
+  }
+  assert.throws(() => assessTrivyDocuments(report, bom, ociHash('wrong')), /IDENTITY_INVALID/);
+});
+
 test('OCI review failure never becomes READY or reuses npm approval', async () => {
   const result = await reviewOciImage({ descriptor: {}, expectedDescriptorDigest: imageDigest, trust: {} });
   assert.equal(result.status, 'INCONCLUSIVE'); assert.equal(result.approvalVerdict, 'ABSTAIN');
@@ -185,6 +208,8 @@ test('actual Linux approved image catalogue, offline Trivy vulnerability scan an
   const live = await readOciRuntimeCatalogue({ baseImageDigest, platform });
   assert.equal(live.source, 'LIVE_DOCKER_EXPORT');
   assert.ok(live.entries.length > 10);
+  assert.equal(live.entries.filter(({ mode }) => mode & 0o6000).length, 0,
+    'The approved builder must remove inherited set-ID bits during construction, not bypass candidate coverage checks');
   const databaseDir = process.env.MCPSHIELD_TRIVY_DATABASE_DIR;
   const database = await readTrivyDatabaseIdentity({ databaseDir });
   const result = await scanOciWithTrivy({ imageDigest: baseImageDigest, baseImageDigest, platform,
