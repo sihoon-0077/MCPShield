@@ -85,8 +85,9 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
         evidenceKey, reportRoot: bundle.manifest.root, issues,
         ...(oci ? { semanticEvidenceMode: policy.document.semanticEvidenceMode, providerQuality: "PROVIDER_QUALITY_NOT_MEASURED" } : {}) };
       const [updated] = await tx.query(`UPDATE cp_preparations SET state='COMPLETED',result_json=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=?
-        WHERE tenant_id=? AND preparation_id=? AND state='RUNNING' AND lease_owner=? AND lease_expires_at>? AND config_hash=? RETURNING preparation_id`,
-        [JSON.stringify(result), now, job.tenantId, job.preparationId, owner, now, job.configHash]);
+        WHERE tenant_id=? AND preparation_id=? AND state='RUNNING' AND lease_owner=? AND attempts=?
+        AND lease_expires_at=? AND lease_expires_at>? AND config_hash=? RETURNING preparation_id`,
+        [JSON.stringify(result), now, job.tenantId, job.preparationId, owner, job.attempts, job.leaseExpiresAt ?? null, now, job.configHash]);
       if (!updated) return { transferred: false };
       let ownsImage = false;
       if (derived) {

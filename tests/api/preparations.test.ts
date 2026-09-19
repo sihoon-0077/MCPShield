@@ -154,6 +154,49 @@ function syntheticPreparedOutput(input: any, cleanup: () => Promise<void>) {
     bundle: createEvidenceBundle({ "report.json": { ...result, scope: "RESTRICTED_NODE_DOCKER_V1" }, "prepared/binding.json": binding,
       "runtime/tools.json": tools, "runtime/descriptor.json": descriptor, "runtime/execution-policy.json": binding.executionPolicy, "prepared/policy-review.json": analysis }) };
 }
+
+async function sameOwnerReclaim(store: ControlStore, peer: ControlStore, options: ControlOptions, tenantId: string, preparationId: string) {
+  const previous = options.prepareRuntime, owner = "same-preparation-worker";
+  const scansBefore = (await store.scans(tenantId)).length, releasesBefore = (await store.list(tenantId, "release")).length;
+  let calls = 0, cleaned = 0;
+  const expire = () => peer.query("UPDATE cp_preparations SET lease_expires_at=? WHERE tenant_id=? AND preparation_id=?", [new Date(Date.now() - 1).toISOString(), tenantId, preparationId]);
+  options.prepareRuntime = async input => {
+    if (++calls === 1) {
+      await expire();
+      const [expired] = await preparations(peer, tenantId, preparationId);
+      assert.equal(await failPreparation(peer, expired, owner, "EXPIRED_WORKER_FAILURE", false), false);
+      const replacement = (await claimPreparation(peer, owner))!;
+      assert.equal(replacement.preparationId, preparationId); assert.equal(replacement.attempts, expired.attempts + 1);
+      assert.equal(await failPreparation(peer, expired, owner, "STALE_ATTEMPT_FAILURE", false), false);
+      assert.equal(await failPreparation(peer, { ...expired, attempts: replacement.attempts }, owner, "STALE_LEASE_FAILURE", false), false);
+    }
+    return syntheticPreparedOutput(input, async () => { cleaned++; });
+  };
+  try {
+    await runPreparationWorkerOnce(store, options, owner);
+    const [current] = await preparations(peer, tenantId, preparationId);
+    assert.equal(current.status, "RUNNING"); assert.equal(current.attempts, 2); assert.equal(current.lastError, undefined);
+    assert.equal(cleaned, 1, "stale successful worker cannot transfer its image ownership");
+    assert.equal((await store.scans(tenantId)).length, scansBefore);
+    assert.equal((await store.list(tenantId, "release")).length, releasesBefore);
+    assert.equal((await store.events(tenantId)).filter(event => ["preparation.completed", "preparation.failed"].includes(event.eventName) && event.payload.preparationId === preparationId).length, 0);
+    await expire();
+    await runPreparationWorkerOnce(peer, options, owner);
+    const [completed] = await preparations(store, tenantId, preparationId);
+    assert.equal(completed.status, "COMPLETED"); assert.equal(completed.attempts, 3); assert.equal(completed.result?.verdict, "ABSTAIN");
+    assert.equal((await store.scans(tenantId)).length, scansBefore + 1);
+    assert.equal((await store.events(tenantId)).filter(event => event.eventName === "preparation.completed" && event.payload.preparationId === preparationId).length, 1);
+  } finally { options.prepareRuntime = previous; }
+}
+
+test("preparation completion and failure fence same-owner reclaims by attempt and exact unexpired lease", async () => {
+  const f = await setup(), dir = await mkdtemp(join(tmpdir(), "mcpshield-prepared-generation-")); f.options.evidencePath = dir;
+  try {
+    const preparationId = (await f.request("generation")).json().preparation.preparationId;
+    await sameOwnerReclaim(f.store, f.store, f.options, tenant, preparationId);
+  } finally { await f.app.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("prepared worker atomically creates a distinct identity and encrypted scan without granting PASS", async () => {
   const f = await setup(), dir = await mkdtemp(join(tmpdir(), "mcpshield-prepared-worker-")); let cleaned = 0;
   f.options.evidencePath = dir;
@@ -270,6 +313,8 @@ test("PostgreSQL preparation multiworker quota, lease and atomic release/scan fi
     const [completed] = await preparations(two, tenantId, job.preparationId);
     assert.equal(completed.status, "COMPLETED", JSON.stringify(completed.lastError)); assert.equal((await two.scans(tenantId)).length, 1);
     assert.equal((await two.list(tenantId, "release")).length, 2); assert.equal(cleaned, 1); assert.equal((await two.scanUsage(tenantId)).today, 1);
+    const generation = await enqueuePreparation(one, tenantId, request, "same-owner-generation", randomUUID());
+    await sameOwnerReclaim(one, two, options, tenantId, generation.preparation.preparationId);
   } finally {
     // Only this test's fresh random tenant; never delete another worker's rows.
     for (const table of ["cp_preparations", "cp_scans", "cp_records", "cp_events"]) await one.query(`DELETE FROM ${table} WHERE tenant_id=?`, [tenantId]);

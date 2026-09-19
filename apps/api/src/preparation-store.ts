@@ -60,9 +60,10 @@ export async function claimPreparation(store: ControlStore, owner: string, lease
 export async function failPreparation(store: ControlStore, job: PreparationJob, owner: string, code: string, retryable: boolean, backoffMs = 1000 * 2 ** job.attempts) {
   return store.forTenant(job.tenantId, async (tx) => {
     const [row] = await tx.query(`UPDATE cp_preparations SET state=?,last_error=?,next_attempt_at=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=?
-      WHERE tenant_id=? AND preparation_id=? AND state='RUNNING' AND lease_owner=? AND lease_expires_at>? RETURNING preparation_id`,
+      WHERE tenant_id=? AND preparation_id=? AND state='RUNNING' AND lease_owner=? AND attempts=?
+      AND lease_expires_at=? AND lease_expires_at>? RETURNING preparation_id`,
       [retryable && job.attempts < job.maxAttempts ? "QUEUED" : "DEAD_LETTER", JSON.stringify({ code, retryable }), new Date(Date.now() + backoffMs).toISOString(),
-        new Date().toISOString(), job.tenantId, job.preparationId, owner, new Date().toISOString()]);
+        new Date().toISOString(), job.tenantId, job.preparationId, owner, job.attempts, job.leaseExpiresAt ?? null, new Date().toISOString()]);
     if (row) await tx.event(job.tenantId, job.sourceReleaseId, "preparation.failed", { preparationId: job.preparationId, code, retryable }, job.traceId);
     return Boolean(row);
   });
