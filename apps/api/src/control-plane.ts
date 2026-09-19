@@ -15,6 +15,7 @@ import { registerEventStream } from "./event-stream.js";
 import { registerPreparationRoutes } from "./preparation-control.js";
 import type { PreparedConfig } from "./prepared-config.js";
 import type { OciConfig } from "./oci-config.js";
+import { createControlHealth } from "./control-health.js";
 export { defaultPolicy } from "./control-policy.js";
 
 export type Credential = { token: string; tenantId: string; role: "reader" | "operator" | "admin" };
@@ -25,7 +26,7 @@ export interface ControlOptions {
   resolveArtifact?: (input: Record<string, any>) => Promise<Record<string, any>>;
   scanArtifact?: (input: Record<string, any>) => Promise<Record<string, any>>;
   verifyEvidence?: (bundle: Record<string, any>, expectedRoot: string) => boolean;
-  chainDecision?: (release: Record<string, any>, policy: Record<string, any>) => Promise<Record<string, any>>;
+  chainDecision?: ((release: Record<string, any>, policy: Record<string, any>) => Promise<Record<string, any>>) & { health?: () => Promise<{ status: "UP" | "DOWN"; code: string }> };
   store?: ControlStore;
   v2Relayer?: V2Relayer;
   receiptRelayer?: ReceiptRelayer;
@@ -52,6 +53,7 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
   if (!options.credentials.length || options.credentials.some((c) => !c.token || c.token.length < 16 || !/^[a-zA-Z0-9_-]{1,64}$/.test(c.tenantId) || !["reader", "operator", "admin"].includes(c.role))) throw new Error("Invalid control-plane credentials");
   if (new Set(options.credentials.map((c) => c.token)).size !== options.credentials.length) throw new Error("Duplicate control-plane token");
   const store = options.store ?? await ControlStore.open(options.databaseUrl);
+  const health = createControlHealth(store, options);
   const signingKey = options.signingKey ? createPrivateKey(options.signingKey) : undefined;
   if (signingKey && (signingKey.asymmetricKeyType !== "ed25519" || !options.signingKeyId)) throw new Error("Ed25519 signing key and key ID required");
   app.addHook("onClose", () => store.close());
@@ -78,6 +80,10 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
   };
   await app.register(async (api) => {
     api.addHook("onRequest", async (request) => { authenticate(request.headers.authorization); });
+    api.get("/health", async (request, reply) => {
+      const result = await health(authenticate(request.headers.authorization).tenantId);
+      return reply.header("cache-control", "no-store").code(result.status === "READY" ? 200 : 503).send(result);
+    });
     api.setErrorHandler((error: Error & {statusCode?: number}, _request, reply) => {
       const code = /^[A-Z][A-Z0-9_]+$/.test(error.message) ? error.message : "CONTROL_PLANE_FAILED";
       reply.code(error.statusCode ?? (code === "CONTROL_PLANE_FAILED" ? 500 : 400)).send({ error: { code, message: code } });

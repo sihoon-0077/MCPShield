@@ -97,10 +97,16 @@ export class ControlStore {
   }
   get driver() { return this.pool ? "POSTGRESQL" : "SQLITE"; }
   async close() { if (this.pool) await this.pool.end(); else this.sqlite?.close(); }
-  async query(sql: string, values: Array<string | number | null> = []): Promise<Record<string, any>[]> {
+  async query(sql: string, values: Array<string | number | null> = [], sqliteBusyTimeoutMs?: number): Promise<Record<string, any>[]> {
     if (this.pool) { let index = 0; return (await (this.transactionClient ?? this.pool).query(sql.replace(/\?/g, () => `$${++index}`), values)).rows; }
     await this.sqliteTransaction;
-    return this.sqlite!.prepare(sql).all(...values) as Record<string, any>[];
+    if (sqliteBusyTimeoutMs === undefined) return this.sqlite!.prepare(sql).all(...values) as Record<string, any>[];
+    if (!Number.isSafeInteger(sqliteBusyTimeoutMs) || sqliteBusyTimeoutMs < 0 || sqliteBusyTimeoutMs > 5000) throw Error("INVALID_SQLITE_BUSY_TIMEOUT");
+    // Synchronous SQLite lock waits must not consume a whole readiness HTTP budget.
+    // No await between setting/restoring this connection-local option.
+    this.sqlite!.exec(`PRAGMA busy_timeout=${sqliteBusyTimeoutMs}`);
+    try { return this.sqlite!.prepare(sql).all(...values) as Record<string, any>[]; }
+    finally { this.sqlite!.exec("PRAGMA busy_timeout=5000"); }
   }
   async forTenant<T>(tenantId: string, execute: (transaction: ControlStore) => Promise<T>): Promise<T> {
     if (this.pool) {

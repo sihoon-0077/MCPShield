@@ -124,6 +124,47 @@ Both successful and failed scan outcomes require the exact unexpired claim (tena
 
 Preparation completion/failure uses the same exact-claim fence. A stale attempt cannot create a child scan, transfer image ownership or report failure for a replacement worker even if its worker name is reused; its own unused image is cleaned up. A current replacement still completes normally under the existing bounded attempt budget.
 
+### Authenticated availability: `/v1/health`
+
+All three tenant roles can read this additive endpoint. Public `/health` remains
+the existing process-liveness contract. `/v1/health` returns
+`{schemaVersion:"mcpshield.health.v1",status,checkedAt,components:{api,database,chain,scanner}}`;
+each component contains only `{status,code,checkedAt}`. HTTP 200 requires four UP
+components; missing, limited, unknown or failed dependencies produce DEGRADED/503.
+Neither result authorizes execution or proves detector quality.
+
+The database check is an actual tenant-scoped SQL read. Readiness probes have a
+two-second response deadline and two-second single-flight cache; a timed-out raw
+query keeps its slot until it settles, rather than spawning replacement queries.
+SQLite uses a temporary 100ms lock-wait timeout; PostgreSQL retains its bounded
+pool/statement timeouts while the HTTP deadline returns degraded. Chain readiness
+uses the configured reader's independent `health()` method with fixed sanitized
+codes; an older reader without that method is UNKNOWN, never presumed healthy.
+Cached observations retain their original timestamps.
+
+The real control-worker CLI writes tenant-isolated `scannerHeartbeat` records to
+the existing `cp_records` table every five seconds after each completed probe.
+Only its configured operator/admin tenants are covered. `--chain-only` writes no
+scanner heartbeat; static-only workers are LIMITED. Docker UP requires a successful
+bounded native `docker info` call reporting a Linux daemon, not an enabled flag.
+This demonstrates worker/daemon availability, **not** successful image acquisition,
+scan completion, remote AI availability, or sufficient worker capacity.
+
+Each process owns a random private record; another worker's STOPPED record cannot
+hide a fresh live worker. Observations expire after 20 seconds, including during
+the HTTP cache interval. Future/malformed records fail closed. Reads inspect at
+most 64 workers (an extra row detects truncation); no observed live worker with a
+truncated inventory is UNKNOWN. Orderly shutdown writes STOPPED where storage is
+available; abrupt loss uses TTL. Old ephemeral heartbeat records are pruned after
+two minutes by active workers, never from audit/evidence tables. No migration or
+new infrastructure is required. No heartbeat polling is triggered by `/health`.
+
+Checks: `node --import tsx --test tests/api/health.test.ts`. The healthy component
+tests use explicitly synthetic chain/Docker probes with actual SQL. A subprocess
+test runs the real CLI in static/chain-only `--once` modes. Real PostgreSQL and
+Linux Docker checks are gated by `MCPSHIELD_POSTGRES_TEST_URL` and
+`MCPSHIELD_DOCKER_TESTS=1`; a skip is not a healthy deployment claim.
+
 Admin `POST /v1/appeals/:appealId/resolve` accepts only `{resolution}`. OPEN→RESOLVED is atomic; exactly the same text returns `{appeal,deduplicated:true}` without another event, a changed conclusion returns `409 APPEAL_ALREADY_RESOLVED`. Administrative resolution is independent of scan completion and never means PASS, quorum, VERIFIED or removal of REVOKED. A running rescan can complete later and add evidence history without reopening the appeal.
 
 Checks: `node --import tsx --test tests/api/appeals.test.ts tests/api/preparations.test.ts tests/api/oci-preparations.test.ts`. The appeal test uses actual API/SQL/worker/evidence paths, explicit synthetic cache/disposition fixtures and one actual local resolver/static scan (no Docker or remote AI claim). Prepared profile cases use their existing synthetic native hooks and retain ABSTAIN. `MCPSHIELD_POSTGRES_TEST_URL` enables the real PostgreSQL concurrency case; otherwise it is explicitly skipped.

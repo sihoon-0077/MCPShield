@@ -6,10 +6,12 @@ import { runChainActionOnce, reconcileV2Actions } from "./chain-outbox.js";
 import { indexV2 } from "../../indexer/src/v2-indexer.js";
 import { indexReceiptAnchors } from "../../indexer/src/receipt-indexer.js";
 import { runPreparationWorkerOnce } from "./preparation-worker.js";
+import { startScannerHeartbeat } from "./worker-health.js";
 
 const options = controlConfig();
 if (!options) throw new Error("CONTROL_PLANE_ENABLED=true is required");
 const store = await ControlStore.open(options.databaseUrl);
+const heartbeat = startScannerHeartbeat(store, options, process.argv.includes("--chain-only") ? "CHAIN_ONLY" : process.argv.includes("--scan-only") ? "SCAN" : "ALL");
 let stopped = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { stopped = true; });
 try {
@@ -33,4 +35,4 @@ try {
     if (process.argv.includes("--once")) break;
     if (!worked && !preparationWorked && !chainWorked) await setTimeout(1000);
   }
-} finally { await store.close(); options.evidenceStore?.close(); options.v2Relayer?.close(); options.receiptRelayer?.close(); if (options.chainDecision && "close" in options.chainDecision) (options.chainDecision as any).close(); }
+} finally { await heartbeat.stop(); await store.close(); options.evidenceStore?.close(); options.v2Relayer?.close(); options.receiptRelayer?.close(); if (options.chainDecision && "close" in options.chainDecision) (options.chainDecision as any).close(); }
