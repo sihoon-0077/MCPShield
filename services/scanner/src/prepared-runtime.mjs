@@ -3,12 +3,14 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hashPreparedRuntimeDescriptor } from '../../resolver/src/runtime-descriptor.mjs';
-import { preparedExecutionPolicy } from './prepared-binding.mjs';
+import { preparedExecutionPolicy, scopedPreparedExecutionPolicy, validatePreparedExecutionPolicy } from './prepared-binding.mjs';
 import { canonicalJson, createEvidenceBundle } from './evidence.mjs';
 import { toolSurfaceHash } from './tool-surface.mjs';
 import { runSandbox } from './sandbox.mjs';
 import { validateProbePlan, generateSyntheticProbes } from './probes.mjs';
 import { redactEvidenceDocument } from './redaction.mjs';
+import { reviewScopedSemanticsV2 } from './scoped-semantic.mjs';
+import { SCOPED_NODE_PROFILE, checkedScopedProvenance } from './scoped-policy.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const digest = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -78,12 +80,13 @@ function stepEvidence(result) {
     failureCode: result.error || result.mcpReport?.error ? 'PREPARED_SANDBOX_OR_PROTOCOL_INCOMPLETE' : null };
 }
 
-export async function observePreparedRuntime({ descriptor, expectedDescriptorDigest, probePlan, ai,
+export async function observePreparedRuntime({ descriptor, expectedDescriptorDigest, probePlan, ai, scopedReview,
   timeoutMs = 15_000, egressAllowHosts = ['mail-api.local', 'exfil-sink.local'] }) {
   if (hashPreparedRuntimeDescriptor(descriptor) !== expectedDescriptorDigest || descriptor.stage !== 'CLOSURE_PREPARED' ||
     descriptor.profile !== 'npm-closure-v1' || descriptor.toolSurfaceHash !== null) throw new TypeError('PREPARED_DESCRIPTOR_IDENTITY_INVALID');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 30_000) throw new TypeError('PREPARED_TIMEOUT_INVALID');
   if (probePlan && ai?.allowRemoteAi) throw new TypeError('PREPARED_PROBE_MODE_AMBIGUOUS');
+  if (scopedReview && probePlan) throw new TypeError('PREPARED_SCOPED_PROBE_MUST_USE_REVIEW');
   if (!Array.isArray(egressAllowHosts) || egressAllowHosts.length > 32 || egressAllowHosts.some((name) =>
     typeof name !== 'string' || !/^[a-z0-9][a-z0-9.-]*\.(?:local|test)$/.test(name))) throw new TypeError('PREPARED_EGRESS_POLICY_INVALID');
   egressAllowHosts = [...new Set(egressAllowHosts)].sort();
@@ -92,15 +95,29 @@ export async function observePreparedRuntime({ descriptor, expectedDescriptorDig
   const steps = {};
   let plan = { scenarios: [] };
   let issue = null;
-  const executionPolicy = preparedExecutionPolicy({
+  let semantic = null;
+  let executionPolicy = preparedExecutionPolicy({
     collectorDigest: digest(await readFile(join(HERE, 'mcp-probe.cjs'))), observerDigest: digest(await readFile(join(HERE, 'observer-preload.cjs'))),
     egressAllowHosts });
+  if (scopedReview) {
+    if (!validatePreparedExecutionPolicy(scopedReview.executionPolicy) || scopedReview.executionPolicy.profile !== SCOPED_NODE_PROFILE) throw Error('PREPARED_SCOPED_POLICY_INVALID');
+    checkedScopedProvenance(scopedReview.sourceProvenance, descriptor.sourceTreeDigest);
+    executionPolicy = scopedPreparedExecutionPolicy({ collectorDigest: executionPolicy.collectorDigest,
+      observerDigest: executionPolicy.observerDigest, egressAllowHosts }, scopedReview.executionPolicy.semantic);
+    if (canonicalJson(executionPolicy) !== canonicalJson(scopedReview.executionPolicy)) throw Error('PREPARED_SCOPED_POLICY_TRUST_MISMATCH');
+  }
   const run = (probeCalls) => runSandbox({ mode: 'docker', preparedRuntime: runtime, timeoutMs, scanId: randomUUID(), mcpProbe: true, probeCalls, egressAllowHosts });
   try {
     steps.discovery = await run([]);
     if (!protocolComplete(steps.discovery, runtime)) throw Error('PREPARED_DISCOVERY_INCOMPLETE');
     const tools = steps.discovery.mcpReport.tools;
-    if (probePlan) plan = validateProbePlan(probePlan, tools);
+    if (scopedReview) {
+      semantic = await reviewScopedSemanticsV2({ ai, files: scopedReview.files, tools, executionPolicy,
+        sourceProvenance: scopedReview.sourceProvenance, sourceArtifactDigest: descriptor.sourceTreeDigest,
+        runtime: { profile: SCOPED_NODE_PROFILE, runtimeDigest: descriptor.finalImageDigest, environmentDigest: scopedReview.closureDigest } });
+      if (!semantic.scopeComplete) throw Error('PREPARED_SCOPED_REVIEW_INCOMPLETE');
+      plan = { ...semantic.reviews.probe.report, execution: { ...semantic.reviews.probe.execution, status: 'SCOPED_GENERATED_VALIDATED' } };
+    } else if (probePlan) plan = validateProbePlan(probePlan, tools);
     else if (ai?.allowRemoteAi) plan = await generateSyntheticProbes({ ...ai, tools });
     else throw Error('PREPARED_NORMAL_AND_ADVERSARIAL_PROBES_REQUIRED');
     for (const [stage, kind] of [['normal', 'NORMAL'], ['adversarial', 'ADVERSARIAL']]) {
@@ -123,5 +140,5 @@ export async function observePreparedRuntime({ descriptor, expectedDescriptorDig
     // Raw metadata is an encrypted, operator-only evidence object, never a public view/log.
     'runtime/tools.json': steps.discovery?.mcpReport?.tools ?? [],
     'runtime/tools.redacted.json': redactEvidenceDocument(steps.discovery?.mcpReport?.tools ?? []) });
-  return { report, observedDescriptor, bundle };
+  return { report, observedDescriptor, bundle, ...(scopedReview ? { semantic } : {}) };
 }

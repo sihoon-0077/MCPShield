@@ -6,12 +6,13 @@ import { canonicalJson, createEvidenceBundle } from './evidence.mjs';
 import { observePreparedRuntime } from './prepared-runtime.mjs';
 import { createPreparedReleaseBinding } from './prepared-binding.mjs';
 import { inspectPreparedSources, reviewPreparedSemantics } from './prepared-review.mjs';
-import { assessPreparedPolicy } from './prepared-policy.mjs';
+import { assessPreparedPolicy, assessScopedPreparedPolicy } from './prepared-policy.mjs';
+import { SCOPED_NODE_PROFILE, checkedScopedProvenance } from './scoped-policy.mjs';
 import { readTrustedPreparedIdentity } from './prepared-trust.mjs';
 import { assertScanResult } from './schema.mjs';
 import { redactEvidenceDocument } from './redaction.mjs';
 
-export { assessPreparedPolicy } from './prepared-policy.mjs';
+export { assessPreparedPolicy, assessScopedPreparedPolicy } from './prepared-policy.mjs';
 export { readTrustedPreparedIdentity } from './prepared-trust.mjs';
 const hash = (value) => `0x${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
 const LIMITATION = 'Approval applies only to restricted-node-docker-v1 observations and the stricter network-none Gateway profile. Docker is the isolation boundary; Node permissions/hooks are defense in depth, not a proof of all behavior.';
@@ -28,10 +29,15 @@ export async function readTrustedPreparedRuntime({ descriptor, expectedDescripto
 }
 
 export async function scanPreparedRuntime({ descriptor, expectedDescriptorDigest, sourceReleaseId, releaseId,
-  scanId = randomUUID(), ai, probePlan, timeoutMs = 15_000, trusted }) {
+  scanId = randomUUID(), ai, probePlan, timeoutMs = 15_000, trusted, scopedReview }) {
   if (hashPreparedRuntimeDescriptor(descriptor) !== expectedDescriptorDigest || descriptor.stage !== 'CLOSURE_PREPARED' ||
     descriptor.profile !== 'npm-closure-v1' || !/^0x[a-f0-9]{64}$/.test(sourceReleaseId) ||
     !/^.+@[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(releaseId)) throw Error('PREPARED_SCAN_INPUT_INVALID');
+  if (scopedReview) {
+    scopedReview = structuredClone(scopedReview);
+    const authority = checkedScopedProvenance(trusted?.sourceProvenance, descriptor.sourceTreeDigest);
+    if (canonicalJson(authority) !== canonicalJson(scopedReview.sourceProvenance)) throw Error('SCOPED_OPERATOR_PROVENANCE_REQUIRED');
+  }
   let closure = null;
   let review = null;
   const issues = [];
@@ -47,15 +53,18 @@ export async function scanPreparedRuntime({ descriptor, expectedDescriptorDigest
   }
   const preparation = { ...descriptor, toolSurfaceHash: null };
   const observed = await observePreparedRuntime({ descriptor: preparation, expectedDescriptorDigest: hashPreparedRuntimeDescriptor(preparation),
-    probePlan, ai: probePlan ? undefined : ai, timeoutMs });
+    probePlan, ai: probePlan ? undefined : ai, timeoutMs,
+    ...(scopedReview ? { scopedReview: { executionPolicy: scopedReview.executionPolicy, sourceProvenance: scopedReview.sourceProvenance,
+      files: review?.inventory.staticComplete ? review.files : [], closureDigest: closure?.digest },
+      egressAllowHosts: scopedReview.executionPolicy?.egressAllowHosts } : {}) });
   const documents = Object.fromEntries(Object.entries(observed.bundle.files).filter(([path]) => path !== 'report.json').map(([path, content]) => [path, JSON.parse(content)]));
   const binding = observed.observedDescriptor ? createPreparedReleaseBinding({ sourceReleaseId, descriptor: observed.observedDescriptor,
     executionPolicy: documents['runtime/execution-policy.json'] }) : null;
   if (!binding) return { result: null, binding: null, bundle: observed.bundle,
-    analysis: { profile: 'restricted-node-docker-v1', verdict: 'ABSTAIN', checks: {}, issues: [...issues, 'PREPARED_DISCOVERY_REQUIRED'] } };
+    analysis: { profile: scopedReview ? SCOPED_NODE_PROFILE : 'restricted-node-docker-v1', verdict: 'ABSTAIN', checks: {}, issues: [...issues, 'PREPARED_DISCOVERY_REQUIRED'] } };
   // Rescans must preserve the registered observed identity, not silently create a new release.
   if (descriptor.toolSurfaceHash !== null && binding.descriptorDigest !== expectedDescriptorDigest) issues.push('PREPARED_REGISTERED_SURFACE_CHANGED');
-  const semantic = review ? await reviewPreparedSemantics({ files: review.files, tools: documents['runtime/tools.json'], releaseId, ai }) :
+  const semantic = (scopedReview ? observed.semantic : review ? await reviewPreparedSemantics({ files: review.files, tools: documents['runtime/tools.json'], releaseId, ai }) : null) ??
     { reviews: [], complete: false, independentCriticComplete: false, noUnresolvedRisk: false, findings: [], issues: ['PREPARED_CLOSURE_REVIEW_REQUIRED'] };
   issues.push(...semantic.issues, ...observed.report.issues);
   const findings = [...(review?.findings ?? []), ...semantic.findings, ...observed.report.findings.map((finding) => ({
@@ -64,7 +73,7 @@ export async function scanPreparedRuntime({ descriptor, expectedDescriptorDigest
     evidence: finding.evidence }))];
   const deterministicFailure = findings.some(({ deterministic, severity }) => deterministic && ['HIGH', 'CRITICAL'].includes(severity));
   const optimisticComplete = !issues.length && !findings.length && review?.inventory.staticComplete && review?.sbom.complete &&
-    semantic.complete && semantic.independentCriticComplete && semantic.noUnresolvedRisk &&
+    (scopedReview ? semantic.scopeComplete : semantic.complete && semantic.independentCriticComplete) && semantic.noUnresolvedRisk &&
     ['imagePinned', 'discoveryComplete', 'toolSurfaceStable', 'normalProbeComplete', 'adversarialProbeComplete', 'normalToolCallsSucceeded', 'adversarialToolCallsSucceeded']
       .every((name) => observed.report.checks[name]);
   const result = assertScanResult({ schemaVersion: '1.0.0', scanId, releaseId, artifactDigest: binding.artifactDigest,
@@ -80,7 +89,8 @@ export async function scanPreparedRuntime({ descriptor, expectedDescriptorDigest
       : { complete: false, reason: 'PREPARED_SOURCE_EVIDENCE_BUDGET_EXCEEDED', limitBytes: 8 * 1024 * 1024 },
     'static/closure-report.json': closure?.report ?? null, 'static/sbom.json': review?.sbom ?? { complete: false },
     'static/findings.json': review?.findings ?? [], 'semantic/reviews.json': semantic });
-  const updateReport = () => { documents['report.json'] = { ...result, scope: 'RESTRICTED_NODE_DOCKER_V1', scannerVersion: 'prepared-security-v1' }; };
+  const updateReport = () => { documents['report.json'] = { ...result,
+    scope: scopedReview ? 'RESTRICTED_NODE_DOCKER_V2' : 'RESTRICTED_NODE_DOCKER_V1', scannerVersion: scopedReview ? 'prepared-security-v2' : 'prepared-security-v1' }; };
   updateReport();
   let bundle = createEvidenceBundle(documents);
   // This scanner already exported the actual image. A validator must independently
@@ -88,18 +98,20 @@ export async function scanPreparedRuntime({ descriptor, expectedDescriptorDigest
   const runtimeTrust = closure ? { ...trusted, finalImageDigest: descriptor.finalImageDigest, platform: descriptor.platform,
     closureDigest: closure.digest, sourceDescriptorDigest: closure.report.sourceDescriptorDigest,
     entrypointDigest: closure.entries.find(({ path }) => path === descriptor.entrypoint.path)?.digest } : trusted;
-  let analysis = assessPreparedPolicy(bundle, result, binding, runtimeTrust);
+  const assess = scopedReview ? assessScopedPreparedPolicy : assessPreparedPolicy;
+  let analysis = assess(bundle, result, binding, runtimeTrust);
   if (analysis.verdict === 'ABSTAIN' && result.scanStatus === 'PASSED') {
     result.scanStatus = 'INCONCLUSIVE'; updateReport(); bundle = createEvidenceBundle(documents);
-    analysis = assessPreparedPolicy(bundle, result, binding, runtimeTrust);
+    analysis = assess(bundle, result, binding, runtimeTrust);
   }
-  analysis = { ...analysis, issues: [...new Set([...analysis.issues, ...issues])], fullBehaviorCoverage: false, limitation: LIMITATION };
+  analysis = { ...analysis, issues: [...new Set([...analysis.issues, ...issues])], fullBehaviorCoverage: false,
+    limitation: scopedReview ? 'Scoped provider review covers metadata and selected risk snippets only. Local static/SBOM and bounded Docker probes are also required; neither full behavior nor provider quality is proven.' : LIMITATION };
   if (analysis.issues.length && analysis.verdict === 'PASS') analysis.verdict = 'ABSTAIN';
   documents['prepared/policy-review.json'] = analysis;
   return { result, binding, analysis, bundle: createEvidenceBundle(documents) };
 }
 
-export async function prepareAndScanRuntime({ preparation, sourceReleaseId, releaseId, scanId, ai, probePlan, timeoutMs,
+export async function prepareAndScanRuntime({ preparation, sourceReleaseId, releaseId, scanId, ai, probePlan, timeoutMs, scopedReview,
   trusted = readTrustedPreparedIdentity(preparation.builderImageDigest) }, acquisitionOptions) {
   let prepared = await prepareNpmClosure(preparation, acquisitionOptions);
   let generated;
@@ -112,7 +124,7 @@ export async function prepareAndScanRuntime({ preparation, sourceReleaseId, rele
     analysis: { profile: 'restricted-node-docker-v1', verdict: 'ABSTAIN', checks: {}, issues: prepared.issues, phase: prepared.phase } };
   try {
     const scanned = await scanPreparedRuntime({ descriptor: prepared.descriptor, expectedDescriptorDigest: prepared.descriptorDigest,
-      sourceReleaseId, releaseId, scanId, ai, probePlan, timeoutMs, trusted });
+      sourceReleaseId, releaseId, scanId, ai, probePlan, timeoutMs, trusted, scopedReview });
     if (generated?.generation && scanned.bundle) scanned.bundle = createEvidenceBundle({
       ...Object.fromEntries(Object.entries(scanned.bundle.files).map(([path, content]) => [path, JSON.parse(content)])),
       'prepared/lock-generation.json': generated.generation });

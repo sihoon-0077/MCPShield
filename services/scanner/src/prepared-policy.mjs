@@ -8,6 +8,9 @@ import { inspectPreparedSources, preparedSemanticPrompt, LOCAL_CONTRACT_DISCLOSU
 import { citationCatalogue, promptSources, validateSemanticReport } from './semantic.mjs';
 import { assertScanResult } from './schema.mjs';
 import { redactEvidenceDocument, redactPromptText } from './redaction.mjs';
+import { SCOPED_NODE_PROFILE, SCOPED_REVIEW_SCHEMA, SCOPED_DISCLOSURE_POLICY, checkedScopedProvenance } from './scoped-policy.mjs';
+import { verifyScopedSemanticInputV2, scopedSemanticPrompt, validateScopedProbeV2 } from './scoped-semantic.mjs';
+import { probeArgumentsDigest } from './mcp-probe.cjs';
 
 const sha = (value) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
 const equal = (a, b) => canonicalJson(a) === canonicalJson(b);
@@ -18,12 +21,22 @@ export const PREPARED_POLICY_CHECKS = Object.freeze(['closureIntegrityVerified',
 // Recompute checks from Merkle-bound objects. Never accept the scanner's advertised
 // checks/PASS without evidence, or use binding-supplied hashes as trust anchors.
 export function assessPreparedPolicy(bundle, result, binding, trusted) {
+  return assessPolicy(bundle, result, binding, trusted, false);
+}
+
+export function assessScopedPreparedPolicy(bundle, result, binding, trusted) {
+  return assessPolicy(bundle, result, binding, trusted, true);
+}
+
+function assessPolicy(bundle, result, binding, trusted, scoped) {
+  const profile = scoped ? SCOPED_NODE_PROFILE : 'restricted-node-docker-v1';
   const checks = Object.fromEntries(PREPARED_POLICY_CHECKS.map((name) => [name, false]));
-  const abstain = (code) => ({ profile: 'restricted-node-docker-v1', verdict: 'ABSTAIN', checks, issues: [code] });
+  const abstain = (code) => ({ profile, verdict: 'ABSTAIN', checks, issues: [code] });
   try {
     assertScanResult(result);
     if (!verifyEvidenceBundle(bundle, bundle.manifest.root) || !validatePreparedReleaseBinding(binding) ||
-      binding.executionPolicy.profile !== 'prepared-node-observation-v1') return abstain('PREPARED_EVIDENCE_OR_BINDING_INVALID');
+      binding.executionPolicy.profile !== (scoped ? SCOPED_NODE_PROFILE : 'prepared-node-observation-v1')) return abstain('PREPARED_EVIDENCE_OR_BINDING_INVALID');
+    if (scoped) checkedScopedProvenance(trusted?.sourceProvenance, binding.sourceArtifactDigest);
     if (!trusted || trusted.builderImageDigest !== binding.descriptor.builderImageDigest ||
       trusted.collectorDigest !== binding.executionPolicy.collectorDigest || trusted.observerDigest !== binding.executionPolicy.observerDigest ||
       trusted.finalImageDigest !== binding.finalImageDigest || !equal(trusted.platform, binding.platform) ||
@@ -34,7 +47,7 @@ export function assessPreparedPolicy(bundle, result, binding, trusted) {
     const observation = read('prepared/observation.json');
     if (!equal(read('prepared/binding.json'), binding) || !equal(read('runtime/descriptor.json'), binding.descriptor) ||
       !equal(read('runtime/execution-policy.json'), binding.executionPolicy) || result.artifactDigest !== binding.artifactDigest ||
-      result.toolSurfaceHash !== binding.toolSurfaceHash || report.scope !== 'RESTRICTED_NODE_DOCKER_V1' ||
+      result.toolSurfaceHash !== binding.toolSurfaceHash || report.scope !== (scoped ? 'RESTRICTED_NODE_DOCKER_V2' : 'RESTRICTED_NODE_DOCKER_V1') ||
       Object.keys(result).some((field) => !equal(result[field], report[field])) || result.source !== 'LIVE' ||
       toolSurfaceHash(read('runtime/tools.json')) !== binding.toolSurfaceHash) return abstain('PREPARED_REPORT_IDENTITY_MISMATCH');
     if (observation.source !== 'LIVE_DOCKER' || observation.identity.observedDescriptorDigest !== binding.descriptorDigest ||
@@ -64,7 +77,7 @@ export function assessPreparedPolicy(bundle, result, binding, trusted) {
       finding.code === 'UNDECLARED_EGRESS' ? step.egressEvents.some(({ type }) => type === 'EGRESS_BLOCKED') :
       finding.code === 'TOOL_SURFACE_CHANGED' && step.toolSurfaceHash && step.toolSurfaceHash !== binding.toolSurfaceHash);
     if (checks.imagePinned && deterministic.length && deterministic.every(effectMatches) && result.scanStatus === 'FAILED') {
-      return { profile: 'restricted-node-docker-v1', verdict: 'FAIL', checks, issues: [] };
+      return { profile, verdict: 'FAIL', checks, issues: [] };
     }
     const inventory = read('static/closure-inventory.json');
     const closure = read('static/closure-report.json');
@@ -93,6 +106,58 @@ export function assessPreparedPolicy(bundle, result, binding, trusted) {
       packages.every(({ path, digest }) => sbom.components.some((component) => component.properties?.some((p) => p.name === 'mcpshield:installed-path' && p.value === path) &&
         component.properties?.some((p) => p.name === 'mcpshield:package-json-digest' && p.value === digest)));
     const semantic = read('semantic/reviews.json');
+    if (scoped) {
+      if (semantic.schemaVersion !== SCOPED_REVIEW_SCHEMA || semantic.approvalVerdict !== 'ABSTAIN' ||
+        semantic.fullSourceCoverage !== false || semantic.fullBehaviorCoverage !== false ||
+        semantic.evidenceMode !== binding.executionPolicy.semantic.evidenceMode || semantic.issues.length ||
+        !verifyScopedSemanticInputV2({ input: semantic.input, proof: semantic.proof,
+          files: independentlyReviewed.files, tools: read('runtime/tools.json'), executionPolicy: binding.executionPolicy,
+          sourceProvenance: trusted.sourceProvenance, sourceArtifactDigest: binding.sourceArtifactDigest,
+          runtime: { profile, runtimeDigest: binding.finalImageDigest, environmentDigest: inventory.digest } }) ||
+        !semantic.proof.scopeComplete) return abstain('SCOPED_SEMANTIC_INPUT_OR_AUTHORITY_INVALID');
+      const roles = semantic.input.requiredRoles;
+      if (!equal(Object.keys(semantic.reviews).sort(), [...roles].sort())) return abstain('SCOPED_REQUIRED_ROLE_INCOMPLETE');
+      let clean = true;
+      for (const role of roles) {
+        const item = semantic.reviews[role], execution = item.execution, prompt = scopedSemanticPrompt(semantic.input, role);
+        if (execution.promptHash !== sha(prompt) || execution.inputDigest !== semantic.proof.inputDigest || execution.tools !== 'NONE' ||
+          execution.schemaName !== `mcpshield_scoped_v2_${role}` || execution.purpose !== 'security' ||
+          !['openai', 'custom'].includes(execution.provider) || execution.disclosurePolicy !== SCOPED_DISCLOSURE_POLICY ||
+          execution.evidenceMode !== binding.executionPolicy.semantic.evidenceMode ||
+          execution.provider === 'openai' && (execution.store !== false || !execution.model || execution.model !== execution.configuredModel)) {
+          return abstain('SCOPED_SEMANTIC_ROLE_PROVENANCE_INVALID');
+        }
+        if (role === 'probe') {
+          const plan = validateScopedProbeV2(item.report, read('runtime/tools.json'), semantic.input);
+          if (!equal(observation.scenarios, plan.scenarios) || !equal(observation.generation, { ...execution, status: 'SCOPED_GENERATED_VALIDATED' })) {
+            return abstain('SCOPED_PROBE_PLAN_MISMATCH');
+          }
+          for (const [stage, kind] of [['normal', 'NORMAL'], ['adversarial', 'ADVERSARIAL']]) {
+            const calls = plan.scenarios.filter((scenario) => scenario.kind === kind).map(({ toolCall }) => toolCall);
+            if (steps[stage]?.callResults?.length !== calls.length || !calls.every((call, index) =>
+              steps[stage].callResults[index].name === call.name && steps[stage].callResults[index].argumentsDigest === probeArgumentsDigest(call.arguments))) {
+              return abstain('SCOPED_EXECUTED_CALL_MISMATCH');
+            }
+          }
+        } else {
+          const parsed = validateSemanticReport(item.report, promptSources(prompt), citationCatalogue(semantic.input));
+          if (parsed.needsHumanReview || parsed.riskClaims.length || Object.values(parsed.semanticDiff).some(Boolean)) clean = false;
+        }
+      }
+      if (semantic.input.tier === 3) {
+        const primary = semantic.reviews.analyzer.execution, second = semantic.reviews.analyzer2.execution;
+        if (primary.provider !== 'openai' || second.provider !== 'openai' || !primary.configuredModel || !second.configuredModel ||
+          primary.configuredModel === second.configuredModel || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(primary.responseModel ?? '') ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(second.responseModel ?? '') || primary.responseModel === second.responseModel) {
+          return abstain('SCOPED_DISTINCT_SECOND_MODEL_REQUIRED');
+        }
+      }
+      checks.semanticComplete = semantic.scopeComplete === true;
+      checks.independentCriticComplete = checks.semanticComplete;
+      checks.semanticNoUnresolvedRisk = clean && semantic.noUnresolvedRisk === true && !result.findings.length;
+      const approved = PREPARED_POLICY_CHECKS.every((name) => checks[name]) && result.scanStatus === 'PASSED' && observation.issues.length === 0;
+      return { profile, verdict: approved ? 'PASS' : 'ABSTAIN', checks, issues: approved ? [] : ['SCOPED_REVIEW_OR_OBSERVATION_INCOMPLETE'] };
+    }
     if (!equal(semantic.disclosure, LOCAL_CONTRACT_DISCLOSURE)) return abstain('PREPARED_SEMANTIC_DISCLOSURE_INVALID');
     const coverage = new Map();
     let analyzerComplete = true, criticComplete = true, clean = true;
@@ -125,7 +190,7 @@ export function assessPreparedPolicy(bundle, result, binding, trusted) {
     checks.independentCriticComplete = sourceCoverage && criticComplete;
     checks.semanticNoUnresolvedRisk = clean && checks.semanticComplete && checks.independentCriticComplete && !result.findings.length;
     const approved = PREPARED_POLICY_CHECKS.every((name) => checks[name]) && result.scanStatus === 'PASSED' && observation.issues.length === 0;
-    return { profile: 'restricted-node-docker-v1', verdict: approved ? 'PASS' : 'ABSTAIN', checks,
+    return { profile, verdict: approved ? 'PASS' : 'ABSTAIN', checks,
       issues: approved ? [] : ['PREPARED_REVIEW_OR_OBSERVATION_INCOMPLETE'] };
   } catch { return abstain('PREPARED_EVIDENCE_INCOMPLETE_OR_INVALID'); }
 }

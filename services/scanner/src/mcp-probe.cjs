@@ -1,4 +1,19 @@
 'use strict';
+// Shared with the policy assessor. The collector hashes the exact dispatched
+// argument object; no raw argument values are added to public call evidence.
+function probeArgumentsDigest(value) {
+  const canonical = (item) => {
+    if (Array.isArray(item)) return `[${item.map(canonical).join(',')}]`;
+    if (item && typeof item === 'object') return `{${Object.keys(item).sort().map((key) => `${JSON.stringify(key)}:${canonical(item[key])}`).join(',')}}`;
+    if (typeof item === 'number' && !Number.isFinite(item)) throw Error('MCP_PROBE_ARGUMENTS_INVALID');
+    const encoded = JSON.stringify(item);
+    if (encoded === undefined) throw Error('MCP_PROBE_ARGUMENTS_INVALID');
+    return encoded;
+  };
+  return `sha256:${require('node:crypto').createHash('sha256').update(canonical(value)).digest('hex')}`;
+}
+module.exports = { probeArgumentsDigest };
+if (require.main === module) {
 // Trusted, dependency-free collector mounted read-only inside the disposable sandbox.
 const { spawn } = require('node:child_process');
 const path = require('node:path');
@@ -72,7 +87,8 @@ async function main() {
   for (const call of calls) {
     if (!names.has(call.name) || !call.arguments || typeof call.arguments !== 'object') throw new Error('MCP_PROBE_UNKNOWN_TOOL');
     const result = await request('tools/call', call);
-    callResults.push({ name: call.name, isError: result.isError === true, contentHash: require('node:crypto').createHash('sha256').update(JSON.stringify(result)).digest('hex') });
+    callResults.push({ name: call.name, argumentsDigest: probeArgumentsDigest(call.arguments), isError: result.isError === true,
+      contentHash: require('node:crypto').createHash('sha256').update(JSON.stringify(result)).digest('hex') });
   }
   const report = { complete: true, protocolVersion: initialized.protocolVersion, pages: cursors.size + 1, tools, events, callResults,
     ...(restrictedNode ? { permissionProfile: 'NODE_PERMISSION_READ_ONLY_V1', fullBehaviorCoverage: false } : {}) };
@@ -83,3 +99,4 @@ main().catch((error) => {
   process.stdout.write(`MCPSHIELD_MCP_REPORT ${JSON.stringify({ complete: false, error: /^MCP_[A-Z_]+$/.test(error.message) ? error.message : 'MCP_PROBE_FAILED', events })}\n`);
   process.exitCode = 1;
 }).finally(() => { child.stdin.end(); child.kill(); });
+}
