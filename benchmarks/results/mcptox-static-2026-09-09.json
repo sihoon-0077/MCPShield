@@ -1,0 +1,39 @@
+{
+  "status": "MEASURED",
+  "defense": "STATIC_METADATA_REVIEW",
+  "recordedAtUtc": "2026-09-08T15:43:34Z",
+  "sourceRepository": "https://github.com/zhiqiangwang4/MCPTox-Benchmark",
+  "sourceCommit": "f85189f9ad12504c197c7f920ab818a40657b1fa",
+  "sourcePath": "pure_tool.json",
+  "datasetHash": "sha256:54b1eb0e9d7b2f18465266aa9d9dfda828cd558b1269b74731ec2c5d8579e617",
+  "bytes": 316620,
+  "groups": 45,
+  "sampleSize": 485,
+  "sampleUnit": "POISONED_TOOL_RECORD_NOT_AGENT_INSTANCE",
+  "sourceField": "tool_content",
+  "reviewDetected": 126,
+  "reviewMissed": 359,
+  "reviewRecall": 0.2597938144329897,
+  "falsePositiveRate": null,
+  "agentAsr": null,
+  "byParadigm": {
+    "Template-1": {"samples": 77, "detected": 23},
+    "Template-2": {"samples": 183, "detected": 96},
+    "Template-3": {"samples": 225, "detected": 7}
+  },
+  "latencyMs": 2.922399999999996,
+  "metadataRuleCodeCommit": "1d8732794e7f3ebd5f0d5ca52e9c1fd9dcc9c915",
+  "runtime": "v24.13.0",
+  "platform": "win32",
+  "model": "NONE",
+  "license": "NO_EXPLICIT_LICENSE_FOUND",
+  "rawDataPersisted": false,
+  "limitations": [
+    "One read-only lexical pass over the upstream poisoned tool_content field; no imported code executed.",
+    "These 485 tool records are not the paper's 1312 agent attack instances.",
+    "Upstream author labels, not independently double-labeled ground truth.",
+    "No benign denominator, real model, agent ASR, or full-pipeline recall measurement.",
+    "Static review signals do not authorize permanent revocation.",
+    "No claim of an explicit upstream redistribution license; source payloads are not bundled."
+  ]
+}

@@ -1,0 +1,323 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { buildApp } from "../../apps/api/src/app.js";
+import { ControlStore } from "../../apps/api/src/control-store.js";
+import { hash, type ControlOptions } from "../../apps/api/src/control-plane.js";
+import { defaultPolicy, policyVerdict, preparedPolicy, validPolicy } from "../../apps/api/src/control-policy.js";
+import { controlConfig } from "../../apps/api/src/control-config.js";
+import { preparedTrust } from "../../apps/api/src/prepared-config.js";
+import { claimPreparation, enqueuePreparation, failPreparation, preparations, retryPreparation } from "../../apps/api/src/preparation-store.js";
+import { sourceIdentity } from "../../apps/api/src/preparation-control.js";
+import { exactReleaseIdentity } from "../../packages/contracts-sdk/src/v2.js";
+import { runPreparationWorkerOnce } from "../../apps/api/src/preparation-worker.js";
+import { checkedPreparedEvidence } from "../../apps/api/src/prepared-evidence.js";
+// @ts-expect-error Shared ESM binding helper.
+import { createPreparedReleaseBinding, preparedExecutionPolicy } from "../../services/scanner/src/prepared-binding.mjs";
+// @ts-expect-error Shared ESM evidence helper.
+import { createEvidenceBundle } from "../../services/scanner/src/evidence.mjs";
+// @ts-expect-error Shared ESM surface identity helper.
+import { toolSurfaceHash } from "../../services/scanner/src/scanner.mjs";
+// @ts-expect-error Shared ESM descriptor helper.
+import { hashPreparedRuntimeDescriptor } from "../../services/resolver/src/runtime-descriptor.mjs";
+import { runControlWorkerOnce } from "../../apps/api/src/control-worker.js";
+
+const tenant = "prepared-test", token = "prepared-test-operator-token-0001", other = "prepared-other-operator-token-0001", reader = "prepared-test-reader-token-0001";
+const auth = { authorization: `Bearer ${token}` };
+const identity = exactReleaseIdentity({ toolId: "npm:prepared-test", artifactDigest: `sha256:${"a".repeat(64)}`, manifestDigest: `sha256:${"b".repeat(64)}`, toolSurfaceHash: `0x${"c".repeat(64)}` });
+const source = { ...identity, artifactDigest: `sha256:${"a".repeat(64)}`, manifestDigest: `sha256:${"b".repeat(64)}`, toolSurfaceHash: `0x${"c".repeat(64)}`,
+  sourceType: "npm", artifactDir: "unused-private-source-path", legacyReleaseId: "prepared-test@1.0.0", status: "UNVERIFIED" };
+async function setup() {
+  const store = await ControlStore.open();
+  const options: ControlOptions = { store, credentials: [{ tenantId: tenant, token, role: "operator" }, { tenantId: "other", token: other, role: "operator" }, { tenantId: tenant, token: reader, role: "reader" }],
+    artifactPath: "unused", evidencePath: "unused", evidenceKey: "1".repeat(64), scannerOptions: { sandbox: "docker", allowRemoteAi: false },
+    preparedRuntime: { builderImageDigest: `sha256:${"d".repeat(64)}`, platform: { os: "linux", architecture: "amd64" } } };
+  // Explicit synthetic daemon double for transaction/ACL tests; MOCK reports still cannot PASS.
+  options.inspectPreparedRuntime = async ({ descriptor }) => ({ ...preparedTrust(options.preparedRuntime!), finalImageDigest: descriptor.finalImageDigest,
+    platform: descriptor.platform, closureDigest: source.artifactDigest, entrypointDigest: descriptor.entrypoint.digest,
+    sourceDescriptorDigest: hashPreparedRuntimeDescriptor({ ...descriptor, stage: "PREFLIGHT", finalImageDigest: null, toolSurfaceHash: null }) });
+  const app = await buildApp({ adminApiToken: "legacy-private-admin-token", scannerApiToken: "legacy-private-scanner-token", controlPlane: options });
+  await store.put(tenant, "release", source.releaseId, source);
+  const request = (key: string, body: any = { policyHash: hash(preparedPolicy) }, bearer = token, releaseId = source.releaseId) => app.inject({ method: "POST", url: `/v1/releases/${releaseId}/prepare`,
+    headers: { authorization: `Bearer ${bearer}`, "idempotency-key": key }, payload: body });
+  return { app, store, options, request };
+}
+test("prepared API enforces ACL, strict profile and server-only configuration", async () => {
+  const f = await setup();
+  try {
+    assert.equal((await f.request("auth", undefined, "wrong")).statusCode, 401);
+    assert.equal((await f.request("reader", undefined, reader)).statusCode, 403);
+    assert.equal((await f.request("tenant", undefined, other)).statusCode, 404);
+    assert.equal((await f.request("policy", { policyHash: hash(defaultPolicy) })).statusCode, 400);
+    for (const field of ["builderImageDigest", "platform", "root", "binName", "image", "probePlan", "aiToken", "aiUrl"]) {
+      assert.equal((await f.request(`field-${field}`, { policyHash: hash(preparedPolicy), [field]: "untrusted" })).statusCode, 400);
+    }
+    assert.equal((await f.request("")).statusCode, 400);
+    const first = await f.request("same"); assert.equal(first.statusCode, 202);
+    const job = first.json().preparation;
+    assert.equal(job.status, "QUEUED"); assert.equal(job.result, undefined);
+    for (const value of ["unused-private-source-path", "builderImageDigest", "leaseOwner", "request", token, "collectorDigest"]) assert.ok(!first.body.includes(value));
+    assert.equal((await f.request("same")).json().preparation.preparationId, job.preparationId);
+    f.options.preparedRuntime!.builderImageDigest = `sha256:${"e".repeat(64)}`;
+    assert.equal((await f.request("same")).json().preparation.preparationId, job.preparationId);
+    const [stored] = await preparations(f.store, tenant, job.preparationId);
+    assert.notEqual(stored.configHash, hash(preparedTrust(f.options.preparedRuntime!)));
+    assert.equal((await f.app.inject({ url: `/v1/preparations/${job.preparationId}`, headers: { authorization: `Bearer ${other}` } })).statusCode, 404);
+    assert.equal((await f.app.inject({ url: `/v1/preparations/${job.preparationId}`, headers: { authorization: `Bearer ${reader}` } })).statusCode, 200);
+    assert.deepEqual(await f.store.get(tenant, "release", source.releaseId), source);
+    assert.equal((await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "cross-profile" }, payload: { releaseId: source.releaseId, policyHash: hash(preparedPolicy) } })).statusCode, 409);
+    const changedPolicy = { ...preparedPolicy, validitySeconds: 120 }; await f.store.put(tenant, "policy", hash(changedPolicy), { document: changedPolicy });
+    assert.equal((await f.request("same", { policyHash: hash(changedPolicy) })).statusCode, 409);
+    f.options.preparedRuntime = undefined; assert.equal((await f.request("disabled")).statusCode, 503);
+  } finally { await f.app.close(); }
+});
+test("preparation and scan quotas are atomic across concurrent requests and tenant isolation", async () => {
+  const f = await setup();
+  try {
+    const policy = { ...preparedPolicy, maxDailyScans: 2, maxQueuedScans: 1 };
+    await f.store.put(tenant, "policy", hash(policy), { document: policy });
+    const results = await Promise.all(Array.from({ length: 8 }, (_, i) => f.request(`quota-${i}`, { policyHash: hash(policy) })));
+    assert.equal(results.filter((result) => result.statusCode === 202).length, 1);
+    assert.equal(results.filter((result) => result.statusCode === 429).length, 7);
+    assert.equal((await f.store.scanUsage(tenant)).queued, 1);
+    const strictLegacy = { ...defaultPolicy, maxQueuedScans: 1 }; await f.store.put(tenant, "policy", hash(strictLegacy), { document: strictLegacy });
+    assert.equal((await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "shared" }, payload: { releaseId: source.releaseId, policyHash: hash(strictLegacy) } })).statusCode, 429);
+    await f.store.put("other", "release", source.releaseId, source);
+    const key = results.findIndex((result) => result.statusCode === 202);
+    assert.equal((await f.request(`quota-${key}`, undefined, other)).statusCode, 202);
+    const job = await claimPreparation(f.store, "worker-a"); assert.ok(job);
+    assert.equal(await failPreparation(f.store, job, "worker-a", "UNSUPPORTED_SOURCE", false), true);
+    assert.equal((await f.request("daily-2", { policyHash: hash(policy) })).statusCode, 202);
+    const jobs = await preparations(f.store, tenant), current = jobs.find((item) => item.status === "QUEUED")!;
+    await f.store.query("UPDATE cp_preparations SET state='DEAD_LETTER' WHERE preparation_id=?", [current.preparationId]);
+    assert.equal((await f.request("daily-3", { policyHash: hash(policy) })).statusCode, 429);
+  } finally { await f.app.close(); }
+});
+test("preparation durable leases fence workers, expire safely and freeze configuration on retry", async () => {
+  const f = await setup();
+  try {
+    const id = (await f.request("lease")).json().preparation.preparationId;
+    const claimed = await Promise.all([claimPreparation(f.store, "one"), claimPreparation(f.store, "two")]);
+    assert.equal(claimed.filter(Boolean).length, 1); let job = claimed.find(Boolean)!;
+    assert.equal(await failPreparation(f.store, job, "foreign-owner", "WORKER_LOST", true, 0), false);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      assert.equal(await failPreparation(f.store, job, job.leaseOwner!, "WORKER_LOST", true, 0), true);
+      if (attempt < 2) job = (await claimPreparation(f.store, "one"))!;
+    }
+    assert.equal((await preparations(f.store, tenant, id))[0].status, "DEAD_LETTER");
+    const retry = (bearer = token, body?: any) => f.app.inject({ method: "POST", url: `/v1/preparations/${id}/retry`, headers: { authorization: `Bearer ${bearer}` }, ...(body ? { payload: body } : {}) });
+    assert.equal((await retry(reader)).statusCode, 403); assert.equal((await retry(other)).statusCode, 404);
+    assert.equal((await retry(token, { image: "untrusted" })).statusCode, 400);
+    f.options.preparedRuntime!.builderImageDigest = `sha256:${"e".repeat(64)}`;
+    assert.equal((await retry()).statusCode, 409);
+    f.options.preparedRuntime!.builderImageDigest = `sha256:${"d".repeat(64)}`;
+    assert.equal((await retry()).statusCode, 200);
+    job = (await claimPreparation(f.store, "three"))!;
+    await f.store.query("UPDATE cp_preparations SET lease_expires_at=?,attempts=3 WHERE preparation_id=?", [new Date(Date.now() - 1).toISOString(), id]);
+    assert.equal(await failPreparation(f.store, job, "three", "WORKER_LOST", true), false);
+    assert.equal(await claimPreparation(f.store, "four"), undefined);
+    assert.equal((await preparations(f.store, tenant, id))[0].lastError?.code, "WORKER_LOST");
+    assert.ok((await f.store.events(tenant)).some((event) => event.eventName === "preparation.retried"));
+    const policy = await f.store.get(tenant, "policy", hash(preparedPolicy)); await f.store.put(tenant, "policy", hash(preparedPolicy), { ...policy, deprecatedAt: new Date().toISOString() }, true);
+    assert.equal((await retry()).statusCode, 409);
+  } finally { await f.app.close(); }
+});
+test("prepared policy and environment refuse weakening, implicit Docker or mutable builder tags", () => {
+  assert.equal(validPolicy(preparedPolicy), true); assert.notEqual(hash(preparedPolicy), hash(defaultPolicy));
+  assert.equal(policyVerdict({ files: {} }, {}, preparedPolicy), "ABSTAIN");
+  for (const edit of [{ requireCritic: false }, { requireRemoteAi: false }, { profile: "pretend-profile" }, { extra: true }]) assert.equal(validPolicy({ ...preparedPolicy, ...edit }), false);
+  const env = { CONTROL_PLANE_ENABLED: "true", CONTROL_PLANE_CREDENTIALS: JSON.stringify([{ tenantId: tenant, token, role: "operator" }]), CONTROL_EVIDENCE_KEY: "1".repeat(64),
+    CONTROL_PREPARED_ENABLED: "true", CONTROL_SANDBOX_MODE: "docker", CONTROL_PREPARED_ARCHITECTURE: "amd64", CONTROL_PREPARED_BUILDER_DIGEST: `sha256:${"d".repeat(64)}` };
+  assert.ok(controlConfig(env)?.preparedRuntime);
+  assert.equal(controlConfig({ ...env, CONTROL_PREPARED_ENABLED: "false" })?.preparedRuntime, undefined);
+  assert.throws(() => controlConfig({ ...env, CONTROL_SANDBOX_MODE: "" }), /PREPARED_DOCKER_REQUIRED/);
+  assert.throws(() => controlConfig({ ...env, CONTROL_PREPARED_BUILDER_DIGEST: "node:latest" }), /INVALID_PREPARED_CONFIG/);
+  assert.throws(() => controlConfig({ ...env, CONTROL_PREPARED_ARCHITECTURE: "unknown" }), /INVALID_PREPARED_CONFIG/);
+});
+
+function syntheticPreparedOutput(input: any, cleanup: () => Promise<void>) {
+  const tools = [{ name: "private_synthetic_tool", description: "synthetic-private-tool-description", inputSchema: { type: "object" } }];
+  const descriptor = { schemaVersion: "mcpshield.prepared-runtime.v1", stage: "CLOSURE_PREPARED", profile: "npm-closure-v1",
+    sourceDigest: source.artifactDigest, sourceTreeDigest: source.artifactDigest, lockDigest: source.artifactDigest, lockOrigin: "SUPPLIED",
+    builderImageDigest: input.trusted.builderImageDigest, platform: input.preparation.platform, finalImageDigest: `sha256:${"e".repeat(64)}`, toolSurfaceHash: toolSurfaceHash(tools),
+    entrypoint: { path: "server.mjs", digest: source.artifactDigest }, argv: ["/usr/local/bin/node", "/app/server.mjs"],
+    policy: { acquisitionNetwork: "REGISTRY_ONLY_SEPARATE", installNetwork: "NONE", installScripts: "DISABLED", executionNetwork: "INTERNAL_SYNTHETIC_PROXY", user: "NON_ROOT", rootFilesystem: "READ_ONLY" } };
+  const binding = createPreparedReleaseBinding({ sourceReleaseId: source.releaseId, descriptor,
+    executionPolicy: preparedExecutionPolicy({ collectorDigest: input.trusted.collectorDigest, observerDigest: input.trusted.observerDigest, egressAllowHosts: ["mail-api.local"] }) });
+  const result = { schemaVersion: "1.0.0", scanId: input.scanId, releaseId: source.legacyReleaseId, artifactDigest: binding.artifactDigest,
+    toolSurfaceHash: binding.toolSurfaceHash, scanStatus: "INCONCLUSIVE", findings: [], evidenceHash: `0x${"1".repeat(64)}`, source: "MOCK" };
+  const analysis = { profile: preparedPolicy.profile, verdict: "ABSTAIN", issues: ["SYNTHETIC_CONTRACT_TEST_NOT_LIVE_DOCKER"] };
+  return { binding, result, analysis, cleanup, runtimeTag: `mcpshield-runtime-${randomUUID()}:local`,
+    bundle: createEvidenceBundle({ "report.json": { ...result, scope: "RESTRICTED_NODE_DOCKER_V1" }, "prepared/binding.json": binding,
+      "runtime/tools.json": tools, "runtime/descriptor.json": descriptor, "runtime/execution-policy.json": binding.executionPolicy, "prepared/policy-review.json": analysis }) };
+}
+
+async function sameOwnerReclaim(store: ControlStore, peer: ControlStore, options: ControlOptions, tenantId: string, preparationId: string) {
+  const previous = options.prepareRuntime, owner = "same-preparation-worker";
+  const scansBefore = (await store.scans(tenantId)).length, releasesBefore = (await store.list(tenantId, "release")).length;
+  let calls = 0, cleaned = 0;
+  const expire = () => peer.query("UPDATE cp_preparations SET lease_expires_at=? WHERE tenant_id=? AND preparation_id=?", [new Date(Date.now() - 1).toISOString(), tenantId, preparationId]);
+  options.prepareRuntime = async input => {
+    if (++calls === 1) {
+      await expire();
+      const [expired] = await preparations(peer, tenantId, preparationId);
+      assert.equal(await failPreparation(peer, expired, owner, "EXPIRED_WORKER_FAILURE", false), false);
+      const replacement = (await claimPreparation(peer, owner))!;
+      assert.equal(replacement.preparationId, preparationId); assert.equal(replacement.attempts, expired.attempts + 1);
+      assert.equal(await failPreparation(peer, expired, owner, "STALE_ATTEMPT_FAILURE", false), false);
+      assert.equal(await failPreparation(peer, { ...expired, attempts: replacement.attempts }, owner, "STALE_LEASE_FAILURE", false), false);
+    }
+    return syntheticPreparedOutput(input, async () => { cleaned++; });
+  };
+  try {
+    await runPreparationWorkerOnce(store, options, owner);
+    const [current] = await preparations(peer, tenantId, preparationId);
+    assert.equal(current.status, "RUNNING"); assert.equal(current.attempts, 2); assert.equal(current.lastError, undefined);
+    assert.equal(cleaned, 1, "stale successful worker cannot transfer its image ownership");
+    assert.equal((await store.scans(tenantId)).length, scansBefore);
+    assert.equal((await store.list(tenantId, "release")).length, releasesBefore);
+    assert.equal((await store.events(tenantId)).filter(event => ["preparation.completed", "preparation.failed"].includes(event.eventName) && event.payload.preparationId === preparationId).length, 0);
+    await expire();
+    await runPreparationWorkerOnce(peer, options, owner);
+    const [completed] = await preparations(store, tenantId, preparationId);
+    assert.equal(completed.status, "COMPLETED"); assert.equal(completed.attempts, 3); assert.equal(completed.result?.verdict, "ABSTAIN");
+    assert.equal((await store.scans(tenantId)).length, scansBefore + 1);
+    assert.equal((await store.events(tenantId)).filter(event => event.eventName === "preparation.completed" && event.payload.preparationId === preparationId).length, 1);
+  } finally { options.prepareRuntime = previous; }
+}
+
+test("preparation completion and failure fence same-owner reclaims by attempt and exact unexpired lease", async () => {
+  const f = await setup(), dir = await mkdtemp(join(tmpdir(), "mcpshield-prepared-generation-")); f.options.evidencePath = dir;
+  try {
+    const preparationId = (await f.request("generation")).json().preparation.preparationId;
+    await sameOwnerReclaim(f.store, f.store, f.options, tenant, preparationId);
+  } finally { await f.app.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("prepared worker atomically creates a distinct identity and encrypted scan without granting PASS", async () => {
+  const f = await setup(), dir = await mkdtemp(join(tmpdir(), "mcpshield-prepared-worker-")); let cleaned = 0;
+  f.options.evidencePath = dir;
+  try {
+    f.options.prepareRuntime = async (input) => {
+      assert.equal(input.preparation.root, source.artifactDir); assert.equal(input.sourceReleaseId, source.releaseId);
+      return syntheticPreparedOutput(input, async () => { cleaned++; });
+    };
+    const jobId = (await f.request("execute")).json().preparation.preparationId;
+    assert.equal(await runPreparationWorkerOnce(f.store, f.options), true);
+    const [job] = await preparations(f.store, tenant, jobId); assert.equal(job.status, "COMPLETED", JSON.stringify(job.lastError));
+    assert.equal(job.result?.verdict, "ABSTAIN"); assert.notEqual(job.result?.releaseId, source.releaseId); assert.equal(cleaned, 0);
+    const scan = await f.store.scan(tenant, job.result!.scanId); assert.equal(scan?.status, "COMPLETED"); assert.equal(scan?.result?.scanResult.scanId, scan?.scanId);
+    assert.equal(scan?.result?.state, "REVIEW_REQUIRED"); assert.equal((await f.store.scanUsage(tenant)).today, 1);
+    assert.deepEqual(await f.store.get(tenant, "release", source.releaseId), source);
+    const releaseId = job.result!.releaseId;
+    const release = await f.app.inject({ url: `/v1/releases/${releaseId}`, headers: auth });
+    assert.equal(release.json().release.status, "UNVERIFIED");
+    const exported = await f.app.inject({ url: `/v1/releases/${releaseId}/gateway-config`, headers: auth });
+    assert.equal(exported.statusCode, 200); assert.equal(exported.json().schemaVersion, "mcpshield.gateway-prepared.v1");
+    assert.equal(exported.json().tools[0].name, "private_synthetic_tool"); assert.equal(exported.headers["cache-control"], "no-store");
+    for (const bearer of [reader, other]) assert.equal((await f.app.inject({ url: `/v1/releases/${releaseId}/gateway-config`, headers: { authorization: `Bearer ${bearer}` } })).statusCode, bearer === reader ? 403 : 404);
+    const evidence = await f.app.inject({ url: `/v1/preparations/${jobId}/evidence`, headers: auth }); assert.equal(evidence.statusCode, 200);
+    const bound = checkedPreparedEvidence(evidence.json().bundle); assert.equal(bound.identity.releaseId, releaseId);
+    for (const path of ["/v1/releases", "/v1/scans", "/v1/preparations"]) {
+      const body = (await f.app.inject({ url: path, headers: { authorization: `Bearer ${reader}` } })).body;
+      for (const privateValue of ["synthetic-private-tool-description", "runtimeTag", "preparedEvidenceKey", "evidenceKey", "collectorDigest"]) assert.ok(!body.includes(privateValue), `${path} ${privateValue}`);
+    }
+    assert.equal((await f.app.inject({ url: `/v1/preparations/${jobId}/evidence`, headers: { authorization: `Bearer ${reader}` } })).statusCode, 403);
+    await f.request("duplicate-image"); await runPreparationWorkerOnce(f.store, f.options); assert.equal(cleaned, 1);
+    f.options.scanPreparedRuntime = async (input) => {
+      const [claimed] = await f.store.query("SELECT lease_expires_at FROM cp_scans WHERE scan_id=?", [input.scanId]);
+      assert.ok(Date.parse(claimed.lease_expires_at) - Date.now() > 19 * 60 * 1000, "prepared full review needs the bounded 20-minute worker lease");
+      return syntheticPreparedOutput({ ...input, preparation: { platform: input.descriptor.platform } }, async () => {});
+    };
+    const appeal = (await f.app.inject({ method: "POST", url: `/v1/releases/${source.releaseId}/appeals`, headers: auth, payload: { reason: "Synthetic appeal: inspect the distinct prepared digest" } })).json().appeal;
+    const rescan = await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "prepared-rescan" }, payload: { releaseId, policyHash: hash(preparedPolicy), appealId: appeal.appealId } });
+    assert.equal(rescan.statusCode, 202); assert.equal(rescan.json().scan.baselineReleaseId, null);
+    await runControlWorkerOnce(f.store, f.options);
+    assert.equal((await f.store.scan(tenant, rescan.json().scan.scanId))?.result?.verdict, "ABSTAIN");
+    assert.ok((await f.store.events(tenant, source.releaseId)).some(event => event.eventName === "appeal.rescan.completed" && event.payload.scanId === rescan.json().scan.scanId && event.payload.verdict === "ABSTAIN"));
+    assert.equal((await f.app.inject({ method: "POST", url: "/v1/scans", headers: { ...auth, "idempotency-key": "prepared-baseline" }, payload: { releaseId, policyHash: hash(preparedPolicy), baselineReleaseId: source.releaseId } })).statusCode, 400);
+  } finally { await f.app.close(); await rm(dir, { recursive: true, force: true }); }
+});
+test("prepared worker fails closed on no discovery, changed config/source and stale lease; only its own image is cleaned", async () => {
+  for (const mode of ["no-binding", "config-changed", "source-changed", "stale-lease", "binding-tampered", "uncertain-commit"] as const) {
+    const f = await setup(), dir = await mkdtemp(join(tmpdir(), "mcpshield-prepared-fence-")); f.options.evidencePath = dir; let cleaned = 0, calls = 0;
+    try {
+      const jobId = (await f.request(mode)).json().preparation.preparationId;
+      if (mode === "config-changed") f.options.preparedRuntime!.builderImageDigest = `sha256:${"f".repeat(64)}`;
+      f.options.prepareRuntime = async (input) => {
+        calls++;
+        const output = syntheticPreparedOutput(input, async () => { cleaned++; });
+        if (mode === "no-binding") return { result: null, binding: null, bundle: null, analysis: { issues: ["PREPARED_DISCOVERY_REQUIRED"] }, cleanup: output.cleanup };
+        if (mode === "source-changed") await f.store.put(tenant, "release", source.releaseId, { ...source, artifactDigest: `sha256:${"f".repeat(64)}` }, true);
+        if (mode === "stale-lease") await f.store.query("UPDATE cp_preparations SET lease_expires_at=? WHERE preparation_id=?", [new Date(Date.now() - 1).toISOString(), jobId]);
+        if (mode === "binding-tampered") output.binding.manifestDigest = source.artifactDigest;
+        return output;
+      };
+      if (mode === "uncertain-commit") {
+        const original = f.store.forTenant.bind(f.store);
+        f.store.forTenant = async (tenantId, callback) => {
+          const result = await original(tenantId, callback);
+          if (result && typeof result === "object" && "transferred" in result) throw new Error("TRANSIENT_COMMIT_UNCERTAIN");
+          return result;
+        };
+      }
+      await runPreparationWorkerOnce(f.store, f.options);
+      const [job] = await preparations(f.store, tenant, jobId), scans = await f.store.scans(tenant);
+      assert.equal(calls, mode === "config-changed" ? 0 : 1);
+      if (mode === "uncertain-commit") { assert.equal(job.status, "COMPLETED"); assert.equal(scans.length, 1); assert.equal(cleaned, 0); }
+      else { assert.equal(scans.length, 0); assert.equal(cleaned, mode === "config-changed" ? 0 : 1); }
+      if (mode === "no-binding") { assert.equal(job.result?.outcome, "INCONCLUSIVE"); assert.equal(job.status, "COMPLETED"); }
+      else if (mode === "stale-lease") assert.equal(job.status, "RUNNING");
+      else if (mode !== "uncertain-commit") assert.equal(job.status, "DEAD_LETTER");
+    } finally { await f.app.close(); await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("PostgreSQL preparation multiworker quota, lease and atomic release/scan finalization", { skip: !process.env.MCPSHIELD_POSTGRES_TEST_URL }, async () => {
+  const [one, two] = await Promise.all([ControlStore.open(process.env.MCPSHIELD_POSTGRES_TEST_URL), ControlStore.open(process.env.MCPSHIELD_POSTGRES_TEST_URL)]);
+  const tenantId = `pg-prepared-${randomUUID()}`, dir = await mkdtemp(join(tmpdir(), "mcpshield-prepared-pg-")); let cleaned = 0;
+  const policy = { ...preparedPolicy, maxQueuedScans: 1, maxDailyScans: 2 };
+  const config = { builderImageDigest: `sha256:${"d".repeat(64)}`, platform: { os: "linux" as const, architecture: "amd64" as const } };
+  const trusted = preparedTrust(config), request = { sourceReleaseId: source.releaseId, sourceIdentity: sourceIdentity(source), policyHash: hash(policy), trustedConfig: trusted };
+  const options: ControlOptions = { credentials: [{ tenantId, token, role: "operator" }], artifactPath: dir, evidencePath: dir, evidenceKey: "1".repeat(64),
+    preparedRuntime: config, scannerOptions: { sandbox: "docker", allowRemoteAi: false }, prepareRuntime: async (input) => syntheticPreparedOutput(input, async () => { cleaned++; }),
+    inspectPreparedRuntime: async ({ descriptor }) => ({ ...trusted, finalImageDigest: descriptor.finalImageDigest, platform: descriptor.platform,
+      closureDigest: source.artifactDigest, entrypointDigest: descriptor.entrypoint.digest,
+      sourceDescriptorDigest: hashPreparedRuntimeDescriptor({ ...descriptor, stage: "PREFLIGHT", finalImageDigest: null, toolSurfaceHash: null }) }) };
+  try {
+    assert.equal(one.driver, "POSTGRESQL"); await one.put(tenantId, "release", source.releaseId, source); await one.put(tenantId, "policy", hash(policy), { document: policy });
+    const submitted = await Promise.allSettled(Array.from({ length: 12 }, (_, i) => enqueuePreparation(i % 2 ? one : two, tenantId, request, `parallel-${i}`, randomUUID())));
+    assert.equal(submitted.filter((item) => item.status === "fulfilled").length, 1);
+    assert.ok(submitted.filter((item) => item.status === "rejected").every((item: any) => item.reason.message === "SCAN_QUOTA_EXCEEDED"));
+    const [job] = await preparations(one, tenantId), claims = await Promise.all([claimPreparation(one, "pg-one"), claimPreparation(two, "pg-two")]);
+    const claimed = claims.find(Boolean)!; assert.equal(claims.filter(Boolean).length, 1); assert.equal(claimed.preparationId, job.preparationId);
+    assert.equal(await failPreparation(two, claimed, "wrong-owner", "WORKER_LOST", true), false);
+    await two.query("UPDATE cp_preparations SET lease_expires_at=?,attempts=3 WHERE tenant_id=? AND preparation_id=?", [new Date(Date.now() - 1).toISOString(), tenantId, job.preparationId]);
+    assert.equal(await claimPreparation(one, "recover"), undefined);
+    await assert.rejects(retryPreparation(two, tenantId, job.preparationId, { ...trusted, builderImageDigest: `sha256:${"f".repeat(64)}` }), /CONFIG_CHANGED/);
+    await retryPreparation(two, tenantId, job.preparationId, trusted);
+    const original = one.forTenant.bind(one); let rollbackOnce = true;
+    one.forTenant = (id, callback) => original(id, async (tx) => {
+      const result = await callback(tx);
+      if (rollbackOnce && result && typeof result === "object" && "transferred" in result) { rollbackOnce = false; throw new Error("TRANSIENT_TEST_ROLLBACK"); }
+      return result;
+    });
+    await runPreparationWorkerOnce(one, options);
+    assert.equal((await one.scans(tenantId)).length, 0); assert.equal((await one.list(tenantId, "release")).length, 1); assert.equal(cleaned, 1);
+    assert.equal((await preparations(two, tenantId, job.preparationId))[0].status, "QUEUED");
+    await two.query("UPDATE cp_preparations SET next_attempt_at=? WHERE tenant_id=? AND preparation_id=?", [new Date().toISOString(), tenantId, job.preparationId]);
+    await Promise.all([runPreparationWorkerOnce(one, options, "finish-one"), runPreparationWorkerOnce(two, options, "finish-two")]);
+    const [completed] = await preparations(two, tenantId, job.preparationId);
+    assert.equal(completed.status, "COMPLETED", JSON.stringify(completed.lastError)); assert.equal((await two.scans(tenantId)).length, 1);
+    assert.equal((await two.list(tenantId, "release")).length, 2); assert.equal(cleaned, 1); assert.equal((await two.scanUsage(tenantId)).today, 1);
+    const generation = await enqueuePreparation(one, tenantId, request, "same-owner-generation", randomUUID());
+    await sameOwnerReclaim(one, two, options, tenantId, generation.preparation.preparationId);
+  } finally {
+    // Only this test's fresh random tenant; never delete another worker's rows.
+    for (const table of ["cp_preparations", "cp_scans", "cp_records", "cp_events"]) await one.query(`DELETE FROM ${table} WHERE tenant_id=?`, [tenantId]);
+    await Promise.all([one.close(), two.close()]); await rm(dir, { recursive: true, force: true });
+  }
+});

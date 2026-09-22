@@ -1,43 +1,381 @@
-name: Frontend Gateway DevOps
+name: MCPShield Verification
 
 on:
   push:
-    branches: [main, feature/frontend-gateway-devops]
+    branches: [main, mcp/main, master/main, feature/frontend-gateway-devops]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      repeat_demo:
+        description: Run ten clean Docker-to-EVM-to-Gateway incident demos
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # Bounded independent OCI rescans and four single-key validator processes
+    # run sequentially on the same trusted local images/database.
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 22
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install monorepo dependencies
-        run: npm ci
+        run: |
+          node scripts/ops/normalize-lock.mjs --check
+          npm ci
       - name: Test backend, contracts, gateway, and replay demo
         run: npm test
       - name: Build backend types and dashboard
         run: npm run build
+      - name: Verify native POST fallback on the built console
+        env:
+          MCPSHIELD_FORM_HTTP_TESTS: '1'
+        run: node --import tsx --test apps/dashboard/test/forms.test.mts
+      - name: Measure local EVM admission and injected failure matrix
+        if: matrix.node == 22
+        timeout-minutes: 4
+        run: node --import tsx scripts/ops/evaluate-admission.ts --requests 40 --concurrency 4 --identities 4
       - name: Validate compose
-        run: docker compose config --quiet
+        if: matrix.node == 22
+        run: |
+          docker compose config --quiet
+          node scripts/ops/init-control.mjs
+          docker compose --env-file .env.master.local -f docker-compose.yml -f compose.observability.yml config --quiet
+          docker compose --env-file .env.master.local -f docker-compose.yml -f compose.control.yml config --quiet
+      - name: Verify native scanner daemon readiness without executing candidates
+        if: matrix.node == 22
+        timeout-minutes: 1
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: node --import tsx --test --test-name-pattern="native Linux Docker availability probe" tests/api/health.test.ts
+      - name: Build and inspect the trusted offline npm runtime builder
+        id: runtime_builder
+        if: matrix.node == 22
+        timeout-minutes: 5
+        run: |
+          docker info --format '{{json .DriverStatus}}'
+          mkdir -p runtime-builder-artifact/reports runtime-builder-cache runtime-builder-temp
+          chmod 700 runtime-builder-cache runtime-builder-temp
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -f services/resolver/Dockerfile.builder -t "mcpshield-runtime-builder:$GITHUB_SHA" .
+          docker image inspect "mcpshield-runtime-builder:$GITHUB_SHA" --format '{{.Id}}' > runtime-builder-artifact/image-id.txt
+          docker save "mcpshield-runtime-builder:$GITHUB_SHA" | gzip -n > runtime-builder-artifact/image.tar.gz
+          sha256sum runtime-builder-artifact/image.tar.gz > runtime-builder-artifact/SHA256SUMS
+          docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --read-only -e TRIVY_CACHE_DIR=/cache -v "$PWD/runtime-builder-temp:/tmp" -v "$PWD/runtime-builder-cache:/cache" -v "$PWD/runtime-builder-artifact:/input:ro" -v "$PWD/runtime-builder-artifact/reports:/reports" aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 image --input /input/image.tar.gz --scanners vuln --format json --output /reports/image-scan.json
+          sha256sum -c runtime-builder-artifact/SHA256SUMS
+          node scripts/ops/check-image-report.mjs runtime-builder-artifact/reports/image-scan.json runtime-builder-artifact/image-id.txt "$GITHUB_SHA" --runtime-builder
+      - name: Exercise supplied and isolated generated locks with immutable closure scans
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
+        timeout-minutes: 5
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/security/npm-closure.test.mjs
+      - name: Exercise isolated prepared npm Gateway and per-call revocation
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
+        timeout-minutes: 5
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        # Both tests own real containers; the leak assertion inventories the shared daemon.
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --test --test-concurrency=1 apps/gateway/test/prepared-docker.test.mjs apps/gateway/test/agent-prepared-docker.test.mjs
+      - name: Exercise scoped Node v2 disclosure and actual isolated probe execution
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
+        timeout-minutes: 6
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        # Native runtime evidence plus local Responses contract only; no external AI keys.
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/security/scoped-prepared.test.mjs
+      - name: Exercise native OCI import and external non-Node MCP observation
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
+        timeout-minutes: 7
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+          MCPSHIELD_OCI_100M_TESTS: "1"
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/security/oci-runtime.test.mjs tests/security/oci-budget.test.mjs
+      - name: Exercise native OCI Gateway isolation and per-call signed admission
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
+        timeout-minutes: 6
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        # Authored shell image and synthetic issuer: independent OCI quorum is a separate gate.
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --test apps/gateway/test/oci-prepared-docker.test.mjs
+      - name: Exercise OCI catalogue and offline Trivy with native CycloneDX conversion
+        id: oci_review
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
+        timeout-minutes: 5
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: |
+          export MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)"
+          export MCPSHIELD_TRIVY_IMAGE="$(docker image inspect aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 --format '{{.Id}}')"
+          export MCPSHIELD_TRIVY_DATABASE_DIR="$PWD/runtime-builder-cache/db"
+          stat --printf='Trusted Trivy DB %n: %s bytes\n' "$MCPSHIELD_TRIVY_DATABASE_DIR/metadata.json" "$MCPSHIELD_TRIVY_DATABASE_DIR/trivy.db"
+          node --import tsx --test tests/security/oci-review.test.mjs
+      - name: Exercise composed OCI inventory, Trivy, local semantic contract and MCP observations
+        if: ${{ !cancelled() && matrix.node == 22 && steps.oci_review.outcome == 'success' }}
+        timeout-minutes: 11
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+          MCPSHIELD_OCI_FULLSCAN_TESTS: "1"
+        run: |
+          export MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)"
+          export MCPSHIELD_TRIVY_IMAGE="$(docker image inspect aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 --format '{{.Id}}')"
+          export MCPSHIELD_TRIVY_DATABASE_DIR="$PWD/runtime-builder-cache/db"
+          node --import tsx --test --test-name-pattern="actual Linux OCI scan binds" tests/security/oci-runtime.test.mjs
+      - name: Independently rescan supported OCI safe and canary fixtures with native package evidence
+        if: ${{ !cancelled() && matrix.node == 22 && steps.oci_review.outcome == 'success' }}
+        timeout-minutes: 16
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+          MCPSHIELD_OCI_PROFILE_TESTS: "1"
+        # Actual native evidence; semantic responses are a local contract fixture,
+        # not measured external-model quality or independent institutions.
+        run: |
+          export MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)"
+          export MCPSHIELD_TRIVY_IMAGE="$(docker image inspect aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 --format '{{.Id}}')"
+          export MCPSHIELD_TRIVY_DATABASE_DIR="$PWD/runtime-builder-cache/db"
+          node --import tsx --test tests/security/oci-profile.test.mjs
+      - name: Exercise native OCI worker and independent single-key validators through V2 and both Gateways
+        if: ${{ !cancelled() && matrix.node == 22 && steps.oci_review.outcome == 'success' }}
+        timeout-minutes: 21
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+          MCPSHIELD_OCI_PROFILE_TESTS: "1"
+        run: |
+          export MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)"
+          export MCPSHIELD_TRIVY_IMAGE="$(docker image inspect aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 --format '{{.Id}}')"
+          export MCPSHIELD_TRIVY_DATABASE_DIR="$PWD/runtime-builder-cache/db"
+          node --import tsx --test tests/api/oci-fullcycle.test.ts
+      - name: Exercise prepared Docker scans and single-key validators through V2 and both Gateways
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
+        timeout-minutes: 11
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/api/prepared-fullcycle.test.ts
+      - name: Exercise scoped Node v2 API and independent source validators through V2 and Gateway
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
+        timeout-minutes: 11
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+          MCPSHIELD_SCOPED_DOCKER_TESTS: "1"
+        # Real local Docker/EVM/HTTP; Responses replies are a synthetic contract, not provider-quality evidence.
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test --test-name-pattern="scoped Node v2 source" tests/api/prepared-fullcycle.test.ts
+      - name: Retain failed builder security evidence without publishing its image
+        if: failure() && matrix.node == 22
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-builder-scan-failure-${{ github.sha }}
+          path: runtime-builder-artifact/reports/image-scan.json
+          retention-days: 1
+          if-no-files-found: ignore
+      - name: Exercise actual Linux sandbox isolation
+        if: matrix.node == 22
+        timeout-minutes: 5
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: |
+          docker pull node:22-alpine
+          node --test tests/security/docker-sandbox.test.mjs
+      - name: Exercise actual Docker scan through V2 chain and both Gateways
+        if: matrix.node == 22
+        timeout-minutes: 6
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: node --import tsx --test tests/api/source-validator.test.ts tests/api/v2-fullcycle.test.ts
+      - name: Validate actual collector and alert configuration
+        if: matrix.node == 22
+        run: |
+          docker run --rm -v "$PWD/deploy/observability/collector.yaml:/etc/otelcol/config.yaml:ro" otel/opentelemetry-collector-contrib:0.160.0 validate --config=/etc/otelcol/config.yaml
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/deploy/observability:/etc/prometheus:ro" prom/prometheus:v3.14.0 check rules /etc/prometheus/alerts.yaml
       - name: Run Docker Compose end-to-end
+        if: matrix.node == 22
         timeout-minutes: 10
         run: |
           docker compose up --build --wait
           node -e "fetch('http://127.0.0.1:3000/api/live').then(r=>r.json()).then(x=>{if(x.source!=='LIVE'||x.ledgerMode!=='EVM'||x.admissions?.length!==2||!x.admissions.every(a=>a.decision==='BLOCK'&&a.source==='LIVE'&&a.spawnAttempted===false))process.exit(1)})"
+      - name: Verify actual provisioned Grafana and exporter to Prometheus pipeline
+        if: matrix.node == 22
+        timeout-minutes: 4
+        run: |
+          docker compose --env-file .env.master.local -f docker-compose.yml -f compose.observability.yml up --wait --no-deps otel-collector prometheus grafana
+          node --env-file=.env.master.local scripts/ops/smoke-observability.mjs
+      - name: Collect bounded service diagnostics
+        if: failure() && matrix.node == 22
+        run: docker compose logs --no-color --tail=100 contract-init backend indexer demo-seed gateway-a gateway-b dashboard
       - name: Stop Docker Compose
-        if: always()
-        run: docker compose down --volumes --remove-orphans
+        if: always() && matrix.node == 22
+        run: |
+          if [ -f .env.master.local ]; then
+            docker compose --env-file .env.master.local -f docker-compose.yml -f compose.observability.yml down --volumes --remove-orphans
+          else
+            docker compose down --volumes --remove-orphans
+          fi
       - name: Audit production dependencies
+        if: matrix.node == 22
         run: npm audit --omit=dev --audit-level=high
       - name: Scan every tracked file for secrets
+        if: matrix.node == 22
         run: |
           findings="$(git grep -nEIi -f .github/secret-scan-patterns.regex -- . ':!package-lock.json' ':!.github/secret-scan-patterns.regex' ':!.github/secret-scan-allowlist.regex' || true)"
           unexpected="$(printf '%s\n' "$findings" | grep -Evf .github/secret-scan-allowlist.regex || true)"
           if [ -n "$unexpected" ]; then
-            printf '%s\n' "$unexpected"
+            printf '%s\n' "$unexpected" | cut -d: -f1,2
             exit 1
           fi
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mcpshield
+          POSTGRES_PASSWORD: mcpshield_ci_only
+          POSTGRES_DB: mcpshield_ci
+        ports: ["5432/tcp"]
+        options: >-
+          --health-cmd "pg_isready -U mcpshield -d mcpshield_ci"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Exercise actual PostgreSQL control plane
+        env:
+          MCPSHIELD_POSTGRES_TEST_URL: postgresql://mcpshield:mcpshield_ci_only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/mcpshield_ci
+        run: node --import tsx --test tests/api/control-plane.test.ts tests/api/preparations.test.ts tests/api/appeals.test.ts tests/api/health.test.ts tests/api/chain-outbox.test.ts
+      - name: Back up and restore into a separate empty database
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG_CONTAINER" psql -U mcpshield -d mcpshield_ci -v ON_ERROR_STOP=1 -c "INSERT INTO cp_records VALUES ('restore-test','policy','backup-check','{}','2026-09-08T00:00:00Z')"
+          docker exec "$PG_CONTAINER" pg_dump -U mcpshield -d mcpshield_ci --format=custom --file=/tmp/mcpshield-ci.dump
+          docker exec "$PG_CONTAINER" createdb -U mcpshield mcpshield_restore_drill
+          docker exec "$PG_CONTAINER" pg_restore -U mcpshield --exit-on-error --single-transaction -d mcpshield_restore_drill /tmp/mcpshield-ci.dump
+          test "$(docker exec "$PG_CONTAINER" psql -U mcpshield -d mcpshield_restore_drill -tAc "SELECT count(*) FROM cp_records WHERE tenant_id='restore-test' AND id='backup-check'")" = "1"
+
+  repeat-demo:
+    # Independent diagnostics still run when a different verification stage fails.
+    # This job never signs or publishes a release.
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.repeat_demo }}
+    needs: [verify, postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: docker pull node:22-alpine
+      - name: Repeat actual isolated scan and incident flow ten times
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        run: |
+          for iteration in $(seq 1 10); do
+            printf 'Isolated real Docker/EVM demo %s of 10\n' "$iteration"
+            node --import tsx --test --test-name-pattern='V2 real Docker scan' tests/api/v2-fullcycle.test.ts
+          done
+
+  signed-image:
+    # Explicit workflow dispatch only: do not accumulate large images on every push.
+    # This creates a downloadable CI artifact, not a public container registry/release.
+    # Build/smoke/scan diagnostics are independent; signature and image retention
+    # below additionally require every upstream verification gate to succeed.
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master/main' }}
+    needs: [verify, postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Build immutable commit image and archive
+        run: |
+          mkdir -p release-artifact/reports trivy-cache trivy-temp
+          chmod 700 trivy-cache trivy-temp
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" --tag "mcpshield:$GITHUB_SHA" .
+          docker image inspect "mcpshield:$GITHUB_SHA" --format '{{.Id}}' > release-artifact/image-id.txt
+          docker save "mcpshield:$GITHUB_SHA" | gzip -n > release-artifact/mcpshield-image.tar.gz
+          sha256sum release-artifact/mcpshield-image.tar.gz > release-artifact/SHA256SUMS
+      - name: Exercise the actual non-root release image and both HTTP MCP protocol eras
+        timeout-minutes: 3
+        run: node scripts/ops/smoke-release-image.mjs "$(cat release-artifact/image-id.txt)"
+      - name: Scan actual image vulnerabilities and collect dependency licenses
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --read-only -e TRIVY_CACHE_DIR=/cache -v "$PWD/trivy-temp:/tmp" -v "$PWD/trivy-cache:/cache" -v "$PWD/release-artifact:/input:ro" -v "$PWD/release-artifact/reports:/reports" aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 image --input /input/mcpshield-image.tar.gz --scanners vuln,license --license-full --format json --output /reports/image-scan.json
+          sha256sum -c release-artifact/SHA256SUMS
+          node scripts/ops/check-image-report.mjs release-artifact/reports/image-scan.json release-artifact/image-id.txt "$GITHUB_SHA"
+      - name: Generate image CycloneDX SBOM
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --read-only -e TRIVY_CACHE_DIR=/cache -v "$PWD/trivy-temp:/tmp" -v "$PWD/trivy-cache:/cache" -v "$PWD/release-artifact:/input:ro" -v "$PWD/release-artifact/reports:/reports" aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 image --input /input/mcpshield-image.tar.gz --format cyclonedx --output /reports/sbom.cdx.json
+          sha256sum -c release-artifact/SHA256SUMS
+          node scripts/ops/check-image-report.mjs release-artifact/reports/image-scan.json release-artifact/image-id.txt "$GITHUB_SHA" release-artifact/reports/sbom.cdx.json
+      - name: Sign build provenance for the actual image archive
+        if: needs.verify.result == 'success' && needs.postgres.result == 'success'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-artifact/mcpshield-image.tar.gz
+      - name: Sign image SBOM attestation
+        if: needs.verify.result == 'success' && needs.postgres.result == 'success'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-artifact/mcpshield-image.tar.gz
+          sbom-path: release-artifact/reports/sbom.cdx.json
+      - name: Verify build signature against this repository identity
+        if: needs.verify.result == 'success' && needs.postgres.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh attestation verify release-artifact/mcpshield-image.tar.gz --repo "$GITHUB_REPOSITORY"
+      - name: Retain bounded downloadable image and evidence
+        if: needs.verify.result == 'success' && needs.postgres.result == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcpshield-${{ github.sha }}
+          path: release-artifact/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+      - name: Preserve failure report for remediation without publishing the image
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-scan-failure-${{ github.sha }}
+          path: release-artifact/reports/image-scan.json
+          retention-days: 1
+          if-no-files-found: ignore

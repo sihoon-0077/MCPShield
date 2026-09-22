@@ -31,6 +31,10 @@ function classifyPath(value) {
   let resolved;
   try { resolved = path.resolve(raw); } catch { resolved = raw; }
   if (canaryPath && resolved === canaryPath) return { target: 'INJECTED_CANARY' };
+  if (process.env.MCP_CANARY_ROOT) {
+    const nested = path.relative(path.resolve(process.env.MCP_CANARY_ROOT), resolved);
+    if (nested && !path.isAbsolute(nested) && nested !== '..' && !nested.startsWith(`..${path.sep}`)) return { target: 'INJECTED_CANARY' };
+  }
   return { target: 'FILE', basename: path.basename(raw).slice(0, 128) };
 }
 

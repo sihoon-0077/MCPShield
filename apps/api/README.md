@@ -66,3 +66,558 @@ Typed request interfaces for release registration, scan submission, signed
 attestation (including `scanId`, `nonce`, `deadline`, and `signature`), and
 admission (including `toolSurfaceHash`) live in
 `packages/protocol/api/types.ts`.
+# Additive master control plane (`/v1`)
+
+The deployed `/api` demo stays compatible. `/v1` uses exact digest release IDs and explicit tenant credentials; it is disabled unless `CONTROL_PLANE_ENABLED=true`.
+
+```text
+CONTROL_PLANE_ENABLED=true
+CONTROL_PLANE_CREDENTIALS=[{"tenantId":"your-team","role":"admin","token":"<generated-secret>"}]
+CONTROL_DATABASE_URL=postgresql://user:password@postgres:5432/mcpshield
+CONTROL_EVIDENCE_KEY=<64 hex characters from randomBytes(32)>
+CONTROL_ARTIFACT_PATH=/data/artifacts
+CONTROL_EVIDENCE_PATH=/data/evidence
+```
+
+`CONTROL_DATABASE_URL` can instead be a SQLite file for one-process development. The v1 PostgreSQL adapter executes the same portable migration against a real pool; legacy `/api` projections still use their SQLite adapter. Encrypted evidence is content-addressed local object storage, with AES-256-GCM and tenant AAD; do not lose the environment encryption key. Object storage must share a volume between API and scan worker.
+
+Run the independently deployable worker with `node --import tsx apps/api/src/control-worker-cli.ts` (add `--once` for one job). It claims durable SQL jobs, retries classified transient failures three times, and puts exhausted work in `DEAD_LETTER`. The worker uses the scanner's safe static-only entrypoint by default. `CONTROL_SANDBOX_MODE=docker` opts into the scanner's actual isolated Docker runtime. Scan completion alone never makes a release VERIFIED.
+
+| Endpoint | Role | Response |
+|---|---|---|
+| `GET /v1/session` | reader+ | tenant, role, capabilities |
+| `GET /v1/releases`, `/v1/policies`, `/v1/scans` | reader+ | `{items:[...]}` |
+| `POST /v1/releases/resolve` | operator+ | `{release}`; sourceType npm/tarball/fixture, locator |
+| `POST /v1/scans` | operator+ | `{scan,deduplicated,links}`; releaseId,policyHash, optional appealId + Idempotency-Key |
+| `GET /v1/scans/:id` | reader+ | `{scan}` |
+| `GET /v1/scans/:id/evidence` | operator+ | decrypted Merkle-verified `{bundle,reportRoot}` plus audit event |
+| `POST /v1/scans/:id/retry` | operator+ | only retryable DLQ work |
+| `GET /v1/releases/:id/history`, `/v1/events` | reader+ | bounded audit events |
+| `GET/POST /v1/releases/:id/appeals` | reader/operator+ | reason and optional same-release scanId |
+| `POST /v1/appeals/:id/resolve` | admin | one-time resolution text; exact repeat is deduplicated, different conclusion is 409 |
+| `POST /v1/policies` | admin | alias + versioned document; hash immutable |
+| `POST /v1/policies/:hash/deprecate` | admin | explicit deprecation audit |
+| `GET /v1/operations` | reader+ | latest-250 scan counts and actual DB driver |
+| `POST /v1/admission/check` | reader+ | policy/identity-bound decision and optional signed snapshot |
+
+Admission body is `{releaseId,artifactDigest,toolSurfaceHash,policyHash,mode:"strict"|"balanced",operationClass:"READ_PUBLIC"|"READ_PRIVATE"|"WRITE_EXTERNAL"|"DESTRUCTIVE"|"FINANCIAL"}`. Runtime identity must use the digest releaseId from resolve, not the legacy name@version. `CONTROL_V2_RPC_URLS`, `CONTROL_V2_REGISTRY_ADDRESS`, `CONTROL_V2_CHAIN_ID`, and optional `CONTROL_V2_CONFIRMATIONS` (default 2) enable the V2 chain reader. It requires confirmed/current agreement for ALLOW and uses the latest chain block to deny quarantine/revocation. Without a V2 reader, admission explicitly BLOCKs with LOCAL_DEMO source.
+
+Set `CONTROL_SIGNING_KEY` to an Ed25519 PKCS8 PEM and `CONTROL_SIGNING_KEY_ID` to publish signed snapshots. The signature covers sorted-key JSON of all fields including tenantId, operationClass, reasonCode and reportUrl; expiry is at most 30 seconds and never exceeds the chain attestation. Gateway must pin the public key and chain coordinates. No signing private key is returned by an endpoint.
+
+Verification: `node --import tsx --test tests/api/control-plane.test.ts tests/contracts/release-registry-v2.test.ts`. Set `MCPSHIELD_POSTGRES_TEST_URL` to run the actual PostgreSQL case (otherwise explicitly skipped). Existing tests are unchanged.
+
+Current boundaries: V2 contracts/reader are separate from V1 and have not been publicly deployed. V2 write relayer/validator fanout and durable chain projection are next integration work; never label a completed off-chain scan VERIFIED. SQL queue is the durable source; Redis stage streams, S3-compatible object replication, richer stage scheduling, PITR and production governance are not implemented by this batch.
+
+## UC-07 / FR-406: appeal, fresh rescan and retained history
+
+`POST /v1/releases/:releaseId/appeals` accepts only `{reason,scanId?}`. It saves `original:{artifactDigest,policyHash,reportRoot}` from that same-tenant release/optional scan; these are challenged-record snapshots, not fresh chain proofs. Missing policy/root remains null. The original scan, evidence and release status are never replaced.
+
+To request an actual new scan, submit the existing `POST /v1/scans` body with `appealId` (UUID): `{releaseId,policyHash,appealId,baselineReleaseId?,requestedTiers?}` and an `Idempotency-Key`. The appeal must be OPEN and the target must have the same tool identity plus a changed artifact digest or a different pinned policy hash. All ordinary profile, deprecated-policy, tier, tenant and scan-quota checks still apply. A checked appeal bypasses completed-result reuse, not policy checks; arbitrary `force`/path/image/approval fields are rejected. This is shared by source, prepared Node and prepared OCI scan workers.
+
+One appeal links one rescan as `rescan:{scanId,releaseId,policyHash,requestedAt}`. Repeating the same idempotency key/body returns that same scan, including after administrative resolution; a different body conflicts and a second new key cannot attach another scan. Open another appeal for another round. Old appeals lacking both an original policy snapshot and original scan cannot request a same-digest policy comparison (`APPEAL_ORIGINAL_POLICY_REQUIRED`); changed digests remain eligible. Normal policy deprecation/availability guards still run on retries.
+
+Queue insertion, appeal linkage and `appeal.rescan.queued` history are one tenant transaction. Worker completion/failure atomically records `appeal.rescan.completed`/`appeal.rescan.failed` on the original release, with target release/scan/policy and report root or fixed error code; source and target histories remain linked. The public scan includes `appealId`. History is the existing bounded latest-250 view, not a lossless event replay API. Evidence access stays operator-only.
+
+Expired workers that exhaust their attempt limit also record `WORKER_LOST` and `appeal.rescan.failed` atomically when the next worker claims work. Reaping is bounded to 16 tenants × 100 jobs per claim; each tenant uses the same transaction lock as normal outcomes and resolution. Larger backlogs drain on later claims. The guarded transition prevents duplicate terminal events; live leases are untouched and expired ownership is cleared. No worker running means no active reaper, so failure detection is not a real-time guarantee.
+
+Both successful and failed scan outcomes require the exact unexpired claim (tenant, owner, attempt and lease deadline), including when a worker name is reused. Manual DLQ retry rechecks eligibility/quota and writes `scan.retried` in the same tenant transaction; an audit failure leaves the job in DLQ. Explicit retries start a new bounded attempt budget and never replace an appeal's original evidence or change a release verdict.
+
+Preparation completion/failure uses the same exact-claim fence. A stale attempt cannot create a child scan, transfer image ownership or report failure for a replacement worker even if its worker name is reused; its own unused image is cleaned up. A current replacement still completes normally under the existing bounded attempt budget.
+
+### Authenticated availability: `/v1/health`
+
+All three tenant roles can read this additive endpoint. Public `/health` remains
+the existing process-liveness contract. `/v1/health` returns
+`{schemaVersion:"mcpshield.health.v1",status,checkedAt,components:{api,database,chain,scanner}}`;
+each component contains only `{status,code,checkedAt}`. HTTP 200 requires four UP
+components; missing, limited, unknown or failed dependencies produce DEGRADED/503.
+Neither result authorizes execution or proves detector quality.
+
+The database check is an actual tenant-scoped SQL read. Readiness probes have a
+two-second response deadline and two-second single-flight cache; a timed-out raw
+query keeps its slot until it settles, rather than spawning replacement queries.
+SQLite uses a temporary 100ms lock-wait timeout; PostgreSQL retains its bounded
+pool/statement timeouts while the HTTP deadline returns degraded. Chain readiness
+uses the configured reader's independent `health()` method with fixed sanitized
+codes; an older reader without that method is UNKNOWN, never presumed healthy.
+Cached observations retain their original timestamps.
+
+The real control-worker CLI writes tenant-isolated `scannerHeartbeat` records to
+the existing `cp_records` table every five seconds after each completed probe.
+Only its configured operator/admin tenants are covered. `--chain-only` writes no
+scanner heartbeat; static-only workers are LIMITED. Docker UP requires a successful
+bounded native `docker info` call reporting a Linux daemon, not an enabled flag.
+This demonstrates worker/daemon availability, **not** successful image acquisition,
+scan completion, remote AI availability, or sufficient worker capacity.
+
+Each process owns a random private record; another worker's STOPPED record cannot
+hide a fresh live worker. Observations expire after 20 seconds, including during
+the HTTP cache interval. Future/malformed records fail closed. Reads inspect at
+most 64 workers (an extra row detects truncation); no observed live worker with a
+truncated inventory is UNKNOWN. Orderly shutdown writes STOPPED where storage is
+available; abrupt loss uses TTL. Old ephemeral heartbeat records are pruned after
+two minutes by active workers, never from audit/evidence tables. No migration or
+new infrastructure is required. No heartbeat polling is triggered by `/health`.
+
+Checks: `node --import tsx --test tests/api/health.test.ts`. The healthy component
+tests use explicitly synthetic chain/Docker probes with actual SQL. A subprocess
+test runs the real CLI in static/chain-only `--once` modes. Real PostgreSQL and
+Linux Docker checks are gated by `MCPSHIELD_POSTGRES_TEST_URL` and
+`MCPSHIELD_DOCKER_TESTS=1`; a skip is not a healthy deployment claim.
+
+Admin `POST /v1/appeals/:appealId/resolve` accepts only `{resolution}`. OPEN→RESOLVED is atomic; exactly the same text returns `{appeal,deduplicated:true}` without another event, a changed conclusion returns `409 APPEAL_ALREADY_RESOLVED`. Administrative resolution is independent of scan completion and never means PASS, quorum, VERIFIED or removal of REVOKED. A running rescan can complete later and add evidence history without reopening the appeal.
+
+Checks: `node --import tsx --test tests/api/appeals.test.ts tests/api/preparations.test.ts tests/api/oci-preparations.test.ts`. The appeal test uses actual API/SQL/worker/evidence paths, explicit synthetic cache/disposition fixtures and one actual local resolver/static scan (no Docker or remote AI claim). Prepared profile cases use their existing synthetic native hooks and retain ABSTAIN. `MCPSHIELD_POSTGRES_TEST_URL` enables the real PostgreSQL concurrency case; otherwise it is explicitly skipped.
+# V2 authenticated control plane
+
+The original `/api` demo stays compatible. `/v1` requires a tenant-scoped bearer token;
+readers cannot retrieve evidence, operators scan and sign, and admins register chain
+identities and publish/deprecate policies. Never expose the relayer or validator keys
+to the browser. SQL is the durable queue and transaction outbox (SQLite locally,
+PostgreSQL for shared workers); evidence is AES-256-GCM encrypted with tenant AAD.
+
+Scan intake atomically checks tenant queue/daily bounds and durable idempotency keys.
+A still-valid PASS/FAIL for the same exact release and policy is reused across new
+request keys; expired or inconclusive results are rescanned. Key aliases remain bound
+to their original request hash. Without an explicit `baselineReleaseId`, intake selects
+the most recent previously registered, still-valid `VERIFIED` release of the same tool.
+An explicit baseline must belong to that tenant and tool; it is shown on the scan record.
+PostgreSQL serializes each tenant with a transaction advisory lock; local SQLite uses
+one serialized connection. DLQ retries share the same queue bound.
+
+Run `node --import tsx apps/api/src/control-worker-cli.ts` with the same control-plane
+database/evidence/artifact configuration as the API. `--scan-only`, `--chain-only`, and
+`--once` select bounded worker modes. The scanner defaults to static-only and returns
+`INCONCLUSIVE`/`ABSTAIN`, not a fabricated PASS. A dedicated trusted Linux worker with
+Docker may set `CONTROL_SANDBOX_MODE=docker`; do not mount its Docker socket in the API.
+
+V2 chain configuration: `CONTROL_V2_RPC_URLS`, `CONTROL_V2_REGISTRY_ADDRESS`,
+`CONTROL_V2_CHAIN_ID`, `CONTROL_V2_CONFIRMATIONS` (default 2),
+`CONTROL_V2_DEPLOYMENT_BLOCK`, and the worker/server-only `CONTROL_V2_RELAYER_KEY`.
+The first RPC submits transactions; all configured read RPCs can serve admission.
+`node --import tsx contracts/scripts/deploy-v2.ts` is a read-only preflight; `--deploy`
+is required to spend gas. Deployment also needs `DEPLOYER_PRIVATE_KEY` and three comma-
+separated `VALIDATOR_ADDRESSES`. `V2_GOVERNANCE_ADMIN` optionally assigns policy and
+validator administration externally; the deployer stays the release-registration relayer.
+
+Workflow: resolve a release, enqueue `/v1/releases/:releaseId/register`, enqueue
+`/v1/policies/:policyHash/publish`, submit a scan, await completion, then fetch
+`/v1/scans/:scanId/attestation?validator=0x...`. Sign its EIP-712 payload and POST it to
+`/v1/validator/attestations`. A deterministic critical report also exposes the
+`quarantine` template and `/v1/validator/quarantines`. Poll `/v1/chain/actions/:actionId`;
+the same signed request is idempotent. Prepared raw transaction bytes are persisted
+before broadcast and retained for identical rebroadcast after uncertain outcomes.
+An expiring SQL lease serializes each relayer's nonce stream. Reorg reconciliation
+rewinds missing receipts and indexer checkpoints, appending orphan notices to history.
+
+V2 chain retries use the existing SQL outbox, not a new broker. The fixed capstone
+budget (`chainRetryBudget` in `src/chain-outbox.ts`) is 12 execution attempts,
+with no new attempt after 5 minutes from the first claim. In-flight RPC calls retain
+their transport timeouts; this is a scheduling deadline, not transaction cancellation.
+Failures and pending receipts back off exponentially from 1 second to 30 seconds.
+Attempts are persisted before RPC work, so restarting a worker does not reset them.
+The claim starts the elapsed-time budget; a crash before the separate attempt increment
+consumes lease/time but no RPC attempt, since no external work has started yet.
+Malformed/explicitly rejected unsigned actions become `FAILED` without retry;
+transient failures or unconfirmed receipts exhaust into `DEAD_LETTER`. A genuine
+receipt reorg starts a new bounded recovery cycle for the same signed transaction.
+
+Inspect `/v1/chain/actions/:actionId` for `attempts`, `retryStartedAt`, `nextAttemptAt`,
+`retryBudget`, and the last safe `errorCode`; `/v1/events` records
+`chain.action.retry_scheduled`, `chain.action.failed`, and `chain.action.dead_letter`.
+DLQ is a work queue outcome, not proof that a submitted transaction failed on chain.
+The raw signed transaction/hash/nonce are retained but raw bytes are never returned
+by this API. An unresolved signed DLQ transaction pauses that account's writes across
+registry domains; backoff also prevents another tenant from skipping its nonce head.
+Other relayer accounts continue independently.
+Historical unsigned rows with an unknown registry are not adopted or allowed to starve
+known-domain work. A signed/reserved legacy row with no domain is stopped explicitly
+with `CHAIN_REGISTRY_UNRESOLVED`; its signed bytes are retained for operator review.
+
+No blind DLQ retry endpoint is provided. Pause the affected worker and inspect the
+exact chain ID/registry/transaction hash/nonce with the configured RPC. A confirmed
+receipt must be reconciled before clearing the pause; an absent/uncertain receipt
+must not cause nonce reuse, a new signature, or a fabricated success. Keep admission
+fail-closed, record the operator's resolution, and preserve the original outbox row.
+Do not delete a stuck action to make later writes proceed. If a repair cannot be
+proved safe, leave that account paused for manual investigation.
+
+`node --import tsx apps/validator/src/v2.ts` independently reacquires source and reruns
+the local scanner before signing; checking a supplied Merkle root alone is insufficient.
+Supply `CONTROL_API_URL`, `CONTROL_API_TOKEN`, `CONTROL_SCAN_ID`, and a private
+`VALIDATOR_PRIVATE_KEY` for `SINGLE_VALIDATOR`. The optional multi-key
+`VALIDATOR_PRIVATE_KEYS` JSON array remains `SINGLE_INSTITUTION_DEMO`, not independent organizations.
+
+Validators also require pinned `CONTROL_V2_CHAIN_ID`, `CONTROL_V2_REGISTRY_ADDRESS`,
+`CONTROL_V2_RPC_URLS`, and `CONTROL_VALIDATOR_POLICY_HASH`. They reconstruct the local
+EIP-712 domain/types, verify evidence/identity/policy/expiry against that trust context,
+and check active-validator membership and nonce directly through the configured RPC.
+Completion is checked against the exact transaction calldata and successful receipt;
+an API-supplied completed flag alone is insufficient. Public HTTP RPC URLs, URL userinfo,
+and redirects are rejected. Explicit private hosts may be listed in
+`CONTROL_V2_ALLOW_HTTP_HOSTS`; loopback is already allowed. Admission permits at most
+three configured RPC endpoints within one 1500 ms total budget, then fails closed.
+
+Default-policy `/v1` signing requires `VALIDATOR_SOURCES_PATH`, an operator-local JSON
+file (max 512 KiB, 128 entries). It has exact shape
+`{"schemaVersion":"mcpshield.validator-sources.v1","sources":[{"releaseId":"0x...","sourceType":"local","locator":"/absolute/owned/source"}]}`.
+No API response supplies paths, provider URLs, commands, or keys. Local inputs are
+new bounded snapshots; npm inputs require exact versions, and tarballs use only the
+existing HTTPS npm-registry resolver. Acquired tool/artifact/manifest/surface identity
+must match the actual chain record. Content changes at a previously configured path
+or registry URL are rejected before execution. OCI catalog entries must be digest-pinned
+but cannot sign: current OCI inspection is metadata-only, not a generic runtime test.
+
+If the original report used a baseline, its configured source is also reacquired and
+bound to its on-chain identity and tool; missing baselines or different recomputed
+package diffs stop signing. Each signer runs the existing scanner with Docker, checks
+complete runtime observation and matches the original verdict and deterministic
+violation scopes. Missing Docker/source or inconclusive reruns cannot be bypassed.
+Default policy still allows its labeled local semantic fallback (recorded as
+`LOCAL_STRUCTURED_FALLBACK_V1`); explicit `VALIDATOR_ALLOW_REMOTE_AI`/`VALIDATOR_AI_*`
+settings enable that validator's own provider. This legacy profile does not claim the
+prepared profile's immutable runtime closure, full dependency coverage or generated
+normal/adversarial call coverage. The stricter prepared policy remains separate.
+Digest-only root-link receipts use the same private append log described below.
+
+The public legacy `/api` judge demo is unchanged. Portable EVM/OTLP report-fixture
+tests sign explicitly in test code; there is no production signer bypass option.
+`MCPSHIELD_DOCKER_TESTS=1` enables real source reruns in `source-validator.test.ts`
+and V2 fullcycle; without it those runtime assertions are explicitly skipped.
+
+Remote semantic analysis is disabled unless `CONTROL_ALLOW_REMOTE_AI=true`. For OpenAI,
+set `CONTROL_AI_PROVIDER=openai`, `CONTROL_AI_MODEL`, and server-only `OPENAI_API_KEY`
+(or `CONTROL_AI_TOKEN`). For an existing compatible service use `CONTROL_AI_PROVIDER=custom`
+and `CONTROL_AI_URL`. `CONTROL_AI_TIMEOUT_MS` is bounded to 100–120000 ms. These settings
+are never accepted from scan request JSON; provider failures remain labeled fallback evidence.
+Keys stay server-side, as required by the [official OpenAI authentication guidance](https://developers.openai.com/api/reference/overview).
+
+Verification: `npm run test:api` and `npm run test:contracts`. The default V2 full-cycle
+test runs genuine local EVM transactions with an explicitly labeled report fixture;
+`MCPSHIELD_DOCKER_TESTS=1 node --import tsx --test tests/api/v2-fullcycle.test.ts` adds
+actual isolated scanning before the same quorum → verified MCP execution → quarantine
+→ revocation → two-Gateway pre-spawn blocking flow. No testnet or live AI verification
+is implied by those local tests.
+
+## Optional receipt checkpoints (FR407)
+
+`ReceiptAnchorRegistry` is a separate immutable contract. Existing ReleaseRegistryV2,
+its address, policy/validator authorization and EIP-712 domain do not change.
+It commits an opaque random ledger key, Merkle root, sequence range, prior checkpoint
+hashes and registered writer signature. Tenant names, agent/tool identities and receipt
+plaintext are never sent on-chain. A checkpoint proves integrity/existence, not safe
+execution; batches expose their `LIVE`/`REPLAY`/`MOCK` sources separately.
+
+Enable only with explicit `CONTROL_RECEIPT_RPC_URL`, `CONTROL_RECEIPT_CHAIN_ID`,
+`CONTROL_RECEIPT_REGISTRY_ADDRESS`, and private `CONTROL_RECEIPT_RELAYER_KEY`.
+`CONTROL_RECEIPT_CONFIRMATIONS` defaults to 2 (range 1–100). No settings means the
+additive receipt API returns 503; ordinary V2 admission is unaffected. The relayer
+must be the receipt contract's immutable admin for API ledger registration. Writers
+are separate keys; neither key is accepted in HTTP request bodies or rendered in UI.
+
+`node --import tsx contracts/scripts/deploy-receipts.ts --deploy` requires the receipt
+RPC/chain settings and private `DEPLOYER_PRIVATE_KEY`; optional
+`RECEIPT_GOVERNANCE_ADMIN` selects an externally managed registration admin. Omitting
+it is labeled `SINGLE_INSTITUTION_DEMO`. No deployment happens without `--deploy`.
+
+API workflow (all routes have `/v1` prefix):
+
+- Admin: `POST /receipt-ledgers`, body `{writer: "0x…"}`, `Idempotency-Key` required.
+- Reader: `GET /receipt-ledgers`, `GET /receipt-ledgers/:ledgerKey`.
+- Operator: `POST /receipt-ledgers/:ledgerKey/batches`, body `{bundle}` generated by
+  Gateway `createBatch`. Registered ledger and previous checkpoint must have N confirmations;
+  one consecutive batch (1–127 receipts) can be outstanding at a time.
+- Reader: `GET /receipt-ledgers/:ledgerKey/batches`, `GET /receipt-batches/:batchId`.
+- Operator: `GET /receipt-batches/:batchId/evidence` and `/attestation`; then
+  `POST /receipt-batches/:batchId/anchor`, body `{payload, signature}`. Templates
+  bind chain, receipt registry, ledger, root, range, previous tip/root, nonce and deadline.
+
+`LOCAL_UNANCHORED` includes queued/prepared transactions, `SUBMITTED` has been
+broadcast/mined but not yet N-deep, `CONFIRMED` requires a fresh canonical receipt,
+exact calldata and expected event. `ORPHANED` preserves an observed reorg in audit
+history; recovery rebroadcasts identical raw bytes. RPC failure returns 503, never
+stale `CONFIRMED`. `queueStatus` is separate: outbox `COMPLETED` means mined, not final.
+The receipt indexer can rewind a verified orphan even outside the generic recent-100
+reconciliation window. It compares the exact tenant/domain/action/hash/raw bytes/nonce
+and decoded payload, rechecks canonical absence, then conditionally updates only an
+unleased `COMPLETED` action. Failed or replaced payloads and active leases are untouched.
+Same root cannot be reassigned to another tenant, ledger or contract domain. Evidence
+uses the existing tenant-bound AES-GCM disk/S3 helper; readers cannot fetch plaintext.
+
+The control worker processes the receipt outbox/indexer unless `--scan-only` is set.
+The checkpoint indexer pages history and rechecks canonical receipts; this is an O(n)
+polling baseline, not a claim of high-volume historical-indexing throughput. API reads
+independently verify canonical state. Losing a writer key requires a newly registered
+ledger; no hidden key rotation or ownership override exists.
+
+`node --import tsx apps/validator/src/receipt-writer.ts --submit` uploads and signs a
+verified local Gateway ledger using `RECEIPT_LEDGER_PATH`, `RECEIPT_LEDGER_KEY`,
+`RECEIPT_FROM_SEQUENCE`, `RECEIPT_TO_SEQUENCE`, `CONTROL_API_URL`, `CONTROL_API_TOKEN`,
+receipt RPC/chain/registry/confirmation settings and private `RECEIPT_WRITER_KEY`.
+The signing inputs come from local receipts and pinned direct RPC, never API templates.
+It reports queued status only; poll the batch endpoint for confirmation. Local tests
+use synthetic single-institution keys, not independently operated external writers.
+
+Scan detail responses carry a W3C `traceparent` header. The validator continues it
+through `validator.fanout/attest/verify/sign`, sends only `traceparent` on API calls,
+and API `validator.accept` accepts a child parent only within that scan's trace.
+Outbox migration 008 persists `submission_trace_parent` for `chain.submit`; V2 and
+receipt indexers follow the actual transaction's scoped parent and reuse its trace ID
+in audit events. Shared telemetry's fixed attribute allowlist still excludes bodies,
+signatures, tokens, private keys, baggage and raw exceptions. The real V2 regression
+checks these durable trace IDs with exports disabled. `admission.decision` follows
+the completed scan only when tenant/release/policy and the fresh chain report root
+match an indexed `LIMIT 1` lookup. The outer `admission.check` retains the caller's
+request trace; correlation failure never changes the admission decision or adds RPC.
+`tests/integration/fullcycle-telemetry.test.ts` runs the actual local EVM regression
+in a separate process with official HTTP JSON OTLP exports and final shutdown flush.
+It checks exact exported parent relationships and rejects raw tool/credential/baggage
+fields. Its bounded loopback receiver is a protocol-contract collector, not a live
+production collector or query backend; the scan report fixture is not Docker proof.
+
+## Authenticated invalidation stream
+
+`GET /v1/events/stream` accepts the same bearer credentials, including the reader role.
+Use authenticated streaming fetch or a server-side BFF; tokens in query parameters
+are not accepted. Each connection/reconnection begins with `event: resync` and
+`data: {"type":"RESYNC_REQUIRED","reason":"INITIAL"}`. Changed recent event-ID sets
+send the same envelope with reason `EVENTS_CHANGED`; `RECONNECT` requests a new stream.
+Refetch existing JSON lists and the latest admission decision after resync.
+
+This is only tenant-scoped UI invalidation: no event payload, tenant name, cursor,
+`id`, exact audit ordering, or lossless replay. `Last-Event-ID` is deliberately ignored.
+The existing bounded 250-event snapshot is fingerprinted every second; heartbeat
+comments arrive after 15 quiet seconds. Connections close after 2 minutes without
+changes or 10 minutes total. Snapshot reads time out after 3 seconds; slow consumers
+are disconnected instead of queued. Limits are 3 connections per tenant / 32 per
+API process, not cluster-wide. Abort, credential revocation and server pre-close
+release stream resources. SSE is never chain truth or execution authorization;
+Gateway fresh admission checking remains unchanged.
+
+`tests/contracts/receipt-anchor.test.ts` measures local Ganache gas (not money prices);
+`tests/api/receipt-anchors.test.ts` exercises real EVM/API/outbox/indexer/CLI, tenant ACL,
+signature binding, AES-GCM storage, N-depth, actual snapshot/revert and raw-tx recovery.
+## Prepared npm runtime queue
+
+`POST /v1/releases/:sourceReleaseId/prepare` (operator, `Idempotency-Key`) accepts
+only `{ "policyHash": "0x..." }` for the separate `restricted-node-docker-v1`
+policy. Reader routes are `GET /v1/preparations` and `GET /v1/preparations/:id`;
+operators can retry retryable dead-letter jobs at `POST /v1/preparations/:id/retry`.
+The immutable source must be a resolved npm/tarball package. Request bodies cannot
+choose server paths, images, commands, probe plans, provider endpoints, or keys.
+
+Enable explicitly with `CONTROL_PREPARED_ENABLED=true`, `CONTROL_SANDBOX_MODE=docker`,
+`CONTROL_PREPARED_BUILDER_DIGEST=sha256:<approved-local-image-config-id>` and
+`CONTROL_PREPARED_ARCHITECTURE=amd64` (or `arm64`). Optional
+`CONTROL_PREPARED_BIN_NAME` is an operator setting, not a request field.
+Jobs freeze builder/platform and installed collector/observer hashes. A changed
+configuration cannot silently resume an older job. Preparation jobs and scans
+share tenant queue/daily quotas; a completed preparation's child scan is counted once.
+
+`COMPLETED` means the job finished, not PASS, READY, or VERIFIED. These image IDs
+are local Docker-daemon config IDs, not publicly pullable registry digests. Source
+records remain unchanged and the legacy policy never approves prepared evidence.
+Preparation and regular scan workers use a bounded 20-minute ownership lease;
+the source admission limit stays 16 MiB and large/opaque closures may require review.
+The preparation worker stores a distinct release plus completed scan atomically only
+after evidence/identity checks and a live ownership lease. Missing discovery creates
+an INCONCLUSIVE result with no invented release identity. Successful new rows own
+their exact local runtime tag; stale leases, validation failures and duplicate-image
+jobs clean up only their own tag. An uncertain database commit preserves the image
+until ownership is resolved, rather than deleting a possibly committed runtime.
+
+Operators can fetch private evidence at `GET /v1/preparations/:id/evidence` and the
+Gateway envelope at `GET /v1/releases/:releaseId/gateway-config`. Both use tenant
+AES-GCM evidence and independently recheck commitments. Reader lists never expose
+raw tools, descriptors, image tags or evidence storage keys. An export is not admission.
+The control worker dispatches this queue only when explicitly enabled. It derives
+PASS/FAIL/ABSTAIN from the separate strict policy, not advertised scanner checks.
+All 13 coverage/completion checks are required for PASS; missing local image,
+explicit AI, independent critic, or complete probes cannot become approval. Regular
+rescans use the bound prepared image; cross-profile/baseline mixing is rejected.
+
+Each signing validator must have the exact runtime image on its own Docker daemon
+and its own `VALIDATOR_PREPARED_BUILDER_DIGEST`, `VALIDATOR_PREPARED_ARCHITECTURE`,
+`VALIDATOR_ALLOW_REMOTE_AI=true`, and `VALIDATOR_AI_PROVIDER` configuration. Set
+`VALIDATOR_AI_URL` for a custom provider or `VALIDATOR_AI_MODEL` and
+`VALIDATOR_AI_TOKEN` for OpenAI; these are local operator settings, never API input.
+Whole-source prepared review is **not** authorized by these provider settings.
+The current full-source contract test requires the explicit operator setting
+`MCPSHIELD_AI_DISCLOSURE_POLICY=LOCAL_CONTRACT_TEST` in each worker/validator,
+`provider=custom`, and an exact numeric loopback URL (`127.0.0.1` or `[::1]`).
+The equivalent trusted programmatic fields are `scannerOptions.aiDisclosurePolicy`
+and validator `preparedAi.disclosurePolicy`. Neither flag is accepted from an API
+caller, inferred from a URL, or enabled by default. Evidence labels this
+`PROVIDER_QUALITY_NOT_MEASURED`; remote whole-source disclosure remains forbidden
+and cannot produce approval. A privacy-scoped real-provider review is separate work.
+The signer independently exports the image closure and reruns the scanner with its
+own fresh synthetic probes, analyzer and critic before signing the original root.
+Verdict and deterministic violation scopes must agree. The API proposes templates
+using a private worker proof but does not have a Docker socket or prove independent
+execution. Nonce, deadline and validator-set version are fetched after the rerun.
+Set `VALIDATOR_PRIVATE_KEY` for a single operator-owned key: the CLI verifies,
+submits one validator's vote, confirms that transaction and exits as `SINGLE_VALIDATOR`.
+Other institutions run separately; one vote does not claim quorum. The existing
+`VALIDATOR_PRIVATE_KEYS` JSON array is `SINGLE_INSTITUTION_DEMO` for two/three keys.
+Both variables together are rejected. No browser key input or key sharing is needed.
+
+`VALIDATOR_VERIFICATION_RECEIPTS_PATH` (default `data/validator-verifications.jsonl`)
+stores digest-only original/independent-root links. `LOCAL_VERIFICATION_ONLY` is a
+private append log, not OS-enforced append-only/WORM, an immutable chain receipt or independent-organizations
+claim. Raw closure bytes and tool definitions remain tenant-encrypted off-chain;
+validator evidence downloads alone allow 32 MiB with a 15-second total deadline.
+Synthetic worker/signing tests prove contracts and failure handling, not actual
+Docker execution or real AI quality. PostgreSQL concurrency coverage runs only
+when `MCPSHIELD_POSTGRES_TEST_URL` is explicitly configured.
+
+### OCI preparation policy and configuration
+
+The same protected prepare/retry endpoints accept immutable OCI source releases
+only under `restricted-oci-offline-v1`. This exact policy commits
+`semanticEvidenceMode: LOCAL_CONTRACT_TEST`; it never represents production-model
+quality. The source resolver/importer still limits acquisition/snapshot bytes to
+100 MiB. `maxExpandedBytes` limits the sum of layer archives and native export to
+512 MiB; it is not a larger download allowance. Node/default policies remain 16 MiB.
+
+OCI is disabled by default. Operator configuration requires `CONTROL_OCI_ENABLED=true`,
+`CONTROL_SANDBOX_MODE=docker`, `CONTROL_OCI_ARCHITECTURE=amd64` (or `arm64`),
+`CONTROL_OCI_BASE_DIGEST`, `CONTROL_OCI_BASE_CATALOGUE_DIGEST`,
+`CONTROL_OCI_TRIVY_DIGEST`, `CONTROL_OCI_DATABASE_DIR` (absolute local directory),
+`CONTROL_OCI_DATABASE_DIGEST`, and `CONTROL_OCI_SINK_DIGEST`. Image/catalogue/database
+digests must be immutable `sha256:` values. Installed observer/sink bytes are also
+frozen into the job configuration; changing configuration never silently retries
+with different authority. API callers supply only `policyHash`, never these paths,
+images, probes or AI credentials. No Docker socket is needed by the API process.
+
+The strict OCI policy recomputes its supported checks from bound evidence and local
+authority. Missing native identity, complete source/SBOM, probes or test-only semantic
+provenance cannot become PASS. Binding, image preparation and job completion alone
+are not PASS or VERIFIED.
+
+The trusted worker dispatches OCI preparation/rescans through the same 20-minute
+lease/CAS queue and stores a distinct `prepared-oci` release. Native image/database
+inspection runs in the worker, not the API. `OWNED` images retain only their own
+UUID tag; duplicate/stale failed jobs remove only that tag. `BORROWED` images retain
+no new tag and are never deleted by preparation cleanup. The row explicitly records
+borrowed ownership, not an image-retention guarantee: if an external owner removes
+the exact CID, the next native inspection fails closed and requires operator action.
+Database lease atomicity cannot keep an externally owned Docker image alive.
+All raw metadata stays tenant-encrypted; public job/scan/release summaries retain
+`LOCAL_CONTRACT_TEST` and `PROVIDER_QUALITY_NOT_MEASURED`, not native proof contents.
+Cleanup failures produce `preparation.cleanup.attention` with a fixed code, and a
+private `runtimeCleanup` record containing only the exact owned UUID tag for operator
+recovery. This does not revoke a completed release. There is no automatic orphan GC:
+operators must first check committed ownership, especially for
+`COMMIT_OWNERSHIP_RECHECK_REQUIRED`. If the database is unavailable, a fixed stderr
+event reports that the recovery record could not be saved; raw Docker errors are omitted.
+
+Each OCI signer separately sets `VALIDATOR_OCI_ENABLED=true` and the same explicit
+OCI environment fields above with prefix `VALIDATOR_OCI_` instead of `CONTROL_OCI_`.
+The validator needs its own exact base/candidate/Trivy/sink images, pinned catalogue,
+current pinned local database, and `VALIDATOR_ALLOW_REMOTE_AI=true` plus the explicit
+numeric-loopback `LOCAL_CONTRACT_TEST` analyzer/critic configuration. It re-exports
+the image, verifies its own installed observer, reruns the full OCI scanner with
+fresh generated probes, and compares verdict plus deterministic finding scope sets.
+API-supplied worker trust, fabricated completion checks, a reused original scan, or
+an original FAIL followed by an independent ABSTAIN cannot authorize a signature.
+Only after this independent rerun does it request current nonce/deadline/version
+and reconstruct the pinned EIP-712 payload. Original and independent report roots
+are linked in the private local verification receipt with the test-only quality
+label. This is neither production-model quality nor an arbitrary-native-code proof.
+
+`node --import tsx --test tests/api/oci-fullcycle.test.ts` has a separate native
+Linux gate: set `MCPSHIELD_DOCKER_TESTS=1`, `MCPSHIELD_OCI_PROFILE_TESTS=1`,
+`MCPSHIELD_RUNTIME_BUILDER_IMAGE`, `MCPSHIELD_TRIVY_IMAGE` (both exact local CIDs),
+and `MCPSHIELD_TRIVY_DATABASE_DIR`. It uses the authored approved-base source fixture,
+actual local-layout resolver and worker, four single-key validator CLI processes,
+V2 quorum/indexer and two separate Gateway denial processes. Source and expanded
+byte counts, independent roots and bounded Docker create/start evidence are checked.
+It does not download external images or call paid AI; unsupported hosts skip the
+native test. A portable pass must not be reported as a native fullcycle pass.
+
+### Additive Node scoped v2
+
+`restricted-node-docker-v2` is a separate `version: 2.0.0` control policy with the
+exact `semantic: scopedReviewPolicy(LOCAL_CONTRACT_TEST|PROVIDER_EXECUTION)` object.
+Both policies are listed under `/v1/policies`; v1 defaults, hashes and requests stay
+unchanged. Prepare still accepts only `{policyHash}`. The server generates the
+full `executionPolicy.semantic` commitment. A changed semantic mode produces a
+different manifest/release identity, not a reinterpretation of an old approval.
+OCI v2 and prepared baselines remain unsupported.
+
+In addition to the existing pinned `CONTROL_PREPARED_*` and Docker configuration,
+API and worker require:
+
+- `CONTROL_SCOPED_PROVENANCE_PATHS`: JSON object mapping tenant IDs to absolute,
+  operator-owned catalogue paths. A tenant cannot borrow another tenant's entry.
+- `CONTROL_SCOPED_AI_CONFIG`: separate JSON AI configuration, validated by the
+  scanner's `validateScopedAiV2` before execution and again at its actual risk tier.
+  It requires explicit `allowRemoteAi: true`,
+  `disclosurePolicy: SCOPED_PROVIDER_REVIEW_V1`, matching `evidenceMode`, provider
+  and bounded transport configuration. This never enables v1 full-source export.
+  Local tests use only numeric-loopback endpoints and synthetic credentials.
+  Tier 3 requires independently transmitted distinct OpenAI model selections and
+  distinct nonempty response model identities, not merely different aliases.
+
+The catalogue file has exactly this local-only shape (digest shown as a placeholder):
+
+```json
+{
+  "schemaVersion": "mcpshield.scoped-provenance-catalogue.v1",
+  "artifacts": [{
+    "schemaVersion": "mcpshield.operator-code-artifact.v1",
+    "authority": "OPERATOR_LOCAL_CATALOG",
+    "contentClass": "CODE_ARTIFACT_NO_CUSTOMER_DATA",
+    "sourceArtifactDigest": "sha256:<64 lowercase hex characters>"
+  }]
+}
+```
+
+The file is bounded to 512 KiB and 128 unique original tree digests; an empty
+`artifacts` array revokes eligibility. It is reopened without following the final
+symlink where supported. This is an operator declaration, not automatic proof
+that arbitrary encoded data contains no customer information. Package metadata,
+API bodies and archived worker proofs are not declaration authorities.
+
+Every relevant boundary rechecks current declaration/configuration. Prepare,
+rescan, final persistence and attestation-template generation also use a fresh
+bounded snapshot of the retained original source: exact source identity and actual
+original file bytes must fit `maxArtifactBytes`. Private `sourceBudget` binds that
+count to the original tree digest; neither missing size, archive length nor the
+expanded installed closure is substituted. This deliberately adds bounded local
+reads; it does not cache approvals or mutate candidate source. Retry cannot silently
+replace its frozen configuration. Removing a catalogue entry or changing worker
+configuration fails closed even if earlier results were PASS.
+Revocation takes effect at these checkpoints; it does not retract or cancel a
+provider request that was already transmitted before the local change.
+
+Each validator separately configures `VALIDATOR_SCOPED_PROVENANCE_PATH`,
+`VALIDATOR_SCOPED_AI_CONFIG` and the existing `VALIDATOR_SOURCES_PATH` (unchanged
+`mcpshield.validator-sources.v1` schema). It selects the original `sourceReleaseId`
+from its own immutable locator catalogue, reacquires and checks all source identity
+fields and original byte count before provider work, exports its own image, and
+performs a fresh scoped review and Docker run. It reloads/reacquires before signing;
+API-supplied provenance, an absent independent scan, changed source/archive/mode,
+over-budget source or mismatched verdict cannot authorize a signature.
+
+Public summaries include only policy-derived `semanticEvidenceMode` and fixed
+`providerQuality: PROVIDER_QUALITY_NOT_MEASURED`. The mode does **not** prove that a
+provider request happened: budget/config failures can cause zero requests. Raw
+review execution evidence stays encrypted and operator-only. Paths, provider keys,
+catalogues, runtime trust and private source budgets are not public projections.
+
+Rollback: disable the separate scoped configuration or deprecate its policy; keep
+existing v1 configuration unchanged. Do not relabel existing v2 evidence as v1.
+To re-enable a revoked declaration, restore the explicit local catalogue and use a
+new preparation or the permitted retry with its original frozen settings.
+
+Portable checks: `node --import tsx --test tests/api/scoped-preparations.test.ts
+tests/api/scoped-validator.test.ts`. These use actual SQL/source acquisition and
+loopback Responses contracts but explicitly synthetic Docker observations.
+The separate real Linux fullcycle is
+`node --import tsx --test --test-name-pattern="scoped Node v2 source" tests/api/prepared-fullcycle.test.ts`
+with `MCPSHIELD_DOCKER_TESTS=1`, `MCPSHIELD_SCOPED_DOCKER_TESTS=1` and a pinned local
+`MCPSHIELD_RUNTIME_BUILDER_IMAGE`. It uses a naturally sized authored mailbox,
+separate local catalogues, two real validator subprocesses, local EVM quorum and
+Gateway allow/revoke with Docker create/start evidence. No paid provider, actual
+customer data or public-registry provenance is claimed.

@@ -25,6 +25,37 @@ const SAFE = join(ROOT, 'demo/fixtures/mail-mcp-1.0.0');
 const MALICIOUS = join(ROOT, 'demo/fixtures/mail-mcp-1.0.1');
 const quiet = () => {};
 
+function runMcp(fixture) {
+  const requests = [
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1.0.0' } } },
+    { jsonrpc: '2.0', method: 'notifications/initialized' },
+    { jsonrpc: '2.0', id: 2, method: 'ping' },
+    { jsonrpc: '2.0', id: 3, method: 'tools/list' },
+    { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'list_messages', arguments: {} } },
+  ];
+  const result = spawnSync(process.execPath, ['index.mjs'], {
+    cwd: fixture, input: `${requests.map(JSON.stringify).join('\n')}\n`, encoding: 'utf8', timeout: 5_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, '');
+  return result.stdout.trim().split('\n').map(JSON.parse);
+}
+
+test('fixtures implement the MCP stdio handshake, ping, tools/list, and list_messages call', async () => {
+  for (const fixture of [SAFE, MALICIOUS]) {
+    const manifest = JSON.parse(await readFile(join(fixture, 'manifest.json'), 'utf8'));
+    const responses = runMcp(fixture);
+    assert.deepEqual(responses.map(({ id }) => id), [1, 2, 3, 4]);
+    assert.equal(responses[0].result.protocolVersion, '2025-11-25');
+    assert.deepEqual(responses[1].result, {});
+    assert.deepEqual(responses[2].result.tools, manifest.tools);
+    assert.equal(toolSurfaceHash(responses[2].result.tools), toolSurfaceHash(manifest.tools));
+    assert.deepEqual(JSON.parse(responses[3].result.content[0].text), {
+      ok: true, messages: [{ id: 'demo-1', subject: 'Welcome' }],
+    });
+  }
+});
+
 test('safe 1.0.0 produces a schema-valid PASSED result without critical findings', async () => {
   const result = await scanRelease({ fixtureDir: SAFE, logger: quiet });
   assertScanResult(result);

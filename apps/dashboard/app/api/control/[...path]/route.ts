@@ -1,0 +1,135 @@
+import { NextRequest, NextResponse } from "next/server";
+import { receiptEvidenceSummary, validReceiptWriter } from "../../../../lib/receipt-summary";
+import { controlEventStream } from "../../../../lib/control-events";
+import { preparedDownload } from "../../../../lib/prepared-download";
+import { parseControlHealth } from "../../../../lib/control-health";
+
+export const dynamic = "force-dynamic";
+const COOKIE = "mcpshield_control";
+const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
+const routes = {
+  GET: [/^session$/, /^health$/, /^operations$/, /^releases$/, /^releases\/[^/]+\/(history|appeals|gateway-config)$/, /^scans$/, /^scans\/[^/]+(?:\/evidence)?$/, /^policies$/, /^chain\/actions(?:\/[^/]+)?$/, /^receipt-ledgers(?:\/[^/]+(?:\/batches)?)?$/, /^receipt-batches\/[^/]+(?:\/evidence)?$/, /^preparations(?:\/[^/]+(?:\/evidence)?)?$/, /^events\/stream$/],
+  POST: [/^releases\/resolve$/, /^releases\/[^/]+\/(appeals|register|prepare)$/, /^appeals\/[^/]+\/resolve$/, /^scans$/, /^scans\/[^/]+\/retry$/, /^policies$/, /^policies\/[^/]+\/(deprecate|publish)$/, /^admission\/check$/, /^receipt-ledgers$/, /^preparations\/[^/]+\/retry$/],
+};
+
+type Context = { params: Promise<{ path: string[] }> };
+
+async function boundedJson(body: ReadableStream<Uint8Array> | null, maxBytes: number, timeoutMs = 10_000) {
+  if (!body) throw new Error("EMPTY_JSON");
+  const reader = body.getReader();
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("BODY_TIMEOUT")), timeoutMs); });
+  const parts: Buffer[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await Promise.race([reader.read(), deadline]);
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) throw new Error("BODY_TOO_LARGE");
+      parts.push(Buffer.from(value));
+    }
+    return JSON.parse(Buffer.concat(parts).toString("utf8")) as unknown;
+  } finally { clearTimeout(timer!); void reader.cancel().catch(() => {}); }
+}
+
+function controlOrigins(request: NextRequest) {
+  const loopback = new Set(["127.0.0.1", "localhost", "[::1]"]);
+  const publicUrl = new URL(process.env.MCPSHIELD_PUBLIC_ORIGIN ?? request.nextUrl.origin);
+  if (publicUrl.username || publicUrl.password || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash || !["http:", "https:"].includes(publicUrl.protocol)) throw new Error("PUBLIC_ORIGIN_INVALID");
+  const localDemo = process.env.MCPSHIELD_CONTROL_ALLOW_LOOPBACK_HTTP === "true" && publicUrl.protocol === "http:" && loopback.has(publicUrl.hostname);
+  if (process.env.NODE_ENV === "production" && (!process.env.MCPSHIELD_PUBLIC_ORIGIN || (publicUrl.protocol !== "https:" && !localDemo))) throw new Error("PUBLIC_ORIGIN_HTTPS_REQUIRED");
+  const api = new URL(process.env.MCPSHIELD_API_URL ?? "http://127.0.0.1:3001");
+  const allowedHttp = new Set([...loopback, ...(process.env.MCPSHIELD_API_HTTP_HOSTS ?? "").split(",").map((host) => host.trim()).filter(Boolean)]);
+  if (api.username || api.password || api.search || api.hash || (api.protocol !== "https:" && !(api.protocol === "http:" && allowedHttp.has(api.hostname)))) throw new Error("API_HTTPS_REQUIRED");
+  return { publicOrigin: publicUrl.origin, secure: publicUrl.protocol === "https:", api };
+}
+
+async function handle(request: NextRequest, context: Context) {
+  const { path } = await context.params;
+  if (!path.length || path.some((part) => !part || part === "." || part === ".." || /[/\\\x00-\x1f]/.test(part))) return json({ error: "Unknown control route" }, 404);
+  const route = path.join("/");
+  const mutating = request.method !== "GET";
+  let origins;
+  try { origins = controlOrigins(request); } catch { return json({ error: "운영 콘솔의 공개 HTTPS 주소와 API 연결 설정을 확인하세요." }, 503); }
+  if (mutating && request.headers.get("origin") !== origins.publicOrigin) return json({ error: "Same-origin request required" }, 403);
+  const cookieOptions = { httpOnly: true, sameSite: "strict" as const, secure: origins.secure, path: "/api/control", maxAge: 8 * 60 * 60 };
+  if (route === "session" && request.method === "DELETE") {
+    const response = json({ signedOut: true });
+    response.cookies.set(COOKIE, "", { ...cookieOptions, maxAge: 0 });
+    return response;
+  }
+  const login = route === "session" && request.method === "POST";
+  if (!login && !routes[request.method as keyof typeof routes]?.some((pattern) => pattern.test(route))) return json({ error: "Unknown control route" }, 404);
+  let token = request.cookies.get(COOKIE)?.value;
+  let body: string | undefined;
+  if (mutating) {
+    if (!request.headers.get("content-type")?.startsWith("application/json")) return json({ error: "JSON required" }, 415);
+    if (Number(request.headers.get("content-length") ?? 0) > 65_536) return json({ error: "Request too large" }, 413);
+    try {
+      const parsed = await boundedJson(request.body, 65_536);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+      if (login) token = (parsed as { token?: string }).token;
+      if (route === "receipt-ledgers") {
+        const key = request.headers.get("idempotency-key");
+        if (Object.keys(parsed).length !== 1 || !validReceiptWriter((parsed as { writer?: unknown }).writer) || !key?.trim() || key.length > 256) return json({ error: "0이 아닌 공개 writer 주소(0x + 40자리 hex)와 재시도 식별키가 필요합니다. 개인키는 입력하지 마세요." }, 400);
+      }
+      if (/^releases\/[^/]+\/prepare$/.test(route)) {
+        const key = request.headers.get("idempotency-key");
+        if (!/^0x[a-f0-9]{64}$/.test(path[1]) || Object.keys(parsed).join() !== "policyHash" || !/^0x[a-f0-9]{64}$/.test((parsed as { policyHash?: string }).policyHash ?? "") || !key?.trim() || key.length > 256) return json({ error: "원본 릴리스와 준비 전용 정책 해시, 재시도 식별키만 전달할 수 있습니다." }, 400);
+      }
+      if (/^preparations\/[^/]+\/retry$/.test(route) && Object.keys(parsed).length) return json({ error: "재시도에서 실행 이미지·경로·비밀값을 지정할 수 없습니다." }, 400);
+      if (/^appeals\/[^/]+\/resolve$/.test(route)) {
+        const resolution = (parsed as { resolution?: unknown }).resolution;
+        if (Object.keys(parsed).join() !== "resolution" || typeof resolution !== "string" || resolution.trim().length < 8 || resolution.length > 2000) return json({ error: "검토 결론은 공백을 제외한 8자 이상, 전체 2000자 이하로 작성하세요. 결론 외 필드는 전달할 수 없습니다." }, 400);
+      }
+      body = JSON.stringify(parsed);
+    } catch (error) { return json({ error: "요청 JSON이 잘못되었거나 제한 크기·시간을 초과했습니다." }, error instanceof Error && error.message === "BODY_TOO_LARGE" ? 413 : 400); }
+  }
+  if (typeof token !== "string" || !/^[\x21-\x7e]{16,2048}$/.test(token)) return json({ error: "운영 액세스 토큰으로 로그인하세요." }, 401);
+  const url = new URL(`/v1/${path.map(encodeURIComponent).join("/")}`, origins.api);
+  if (route === "events/stream") return controlEventStream(request, url, token);
+  for (const key of ["q", "status", "releaseId", "cursor", "limit"]) {
+    const value = request.nextUrl.searchParams.get(key);
+    if (value && value.length <= 512) url.searchParams.set(key, value);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const upstream = await fetch(url, {
+      method: login ? "GET" : request.method,
+      headers: { accept: "application/json", authorization: `Bearer ${token}`, ...(mutating && !login ? { "content-type": "application/json", "idempotency-key": request.headers.get("idempotency-key") ?? crypto.randomUUID() } : {}) },
+      body: login ? undefined : body, cache: "no-store", signal: controller.signal, redirect: "error",
+    });
+    if (route === "health" && ![200, 503].includes(upstream.status)) {
+      // Dependency diagnostics, proxy error bodies and unauthorized payloads must
+      // never escape this fixed health boundary, even when they are valid JSON.
+      void upstream.body?.cancel().catch(() => {});
+      const status = [401, 403].includes(upstream.status) ? upstream.status : 503;
+      const code = status === 401 ? "UNAUTHORIZED" : status === 403 ? "FORBIDDEN" : "HEALTH_UNAVAILABLE";
+      const response = json({ error: { code, message: status === 401 ? "운영 로그인이 만료되었습니다." : status === 403 ? "종합 상태를 조회할 권한이 없습니다." : "종합 상태를 확인하지 못했습니다." } }, status);
+      if (status === 401) response.cookies.set(COOKIE, "", { ...cookieOptions, maxAge: 0 });
+      return response;
+    }
+    // Prepared closure evidence is privately stored up to 32 MiB; allow only
+    // these authenticated evidence routes that budget plus a small JSON envelope.
+    const evidenceRoute = /^(preparations|scans)\/[^/]+\/evidence$/.test(route);
+    const payload = await boundedJson(upstream.body, upstream.ok && evidenceRoute ? 32 * 1024 * 1024 + 1024 : 4 * 1024 * 1024);
+    if (route === "health" && (upstream.ok || upstream.status === 503)) {
+      try { return json(parseControlHealth(payload, upstream.status), upstream.status); }
+      catch { return json({ error: "종합 상태 응답을 검증하지 못했습니다." }, 503); }
+    }
+    if (upstream.ok && /^releases\/[^/]+\/gateway-config$/.test(route)) return preparedDownload(payload, path[1]);
+    const preparedScanEvidence = /^scans\/[^/]+\/evidence$/.test(route) && Object.keys((payload as { bundle?: { files?: object } })?.bundle?.files ?? {}).some(path => path.startsWith("prepared/"));
+    if (upstream.ok && route.startsWith("scans/") && evidenceRoute && !preparedScanEvidence && Buffer.byteLength(JSON.stringify(payload)) > 4 * 1024 * 1024) throw new Error("LEGACY_EVIDENCE_TOO_LARGE");
+    const response = json(upstream.ok && (/^(receipt-batches|preparations)\/[^/]+\/evidence$/.test(route) || preparedScanEvidence) ? receiptEvidenceSummary(payload) : payload, upstream.status);
+    if (login && upstream.ok) response.cookies.set(COOKIE, token, cookieOptions);
+    if (upstream.status === 401) response.cookies.set(COOKIE, "", { ...cookieOptions, maxAge: 0 });
+    return response;
+  } catch { return json({ error: "운영 API 응답을 안전하게 불러올 수 없습니다. 연결 상태나 응답 크기를 확인하세요." }, 503); }
+  finally { clearTimeout(timer); }
+}
+
+export const GET = handle;
+export const POST = handle;
+export const DELETE = handle;

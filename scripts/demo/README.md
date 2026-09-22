@@ -3,12 +3,15 @@
 ```powershell
 npm.cmd run demo:reset
 npm.cmd run demo:run
+npm.cmd run demo:mcp-e2e
 npm.cmd run demo:live-smoke
 npm.cmd run demo:evm-smoke
 npm.cmd run stack:up
 ```
 
 `demo:run` proves the Gateway computes identity from an immutable artifact snapshot, starts only the safe manifest entrypoint, and makes two independent revoked-release checks before any malicious entrypoint can start. The bundled data is always labeled `REPLAY`.
+
+`demo:mcp-e2e` uses the official MCP TypeScript v2 client to spawn the Gateway over stdio. It performs the real `initialize`, `tools/list`, and `tools/call` flow for `mail-mcp@1.0.0`, then proves `mail-mcp@1.0.1` is rejected during admission before an MCP handshake can complete.
 
 `demo:live-smoke` starts an ephemeral Backend without Docker, runs the real scanner for both fixtures, submits their random scan IDs and canonical evidence, produces signed 2-of-3 votes, and proves the LIVE Gateway allows only the verified snapshot. It verifies the Backend latest-scan endpoint, cleans up the process, and writes no database file.
 

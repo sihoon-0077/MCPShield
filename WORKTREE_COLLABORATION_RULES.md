@@ -2,6 +2,39 @@
 
 이 문서는 MCPShield 해커톤 프로토타입을 여러 worktree에서 병렬 개발할 때 사용하는 역할, 코드 소유권, 인터페이스, 병합 및 리뷰 규칙을 정의한다.
 
+## 2026-09-22 캡스톤 v2.0 구현 재개 — 현재 범위
+
+사용자가 `docs/MCPShield_캡스톤_최종_마스터문서_v2.0.md`를 구현 기준으로 지정했다.
+이 문서의 P0 40개를 검수하며 기존 전체 마스터 구현 목표는 장기 Roadmap으로 보존한다.
+과거 잔여 사용량 50% 중단 조건은 사용자 재개 요청으로 해제되었다.
+기존 코드·테스트·스키마를 재사용하고 ponytail 스킬을 적용한다. 보안 검사 우회·임의 완료율 이전은 금지한다.
+
+Main 통합 작업은 `master/main`, 새 독립 작업은 `capstone/security-v2`,
+`capstone/backend-v2`, `capstone/frontend-v2`에서 수행한다. 기존 worktree와 공개 데모는 보존한다.
+아래 경로 소유권은 유지한다. Main은 Frontend에 `benchmarks/gateway-agent*.mjs`와 해당 Gateway 테스트의
+추가 소유권을 부여한다. 공통 Agent 판단 함수 변경이 필요하면 Main/Security와 먼저 합의한다.
+새로운 유료 모델 호출·실제 키 사용·테스트넷 전송·공개 배포는 대상과 권한을 확인한 뒤 수행한다.
+진행·검증·남은 외부 의존은 `docs/capstone-implementation-plan.md`에 기록한다.
+
+## 2026-09-08 마스터 문서 구현 단계
+
+사용자가 마스터 문서 전체 구현을 요청했으므로, 이번 `master/*` 브랜치에서는
+기존 MVP의 범위 제한(3.10, 11절)을 완료 기준으로 사용하지 않는다.
+요구사항·수용 테스트별 실제 구현과 검증 증거는 `docs/master-implementation-plan.md`에서 관리한다.
+문서의 미래 운영 규모·목표 성능·독립 검증기관 참여를 이미 달성한 기능으로 표기하지 않는다.
+
+| 역할 | 작업 브랜치 | 추가 소유 범위 |
+|---|---|---|
+| Main | `master/main` | 공통 의존성·계약 승인, CI·루트 Docker·운영 문서, 통합 검증 |
+| Security·AI | `master/security-ai` | `services/resolver/`, 기존 보안 영역 |
+| Blockchain·Backend | `master/blockchain-backend` | `apps/reconciler/`, API·컨트랙트 테스트, 기존 백엔드 영역 |
+| Frontend·Gateway | `master/frontend-gateway` | 기존 UI·Gateway·데모 영역, 루트 CI·Docker는 Main에게 요청 |
+
+`mcp/main`과 기존 공개 `/try`, `/mcp`는 호환성을 유지한다. 새 API는 `/v1`로 추가하고
+기존 `/api` 스키마를 재정의하지 않는다. 외부 서비스의 유료 자원·실제 키가 필요한
+검증은 로컬 대체 결과와 구분하며, 설정이 없다고 보안 검사를 우회하지 않는다.
+
+
 ## 1. 최종 목표
 
 프로토타입은 아래 end-to-end 흐름을 실제로 재현해야 한다.

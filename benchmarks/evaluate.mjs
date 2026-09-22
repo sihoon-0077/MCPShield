@@ -50,6 +50,11 @@ const falsePositiveRate = falsePositives / (falsePositives + trueNegatives);
 const report = {
   schemaVersion: '1.0.0',
   source: 'LIVE',
+  measurementScope: 'REPEATED_SYNTHETIC_FIXTURE_REGRESSION',
+  synthetic: true,
+  uniqueArtifacts: 2,
+  independentlyLabelled: false,
+  externalDatasetMetrics: { recall: null, precision: null, falsePositiveRate: null, agentAttackSuccessRate: null },
   sandbox: sandbox.toUpperCase(),
   runs,
   confusionMatrix: { truePositives, trueNegatives, falsePositives, falseNegatives },
@@ -60,6 +65,12 @@ const report = {
   latencyMs: { safe: latency(safeDurationsMs), malicious: latency(maliciousDurationsMs) },
   acceptance: { minimumRecall: 1, maximumFalsePositiveRate: 0 },
   passed: recall === 1 && falsePositiveRate === 0 && canaryDetections === runs,
+  limitations: [
+    'The confusion matrix counts repetitions of two fixed synthetic artifacts, not independent samples.',
+    'Recall, precision and falsePositiveRate above apply only to these fixtures; they are not general detector quality.',
+    'No external model, independent benign corpus, production traffic or full agent attack-success rate is measured.',
+    sandbox === 'local' ? 'LOCAL executes only repository-owned fixtures; it is not a security isolation result.' : 'DOCKER exercises the configured fixture sandbox; it is not proof of resistance to every escape.',
+  ],
 };
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 if (!report.passed) process.exitCode = 1;

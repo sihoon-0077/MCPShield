@@ -1,0 +1,87 @@
+import { randomUUID } from "node:crypto";
+import type { FastifyInstance } from "fastify";
+import { loadEvidence, type ControlOptions, type Credential } from "./control-plane.js";
+import type { ControlStore } from "./control-store.js";
+import { preparedPolicy, ociPolicy, validPolicy, isNodePreparedPolicy } from "./control-policy.js";
+import { scopedPreparationContext } from "./scoped-config.js";
+import { preparedTrust } from "./prepared-config.js";
+import { ociTrust } from "./oci-config.js";
+import { enqueuePreparation, preparations, publicPreparation, retryPreparation } from "./preparation-store.js";
+import { currentTraceId, traceHeaders, withSpan } from "../../../packages/telemetry/index.mjs";
+import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2.js";
+import { checkedPreparedEvidence, checkedOciEvidence } from "./prepared-evidence.js";
+
+const failure = (message: string, statusCode = 400) => Object.assign(new Error(message), { statusCode });
+export function sourceIdentity(source: Record<string, any>) {
+  const identity = Object.fromEntries(["releaseId", "toolId", "artifactDigest", "manifestDigest", "toolSurfaceHash"].map((key) => [key, source[key]]));
+  if (exactReleaseIdentity(identity as any).releaseId !== source.releaseId) throw failure("SOURCE_IDENTITY_MISMATCH", 409);
+  return identity;
+}
+export function registerPreparationRoutes(api: FastifyInstance, store: ControlStore, options: ControlOptions,
+  authenticate: (header: string | undefined) => Credential, authorize: (identity: Credential, role: "operator" | "admin") => void) {
+  const enabled = async (policy: any, tenant: string, source: Record<string, any>) => {
+    const profile = policy.profile;
+    if (profile === ociPolicy.profile) {
+      if (!options.ociRuntime || options.scannerOptions?.sandbox !== "docker") throw failure("PREPARATION_NOT_CONFIGURED", 503);
+      return ociTrust(options.ociRuntime);
+    }
+    if (!isNodePreparedPolicy(policy)) throw failure("PREPARATION_POLICY_REQUIRED");
+    if (!options.preparedRuntime || options.scannerOptions?.sandbox !== "docker") throw failure("PREPARATION_NOT_CONFIGURED", 503);
+    if (profile !== preparedPolicy.profile) return (await scopedPreparationContext(options, tenant, policy, source)).frozen;
+    return preparedTrust(options.preparedRuntime);
+  };
+  api.post("/releases/:sourceReleaseId/prepare", async (request, reply) => {
+    const user = authenticate(request.headers.authorization); authorize(user, "operator");
+    const body = request.body as any, sourceReleaseId = (request.params as any).sourceReleaseId;
+    if (!body || Object.keys(body).join() !== "policyHash" || !/^0x[a-f0-9]{64}$/.test(body.policyHash) || !/^0x[a-f0-9]{64}$/.test(sourceReleaseId)) throw failure("INVALID_PREPARATION_REQUEST");
+    const key = request.headers["idempotency-key"];
+    if (typeof key !== "string" || !key.trim() || key.length > 256) throw failure("IDEMPOTENCY_KEY_REQUIRED");
+    const source = await store.get(user.tenantId, "release", sourceReleaseId);
+    if (!source) throw failure("RELEASE_NOT_FOUND", 404);
+    if (!["npm", "tarball", "oci"].includes(source.sourceType) || source.runtimeProfile) throw failure("PREPARATION_SOURCE_UNSUPPORTED");
+    const policy = await store.get(user.tenantId, "policy", body.policyHash);
+    if (!policy || !validPolicy(policy.document) || !(source.sourceType === "oci" ? policy.document.profile === ociPolicy.profile : isNodePreparedPolicy(policy.document))) throw failure("PREPARATION_POLICY_REQUIRED");
+    if (policy.deprecatedAt) throw failure("POLICY_DEPRECATED", 409);
+    const input = { sourceReleaseId, policyHash: body.policyHash, sourceIdentity: sourceIdentity(source), trustedConfig: await enabled(policy.document, user.tenantId, source) };
+    const result = await withSpan("preparation.accept", {}, () => enqueuePreparation(store, user.tenantId,
+      { ...input, traceparent: traceHeaders().traceparent }, key, currentTraceId() ?? randomUUID()),
+      { traceparent: typeof request.headers.traceparent === "string" ? request.headers.traceparent : undefined });
+    return reply.code(202).send({ ...result, preparation: publicPreparation(result.preparation), links: { self: `/v1/preparations/${result.preparation.preparationId}` } });
+  });
+  api.get("/preparations", async (request) => ({ items: (await preparations(store, authenticate(request.headers.authorization).tenantId)).map(publicPreparation) }));
+  api.get("/preparations/:preparationId", async (request) => {
+    const [job] = await preparations(store, authenticate(request.headers.authorization).tenantId, (request.params as any).preparationId);
+    if (!job) throw failure("PREPARATION_NOT_FOUND", 404); return { preparation: publicPreparation(job) };
+  });
+  api.post("/preparations/:preparationId/retry", async (request) => {
+    const user = authenticate(request.headers.authorization); authorize(user, "operator");
+    if (request.body !== undefined && (!request.body || Array.isArray(request.body) || Object.keys(request.body as any).length)) throw failure("INVALID_PREPARATION_REQUEST");
+    const id = (request.params as any).preparationId, [job] = await preparations(store, user.tenantId, id);
+    if (!job) throw failure("PREPARATION_NOT_FOUND", 404);
+    const policy = await store.get(user.tenantId, "policy", job.policyHash);
+    if (!policy || !validPolicy(policy.document)) throw failure("PREPARATION_POLICY_REQUIRED");
+    const source = await store.get(user.tenantId, "release", job.sourceReleaseId);
+    if (!source) throw failure("RELEASE_NOT_FOUND", 404);
+    return { preparation: publicPreparation(await retryPreparation(store, user.tenantId, id, await enabled(policy.document, user.tenantId, source))) };
+  });
+  api.get("/preparations/:preparationId/evidence", async (request) => {
+    const user = authenticate(request.headers.authorization); authorize(user, "operator");
+    const [job] = await preparations(store, user.tenantId, (request.params as any).preparationId);
+    if (!job) throw failure("PREPARATION_NOT_FOUND", 404);
+    if (!job.result?.evidenceKey) throw failure("EVIDENCE_NOT_READY", 409);
+    await store.event(user.tenantId, job.sourceReleaseId, "evidence.accessed", { preparationId: job.preparationId, role: user.role }, job.traceId);
+    return { bundle: await loadEvidence(options, user.tenantId, job.result.evidenceKey, job.result.reportRoot), reportRoot: job.result.reportRoot };
+  });
+  api.get("/releases/:releaseId/gateway-config", async (request, reply) => {
+    const user = authenticate(request.headers.authorization); authorize(user, "operator");
+    const release = await store.get(user.tenantId, "release", (request.params as any).releaseId);
+    if (!release) throw failure("RELEASE_NOT_FOUND", 404);
+    if (!(isNodePreparedPolicy({ profile: release.runtimeProfile }) || release.runtimeProfile === ociPolicy.profile) || !release.preparedEvidenceKey) throw failure("PREPARED_RELEASE_REQUIRED", 409);
+    const check = release.runtimeProfile === ociPolicy.profile ? checkedOciEvidence : checkedPreparedEvidence;
+    const { binding, tools } = check(await loadEvidence(options, user.tenantId, release.preparedEvidenceKey, release.preparedReportRoot), release);
+    await store.event(user.tenantId, release.releaseId, "prepared.config.exported", { role: user.role });
+    reply.header("cache-control", "no-store");
+    // Private operator export only; this commitment is not admission or a registry-pull capability.
+    return { schemaVersion: "mcpshield.gateway-prepared.v1", releaseId: release.releaseId, toolId: release.toolId, binding, tools };
+  });
+}

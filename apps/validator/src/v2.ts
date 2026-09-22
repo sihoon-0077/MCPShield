@@ -1,0 +1,212 @@
+import { Contract, JsonRpcProvider, Wallet, id } from "ethers";
+import { pathToFileURL } from "node:url";
+import { setTimeout } from "node:timers/promises";
+import { ociPolicy, preparedPolicy, policyVerdict, validPolicy, isNodePreparedPolicy } from "../../api/src/control-policy.js";
+import { checkedScopedSource, checkedScopedValidatorConfig, type ScopedValidatorConfig } from "./scoped-verification.js";
+import { hash } from "../../api/src/control-plane.js";
+import { attestationV2Domain, attestationV2Types, bytes32, createReleaseRegistryV2, exactReleaseIdentity, quarantineV2Types } from "../../../packages/contracts-sdk/src/v2.js";
+import { boundedServiceRequest, checkedServiceUrl, v2RpcRequest } from "../../../packages/contracts-sdk/src/transport.js";
+import { traceHeaders, withSpan } from "../../../packages/telemetry/index.mjs";
+import { checkedPreparedConfig, checkedPreparedTrust, type PreparedConfig } from "../../api/src/prepared-config.js";
+import { checkedPreparedEvidence, checkedOciEvidence } from "../../api/src/prepared-evidence.js";
+import { checkedOciConfig, checkedOciTrust, type OciConfig } from "../../api/src/oci-config.js";
+import { compareOciScans, independentlyScanOci } from "./oci-verification.js";
+import { comparePreparedScans, independentlyScanPrepared, recordPreparedVerification, type PreparedValidatorAi } from "./prepared-verification.js";
+import { compareSourceScans, independentlyScanSource, loadValidatorSources, type ValidatorSources } from "./source-verification.js";
+// @ts-expect-error Scanner evidence is shared ESM JavaScript.
+import { verifyEvidenceBundle } from "../../../services/scanner/src/evidence.mjs";
+
+interface ValidatorContext {
+  chainId: number; registryAddress: string; policyHash: string; policy: any; scan: any; evidence: any;
+  identity: any; validatorSetVersion: number; nonce: number; now?: number;
+  preparedRuntime?: PreparedConfig; preparedRuntimeTrust?: Record<string, any>;
+  scopedPrepared?: ScopedValidatorConfig;
+  independentPreparedEvidence?: { result: any; bundle: any };
+  ociRuntime?: OciConfig; ociRuntimeTrust?: Record<string, any>; independentOciEvidence?: { result: any; bundle: any };
+  independentSourceEvidence?: { result: any; bundle: any; sourceIdentity: any; baselineReleaseId: string | null };
+}
+export async function checkedValidatorPayload(template: any, context: ValidatorContext, quarantine = false) {
+  const { scan, evidence, identity, policy } = context;
+  const domain = attestationV2Domain(context.chainId, context.registryAddress), types = quarantine ? quarantineV2Types : attestationV2Types;
+  const fail = () => { throw new Error("VALIDATOR_TEMPLATE_BINDING_MISMATCH"); };
+  if (!template?.payload || hash(template.domain) !== hash(domain) || hash(template.types) !== hash(types)
+    || Object.keys(template.payload).sort().join() !== Object.values(types)[0].map((field) => field.name).sort().join()) fail();
+  if (!validPolicy(policy) || hash(policy) !== context.policyHash || scan.status !== "COMPLETED" || scan.policyHash !== context.policyHash
+    || !scan.result || scan.result.reportRoot !== evidence.reportRoot || !verifyEvidenceBundle(evidence.bundle, evidence.reportRoot)) fail();
+  let runtimeTrust = policy.profile === ociPolicy.profile ? await checkedOciTrust(context.ociRuntimeTrust, context.ociRuntime)
+    : checkedPreparedTrust(context.preparedRuntimeTrust, context.preparedRuntime);
+  if (policy.profile === ociPolicy.profile) {
+    checkedOciEvidence(evidence.bundle, identity);
+    if (!runtimeTrust || !context.independentOciEvidence) fail();
+    compareOciScans({ bundle: evidence.bundle, result: scan.result.scanResult }, context.independentOciEvidence, policy, runtimeTrust!);
+  } else if (isNodePreparedPolicy(policy)) {
+    const { binding, source } = checkedPreparedEvidence(evidence.bundle, identity);
+    if (!checkedPreparedTrust(context.preparedRuntimeTrust, context.preparedRuntime) || !context.independentPreparedEvidence) fail();
+    if (policy.profile !== preparedPolicy.profile) {
+      const current = await checkedScopedSource(policy, binding, source, context.scopedPrepared);
+      if (current.configHash !== runtimeTrust?.scopedVerificationConfigHash) fail();
+      runtimeTrust = { ...runtimeTrust, sourceProvenance: current.sourceProvenance, sourceBudget: current.sourceBudget };
+    }
+    comparePreparedScans({ bundle: evidence.bundle, result: scan.result.scanResult }, context.independentPreparedEvidence, policy, runtimeTrust!);
+  } else {
+    if (policy.profile !== undefined) fail();
+    if (!context.independentSourceEvidence) fail();
+    compareSourceScans({ bundle: evidence.bundle, result: scan.result.scanResult }, context.independentSourceEvidence, policy, identity, scan.releaseId, scan.baselineReleaseId ?? null);
+  }
+  const report = JSON.parse(evidence.bundle.files["report.json"]), verdict = policyVerdict(evidence.bundle, scan.result.scanResult, policy, runtimeTrust);
+  if (!identity.exists || identity.artifactDigest !== bytes32(report.artifactDigest) || identity.toolSurfaceDigest !== bytes32(report.toolSurfaceHash)
+    || exactReleaseIdentity({ toolId: identity.toolId, artifactDigest: identity.artifactDigest, manifestDigest: identity.manifestDigest, toolSurfaceHash: identity.toolSurfaceDigest }).releaseId !== scan.releaseId) fail();
+  // Runtime trust includes asynchronous installed-file reads and evidence can be
+  // large. Never validate expiry against the clock captured before that work.
+  const now = context.now ?? Math.floor(Date.now() / 1000);
+  const q = template.payload;
+  if (!Number.isSafeInteger(context.nonce) || !Number.isSafeInteger(context.validatorSetVersion) || context.validatorSetVersion < 1
+    || !Number.isSafeInteger(q.deadline) || q.deadline < now || q.deadline > now + 3600) fail();
+  const common = { releaseId: scan.releaseId, policyHash: context.policyHash, validatorSetVersion: context.validatorSetVersion, nonce: context.nonce, deadline: q.deadline };
+  let payload;
+  if (quarantine) {
+    const reason = report.findings.find((finding: any) => finding.deterministic === true && finding.stage !== "AI" && finding.severity === "CRITICAL"
+      && ["CANARY_EXFILTRATION", "HOST_ESCAPE_ATTEMPT", "DIGEST_MISMATCH"].includes(finding.code) && id(finding.code) === q.reasonCode);
+    if (verdict !== "FAIL" || !reason || !Number.isSafeInteger(q.expiresAt) || q.expiresAt <= now || q.expiresAt > now + 86400 || q.deadline > q.expiresAt) fail();
+    payload = { ...common, evidenceHash: evidence.reportRoot, reasonCode: id(reason.code), expiresAt: q.expiresAt };
+  } else {
+    const validFrom = Math.floor(Date.parse(scan.result.validFrom) / 1000), validUntil = Math.floor(Date.parse(scan.result.validUntil) / 1000);
+    if (!Number.isSafeInteger(validFrom) || !Number.isSafeInteger(validUntil) || validFrom > now + 5 || validUntil <= now || validUntil <= validFrom
+      || validUntil > validFrom + policy.validitySeconds || q.deadline > validUntil || template.verdict !== verdict) fail();
+    payload = { ...common, artifactDigest: identity.artifactDigest, manifestDigest: identity.manifestDigest, toolSurfaceDigest: identity.toolSurfaceDigest,
+      reportRoot: evidence.reportRoot, verdict: { PASS: 0, FAIL: 1, ABSTAIN: 2 }[verdict], validFrom, validUntil };
+  }
+  if (hash(payload) !== hash(q)) fail();
+  const finalNow = context.now ?? Math.floor(Date.now() / 1000);
+  if (q.deadline < finalNow || (quarantine ? (payload as any).expiresAt <= finalNow : (payload as any).validUntil <= finalNow)) fail();
+  return { domain, types, payload, verdict };
+}
+
+export async function runValidatorFanout(options: { apiUrl: string; token: string; scanId: string; privateKeys: string[]; quarantineFirst?: boolean;
+  chainId: number; registryAddress: string; policyHash: string; rpcUrl: string; preparedRuntime?: PreparedConfig; preparedAi?: PreparedValidatorAi;
+  ociRuntime?: OciConfig; scopedPrepared?: ScopedValidatorConfig;
+  legacySources?: ValidatorSources; verificationReceiptsPath?: string }) {
+  if (!Number.isSafeInteger(options.chainId) || options.chainId <= 0 || !/^0x[0-9a-fA-F]{40}$/.test(options.registryAddress)
+    || !/^0x[0-9a-f]{64}$/.test(options.policyHash) || !/^[0-9a-f-]{36}$/.test(options.scanId)) throw new Error("VALIDATOR_TRUST_CONFIG_REQUIRED");
+  const wallets = options.privateKeys.map((key) => new Wallet(key));
+  if (wallets.length < 1 || wallets.length > 3 || new Set(wallets.map((wallet) => wallet.address)).size !== wallets.length) throw new Error("ONE_TO_THREE_UNIQUE_VALIDATORS_REQUIRED");
+  const base = checkedServiceUrl(options.apiUrl), provider = new JsonRpcProvider(v2RpcRequest(options.rpcUrl), undefined, { batchMaxCount: 1 });
+  const registry = createReleaseRegistryV2(options.registryAddress, provider);
+  let scanTraceparent: string | undefined;
+  const request = async (path: string, body?: any) => {
+    const response = await boundedServiceRequest(new URL(path, base).href, { method: body ? "POST" : "GET",
+      headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json", ...traceHeaders() }, body: body ? JSON.stringify(body) : undefined },
+      path === `/v1/scans/${options.scanId}/evidence` ? { maxBytes: 32 * 1024 * 1024, timeoutMs: 15000 } : undefined);
+    if (response.statusCode < 200 || response.statusCode >= 300) throw new Error(`VALIDATOR_API_HTTP_${response.statusCode}`);
+    if (path === `/v1/scans/${options.scanId}` && !scanTraceparent) scanTraceparent = response.headers.traceparent;
+    return JSON.parse(response.body.toString());
+  };
+  const settle = async (actionId: string, calldata: string) => {
+    const deadline = Date.now() + 90000;
+    while (Date.now() < deadline) {
+      const { action } = await request(`/v1/chain/actions/${actionId}`);
+      if (action.status === "FAILED") throw new Error("CHAIN_ACTION_FAILED");
+      if (action.status === "DEAD_LETTER") throw new Error("CHAIN_ACTION_REQUIRES_RECONCILIATION");
+      if (action.status === "COMPLETED" && /^0x[0-9a-f]{64}$/.test(action.txHash ?? "")) {
+        const [tx, receipt] = await Promise.all([provider.getTransaction(action.txHash), provider.getTransactionReceipt(action.txHash)]);
+        if (tx?.to?.toLowerCase() !== options.registryAddress.toLowerCase() || tx.data !== calldata || tx.value !== 0n || receipt?.status !== 1) throw new Error("VALIDATOR_CHAIN_CONFIRMATION_MISMATCH");
+        return action;
+      }
+      await setTimeout(500);
+    }
+    throw new Error("CHAIN_CONFIRMATION_TIMEOUT");
+  };
+  try {
+    if ((await provider.getNetwork()).chainId !== BigInt(options.chainId)) throw new Error("CHAIN_ID_MISMATCH");
+    await request(`/v1/scans/${options.scanId}`);
+    return await withSpan("validator.fanout", { "mcpshield.scan_id": options.scanId, "mcpshield.chain_id": options.chainId }, async () => {
+    const operations: Record<string, any>[] = [];
+    // A production organization supplies one local key; the multi-key path remains an explicit demo convenience.
+    for (let index = 0; index < Math.min(wallets.length, 2); index++) {
+      const wallet = wallets[index], { scan } = await request(`/v1/scans/${options.scanId}`), evidence = await request(`/v1/scans/${options.scanId}/evidence`);
+      const policy = (await request("/v1/policies")).items.find((item: any) => item.policyHash === options.policyHash && !item.deprecatedAt)?.document;
+      if (!validPolicy(policy) || hash(policy) !== options.policyHash || scan.status !== "COMPLETED" || scan.policyHash !== options.policyHash
+        || !scan.result || scan.result.reportRoot !== evidence.reportRoot || !verifyEvidenceBundle(evidence.bundle, evidence.reportRoot)) throw new Error("VALIDATOR_EVIDENCE_BINDING_MISMATCH");
+      const validators = new Contract(await registry.validators(), ["function version() view returns(uint32)", "function isActiveValidator(address,uint32) view returns(bool)"], provider);
+      const submit = async (quarantine = false) => withSpan("validator.attest", { "mcpshield.scan_id": options.scanId, "mcpshield.validator_id": wallet.address }, async () => {
+        const checked = await withSpan("validator.verify", { "mcpshield.scan_id": options.scanId }, async () => {
+          let preparedRuntimeTrust, independentPreparedEvidence, independentSourceEvidence, ociRuntimeTrust, independentOciEvidence;
+          if (policy.profile === ociPolicy.profile) {
+            if (!options.ociRuntime) throw new Error("OCI_VALIDATOR_TRUST_REQUIRED");
+            const identity = await registry.releases(scan.releaseId);
+            if (!identity.exists) throw new Error("PREPARED_RELEASE_NOT_REGISTERED");
+            checkedOciEvidence(evidence.bundle, identity);
+            const verification = await independentlyScanOci({ bundle: evidence.bundle, result: scan.result.scanResult }, policy, options.ociRuntime, options.preparedAi);
+            ociRuntimeTrust = verification.trusted; independentOciEvidence = verification.independent;
+            await recordPreparedVerification(options.verificationReceiptsPath ?? "data/validator-verifications.jsonl", { chainId: options.chainId, registryContract: options.registryAddress,
+              validator: wallet.address, releaseId: scan.releaseId, policyHash: options.policyHash }, verification.comparison);
+          } else if (isNodePreparedPolicy(policy)) {
+            if (!options.preparedRuntime) throw new Error("PREPARED_VALIDATOR_TRUST_REQUIRED");
+            const identity = await registry.releases(scan.releaseId);
+            if (!identity.exists) throw new Error("PREPARED_RELEASE_NOT_REGISTERED");
+            checkedPreparedEvidence(evidence.bundle, identity);
+            const verification = await independentlyScanPrepared({ bundle: evidence.bundle, result: scan.result.scanResult }, policy, options.preparedRuntime, options.preparedAi, options.scopedPrepared);
+            preparedRuntimeTrust = verification.trusted; independentPreparedEvidence = verification.independent;
+            await recordPreparedVerification(options.verificationReceiptsPath ?? "data/validator-verifications.jsonl", { chainId: options.chainId, registryContract: options.registryAddress,
+              validator: wallet.address, releaseId: scan.releaseId, policyHash: options.policyHash }, verification.comparison);
+          } else {
+            if (policy.profile !== undefined) throw Error("UNSUPPORTED_POLICY");
+            if (!options.legacySources) throw new Error("VALIDATOR_SOURCES_REQUIRED");
+            const identity = await registry.releases(scan.releaseId);
+            const baseline = scan.baselineReleaseId ? { releaseId: scan.baselineReleaseId, identity: await registry.releases(scan.baselineReleaseId) } : undefined;
+            const verification = await independentlyScanSource({ bundle: evidence.bundle, result: scan.result.scanResult }, policy, identity, scan.releaseId,
+              options.legacySources, baseline, options.preparedAi);
+            independentSourceEvidence = verification.independent;
+            await recordPreparedVerification(options.verificationReceiptsPath ?? "data/validator-verifications.jsonl", { chainId: options.chainId, registryContract: options.registryAddress,
+              validator: wallet.address, releaseId: scan.releaseId, policyHash: options.policyHash }, verification.comparison);
+          }
+          // Obtain short-lived nonce/deadline/version only after the potentially long independent scan.
+          const version = Number(await validators.version());
+          if (!await validators.isActiveValidator(wallet.address, version)) throw new Error("NOT_VALIDATOR");
+          const template = await request(`/v1/scans/${options.scanId}/${quarantine ? "quarantine" : "attestation"}?validator=${wallet.address}`);
+          return checkedValidatorPayload(template, { ...options, scan, evidence, policy, identity: await registry.releases(scan.releaseId), preparedRuntimeTrust, independentPreparedEvidence, independentSourceEvidence, ociRuntimeTrust, independentOciEvidence,
+            validatorSetVersion: version, nonce: Number(await registry.nonces(wallet.address)) }, quarantine);
+        });
+        // Never sign server-supplied domain/types: only the pinned local definitions and reconstructed payload survive.
+        const signature = await withSpan("validator.sign", { "mcpshield.validator_id": wallet.address }, () => wallet.signTypedData(checked.domain, checked.types, checked.payload));
+        const { action } = await request(`/v1/validator/${quarantine ? "quarantines" : "attestations"}`, { scanId: options.scanId, payload: checked.payload, signature });
+        operations.push(await settle(action.actionId, registry.interface.encodeFunctionData(quarantine ? "quarantineBySignature" : "submitAttestation", [checked.payload, signature])));
+      });
+      if (index === 0 && options.quarantineFirst && scan.result?.verdict === "FAIL") await submit(true);
+      await submit();
+    }
+    return { mode: wallets.length === 1 ? "SINGLE_VALIDATOR" : "SINGLE_INSTITUTION_DEMO", validators: wallets.slice(0, 2).map((wallet) => wallet.address), operations };
+    }, { traceparent: scanTraceparent });
+  } finally { provider.destroy(); }
+}
+export function configuredValidatorKeys(env: Record<string, string | undefined>) {
+  if (env.VALIDATOR_PRIVATE_KEY !== undefined && env.VALIDATOR_PRIVATE_KEYS !== undefined) throw new Error("VALIDATOR_KEY_MODES_CONFLICT");
+  let keys;
+  try { keys = env.VALIDATOR_PRIVATE_KEY !== undefined ? [env.VALIDATOR_PRIVATE_KEY] : JSON.parse(env.VALIDATOR_PRIVATE_KEYS ?? "[]"); }
+  catch { throw new Error("VALIDATOR_KEY_CONFIG_INVALID"); }
+  if (!Array.isArray(keys) || keys.length < 1 || keys.length > 3 || keys.some((key) => typeof key !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(key))) throw new Error("VALIDATOR_KEY_CONFIG_INVALID");
+  return keys as string[];
+}
+async function main() {
+  const privateKeys = configuredValidatorKeys(process.env);
+  const { CONTROL_API_URL, CONTROL_API_TOKEN, CONTROL_SCAN_ID, CONTROL_V2_RPC_URLS, CONTROL_V2_CHAIN_ID, CONTROL_V2_REGISTRY_ADDRESS, CONTROL_VALIDATOR_POLICY_HASH } = process.env;
+  if (!CONTROL_API_URL || !CONTROL_API_TOKEN || !CONTROL_SCAN_ID || !CONTROL_V2_RPC_URLS || !CONTROL_V2_CHAIN_ID || !CONTROL_V2_REGISTRY_ADDRESS || !CONTROL_VALIDATOR_POLICY_HASH) throw new Error("VALIDATOR_TRUST_CONFIG_REQUIRED");
+  console.log(JSON.stringify(await runValidatorFanout({ apiUrl: CONTROL_API_URL, token: CONTROL_API_TOKEN, scanId: CONTROL_SCAN_ID, privateKeys,
+    chainId: Number(CONTROL_V2_CHAIN_ID), registryAddress: CONTROL_V2_REGISTRY_ADDRESS, policyHash: CONTROL_VALIDATOR_POLICY_HASH,
+    rpcUrl: CONTROL_V2_RPC_URLS.split(",")[0], quarantineFirst: process.argv.includes("--quarantine"),
+    preparedRuntime: process.env.VALIDATOR_PREPARED_BUILDER_DIGEST ? checkedPreparedConfig({ builderImageDigest: process.env.VALIDATOR_PREPARED_BUILDER_DIGEST,
+      platform: { os: "linux", architecture: process.env.VALIDATOR_PREPARED_ARCHITECTURE as "amd64" | "arm64" } }) : undefined,
+    ociRuntime: process.env.VALIDATOR_OCI_ENABLED === "true" ? checkedOciConfig({ baseImageDigest: process.env.VALIDATOR_OCI_BASE_DIGEST ?? "",
+      baseCatalogueDigest: process.env.VALIDATOR_OCI_BASE_CATALOGUE_DIGEST ?? "", trivyImageDigest: process.env.VALIDATOR_OCI_TRIVY_DIGEST ?? "",
+      databaseDir: process.env.VALIDATOR_OCI_DATABASE_DIR ?? "", databaseDigest: process.env.VALIDATOR_OCI_DATABASE_DIGEST ?? "", sinkImageDigest: process.env.VALIDATOR_OCI_SINK_DIGEST ?? "",
+      platform: { os: "linux", architecture: process.env.VALIDATOR_OCI_ARCHITECTURE as "amd64" | "arm64" } }) : undefined,
+    preparedAi: process.env.VALIDATOR_ALLOW_REMOTE_AI === "true" ? { allowRemoteAi: true, provider: process.env.VALIDATOR_AI_PROVIDER as "custom" | "openai",
+      model: process.env.VALIDATOR_AI_MODEL, url: process.env.VALIDATOR_AI_URL, token: process.env.VALIDATOR_AI_TOKEN, timeoutMs: Number(process.env.VALIDATOR_AI_TIMEOUT_MS ?? 45000),
+      disclosurePolicy: process.env.MCPSHIELD_AI_DISCLOSURE_POLICY as "LOCAL_CONTRACT_TEST" | undefined } : undefined,
+    legacySources: process.env.VALIDATOR_SOURCES_PATH ? await loadValidatorSources(process.env.VALIDATOR_SOURCES_PATH) : undefined,
+    scopedPrepared: process.env.VALIDATOR_SCOPED_PROVENANCE_PATH || process.env.VALIDATOR_SCOPED_AI_CONFIG
+      ? checkedScopedValidatorConfig({ provenancePath: process.env.VALIDATOR_SCOPED_PROVENANCE_PATH, sourcesPath: process.env.VALIDATOR_SOURCES_PATH,
+        ai: JSON.parse(process.env.VALIDATOR_SCOPED_AI_CONFIG ?? "null") }) : undefined,
+    verificationReceiptsPath: process.env.VALIDATOR_VERIFICATION_RECEIPTS_PATH })));
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(() => { console.error("VALIDATOR_OPERATION_FAILED"); process.exitCode = 1; });

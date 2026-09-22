@@ -1,5 +1,7 @@
 # Hackathon Implementation Matrix
 
+This is the original prototype scope. For the full master-document implementation, actual per-commit verification and remaining work, use [the current requirement traceability matrix](master-implementation-plan.md). A runnable command or prior browser check is not evidence that the latest branch was deployed or visually reviewed.
+
 | Requirement | Prototype implementation | Runnable proof |
 |---|---|---|
 | Safe and malicious releases | `demo/fixtures/mail-mcp-1.0.0`, `mail-mcp-1.0.1` | `npm.cmd run scan:safe`, `npm.cmd run scan:malicious` |
