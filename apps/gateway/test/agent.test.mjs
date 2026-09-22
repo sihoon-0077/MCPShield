@@ -51,6 +51,8 @@ test('fake provider → actual SDK → unchanged Gateway: selection, refusal, in
     await t.test('selected call receives synthetic mail and joins Gateway-owned identity/decision trace', async () => {
       const result = await runGatewayAgent(options);
       assert.equal(result.evidenceKind, 'LOCAL_PROVIDER_CONTRACT_TEST');
+      assert.equal(result.modelEvidenceMode, 'LOCAL_CONTRACT_TEST');
+      assert.equal(result.providerQuality, 'NOT_MEASURED');
       assert.equal(result.asrMeasured, false);
       assert.equal(result.status, 'COMPLETED');
       assert.equal(result.taskCompleted, true);
@@ -94,6 +96,7 @@ test('fake provider → actual SDK → unchanged Gateway: selection, refusal, in
       assert.equal(result.status, 'GATEWAY_BLOCKED');
       assert.equal(result.reasonCode, 'RELEASE_REVOKED');
       assert.equal(result.modelAttempted, false);
+      assert.equal(result.modelEvidenceMode, 'NOT_ATTEMPTED');
       assert.equal(requests, before);
       assert.deepEqual(result.toolRequests, []);
       assert.equal(result.admissions[0].status, 'REVOKED');

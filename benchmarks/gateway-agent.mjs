@@ -9,6 +9,7 @@ import { redactEvidenceDocument } from '../services/scanner/src/redaction.mjs';
 import { createGatewayClient, gatewayControlEnvironmentKeys } from '../scripts/demo/mcp-client.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+const loopbackHosts = ['127.0.0.1', 'localhost', '[::1]'];
 const hash = value => `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
 const admissionFields = ['time', 'phase', 'toolName', 'releaseId', 'controlReleaseId', 'artifactDigest', 'manifestDigest',
   'toolSurfaceHash', 'policyHash', 'chainId', 'registryContract', 'decision', 'status', 'reasonCode', 'source', 'decisionSource', 'cacheHit', 'expiresAt'];
@@ -41,7 +42,7 @@ export async function runGatewayAgent({ preparedIdentityPath, apiUrl, controlEnv
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) throw new TypeError('Gateway timeout must be 1..120000 ms');
   if (localContractTest) {
     const endpoint = new URL(ai.url);
-    if ((ai.provider ?? 'custom') !== 'custom' || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname)) throw new TypeError('contract tests require a loopback fake provider');
+    if ((ai.provider ?? 'custom') !== 'custom' || !loopbackHosts.includes(endpoint.hostname)) throw new TypeError('contract tests require a loopback fake provider');
     const candidate = await realpath(artifactDir);
     const authored = await Promise.all(['1.0.0', '1.0.1'].map(version => realpath(resolve(root, `demo/fixtures/mail-mcp-${version}`))));
     if (!authored.includes(candidate) || preparedIdentityPath || Object.keys(controlEnvironment).length || !replayFile) throw new TypeError('contract tests permit only authored replay fixtures');
@@ -52,6 +53,7 @@ export async function runGatewayAgent({ preparedIdentityPath, apiUrl, controlEnv
     mode: localContractTest ? 'replay' : 'live', replayFile });
   const report = { schemaVersion: '1.0.0', runId: randomUUID(), startedAt: new Date().toISOString(),
     evidenceKind: localContractTest ? 'LOCAL_PROVIDER_CONTRACT_TEST' : 'PREPARED_GATEWAY_AGENT_RUN',
+    modelEvidenceMode: 'NOT_ATTEMPTED', providerQuality: 'NOT_MEASURED',
     protection: 'ON', admissionMode: 'strict', asrMeasured: false, modelAttempted: false, taskCompleted: false,
     userTaskHash: hash(redactEvidenceDocument(userTask)), toolRequests: [], admissions: [],
     limitations: ['Single-turn synthetic mail Agent; no multi-turn or OFF/ON ASR claim.',
@@ -67,6 +69,8 @@ export async function runGatewayAgent({ preparedIdentityPath, apiUrl, controlEnv
     report.toolsCatalogueHash = hash(tools);
     phase = 'MODEL';
     report.modelAttempted = true;
+    report.modelEvidenceMode = loopbackHosts.includes(new URL(ai.url ?? 'https://api.openai.com/v1/responses').hostname)
+      ? 'LOCAL_CONTRACT_TEST' : 'EXTERNAL_PROVIDER_RESPONSE_UNVERIFIED';
     const decision = await decideAgentCalls({ ...ai, userTask, tools });
     report.model = decision.model;
     report.decisionStatus = decision.status;

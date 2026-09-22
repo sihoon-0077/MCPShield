@@ -82,6 +82,7 @@ test('scoped authored mailbox → prepared image → fake model decision → rea
     assert.deepEqual(allowed.subjects, ['Welcome']);
     assert.equal(allowed.admissions.findLast(record => record.phase === 'CALL').controlReleaseId, identity.releaseId);
     assert.equal(allowed.model.provider, 'custom');
+    assert.equal(allowed.modelEvidenceMode, 'LOCAL_CONTRACT_TEST');
     assert.equal(allowed.asrMeasured, false);
     revoked = true;
     const blocked = await runGatewayAgent(options);
