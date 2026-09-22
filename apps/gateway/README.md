@@ -36,6 +36,9 @@ optional `total`/legacy `ok:true`, not the model's completion claim. The optiona
 `apps/gateway/test/agent-prepared-docker.test.mjs` uses the same authored scoped mailbox,
 the already-provisioned builder image, actual prepared isolation/SDK calls and revocation;
 its model and signed issuer are still local synthetic contracts, not real provider/quorum proof.
+`modelEvidenceMode` independently marks loopback responses `LOCAL_CONTRACT_TEST`, including
+when the Gateway uses a real prepared image. External responses are marked
+`EXTERNAL_PROVIDER_RESPONSE_UNVERIFIED`; provider quality remains `NOT_MEASURED`.
 Run it with the same `MCPSHIELD_DOCKER_TESTS=1` and `MCPSHIELD_RUNTIME_BUILDER_IMAGE`
 settings as the prepared Docker test below. A skip is not native execution evidence.
 
