@@ -58,6 +58,7 @@ export async function runGatewayAgent({ preparedIdentityPath, apiUrl, controlEnv
     userTaskHash: hash(redactEvidenceDocument(userTask)), toolRequests: [], admissions: [],
     limitations: ['Single-turn synthetic mail Agent; no multi-turn or OFF/ON ASR claim.',
       'Gateway logs are diagnostic identity/decision traces, not independent chain or candidate-spawn proof.',
+      'taskCompleted confirms the tool result, not independent proof of candidate-container cleanup.',
       'Prepared network-none execution is stricter than the scanner observation network.'] };
   let phase = 'CONNECT';
   try {
