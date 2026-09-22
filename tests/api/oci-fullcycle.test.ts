@@ -24,7 +24,7 @@ import { preparations } from "../../apps/api/src/preparation-store.js";
 import { V2Relayer, runChainActionOnce } from "../../apps/api/src/chain-outbox.js";
 import { v2ChainReader } from "../../apps/api/src/registry-v2-client.js";
 import { indexV2 } from "../../apps/indexer/src/v2-indexer.js";
-import { privateNode, deniedGatewayChild, dockerEvents } from "./runtime-fullcycle-helpers.js";
+import { privateNode, deniedGatewayChild, completedGateways, dockerEvents } from "./runtime-fullcycle-helpers.js";
 // @ts-expect-error Shared authored native SOURCE fixture, not an injected scanner.
 import { createOciProfileFixture, OCI_PROFILE_PROBE_PLAN } from "../security/oci-profile-fixture.mjs";
 // @ts-expect-error Actual operator-local immutable source resolver.
@@ -194,7 +194,7 @@ test("OCI source → worker → independent single-key validators → V2 quorum 
     const attempts = await Promise.allSettled(["Gateway-A", "Gateway-B"].map(agentId => privateNode(deniedGatewayChild, { mode: "live", apiBaseUrl: apiUrl, apiToken: token,
       timeoutMs: 5000, policyHash, tenantId, publicKey, keyId, chainId: 1337, registryContract: deployment.releaseRegistry.address, validatorSetVersion: 1,
       operationClass: "READ_PRIVATE", admissionMode: "strict", agentId, preparedIdentityPath: bad.file, input: ociMcpInput }, 60000)));
-    const gateways = attempts.map(attempt => { assert.equal(attempt.status, "fulfilled"); return (attempt as PromiseFulfilledResult<any>).value; });
+    const gateways = completedGateways(attempts);
     assert.equal(new Set(gateways.map(g => g.pid)).size, 2);
     for (const { pid, ...decision } of gateways) { assert.notEqual(pid, process.pid); assert.deepEqual(decision, { releaseId: bad.release.releaseId,
       decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED", source: "LIVE", cacheHit: false }); }

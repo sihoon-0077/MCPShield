@@ -25,7 +25,7 @@ import { preparations } from "../../apps/api/src/preparation-store.js";
 import { V2Relayer, runChainActionOnce } from "../../apps/api/src/chain-outbox.js";
 import { v2ChainReader } from "../../apps/api/src/registry-v2-client.js";
 import { indexV2 } from "../../apps/indexer/src/v2-indexer.js";
-import { privateNode, deniedGatewayChild, dockerEvents } from "./runtime-fullcycle-helpers.js";
+import { privateNode, deniedGatewayChild, completedGateways, dockerEvents } from "./runtime-fullcycle-helpers.js";
 // @ts-expect-error Shared actual scanner implementation.
 import { artifactDigest, toolSurfaceHash } from "../../services/scanner/src/scanner.mjs";
 // @ts-expect-error Shared actual prepared scanner implementation.
@@ -234,7 +234,7 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
     // Gateway-A's terminal revocation journal or satisfy the assertion via it.
     const attempts = await Promise.allSettled(["Gateway-A", "Gateway-B"].map(agentId => privateNode(deniedGatewayChild,
       { ...gatewayContext, agentId, preparedIdentityPath: bad.file, input: preparedMailInput })));
-    const gateways = attempts.map(attempt => { assert.equal(attempt.status, "fulfilled"); return (attempt as PromiseFulfilledResult<any>).value; });
+    const gateways = completedGateways(attempts);
     assert.equal(new Set(gateways.map(gateway => gateway.pid)).size, 2);
     for (const { pid, ...decision } of gateways) {
       assert.notEqual(pid, process.pid);
