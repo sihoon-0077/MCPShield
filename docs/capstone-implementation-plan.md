@@ -50,6 +50,8 @@
 - 같은 SHA의 Linux CI에서 기존 실패였던 scoped Node scanner native gate가 실제 PASS했다. Node 24 job·PostgreSQL job도 PASS. scoped API native와 나머지 Node 22 단계는 아직 최종 결과 확인 전이다.
 - `d8faa98`: 기존 resolver에 운영자 고정 공개키를 받는 demo publisher 검사를 추가했다. 기존 safe/bad source의 공개 서명 sidecar만 저장하며 개인키는 저장하지 않았다. Main의 실제 resolver 검수 4 PASS / 0 SKIP, backend typecheck PASS. 서명 유효성을 행동 안전성으로 승격하지 않는다.
 - 교차 리뷰: Main이 outbox의 과거 unsigned/null-domain 행에 의한 queue starvation 및 Agent의 기존 scoped tool 응답 형식 불일치를 발견했다. 담당자가 회귀 검사를 추가해 수정 중이다. Security reviewer는 PostgreSQL migration 개수 기대값과 새 claim SQL 검증 누락도 확인했다.
+- 후속 통합 `c3c46dc`: 위 리뷰 지적을 수정하고 게시자·bounded outbox·Agent bridge·한국어 DLQ 안내를 모두 통합했다. 신규 native 검사를 CI 명령과 CI 계약 회귀 검사에도 연결했다.
+- 새 전체 로컬 검사: **439 PASS / 0 FAIL / 35 SKIP**, 세 demo smoke PASS, backend/dashboard production build PASS. 결과·commit·외부 미검증 범위는 [1차 구현 결과](capstone-progress-2026-09-22.md)에 기록했다.
 
 ## 재작성 방지 확인
 
