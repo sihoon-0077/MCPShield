@@ -9,6 +9,7 @@ import { artifactDigest, loadManifest, toolSurfaceHash } from '../../scanner/src
 import { canonicalJson } from '../../scanner/src/evidence.mjs';
 import { copyFixtureSnapshot, removeFixtureSnapshot, SNAPSHOT_LIMITS } from '../../scanner/src/snapshot.mjs';
 import { preflightNpmRuntime } from './runtime-preflight.mjs';
+import { verifyDemoPublisherManifest } from './demo-publisher.mjs';
 
 export const RESOLVER_LIMITS = Object.freeze({ downloadBytes: 16 * 1024 * 1024, expandedBytes: 20 * 1024 * 1024, files: 1024, ratio: 200, timeoutMs: 15_000 });
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
@@ -101,11 +102,12 @@ export async function extractNpmArchive(bytes, outputDir, integrity) {
   return { archiveDigest: sha256(bytes), integrityVerified, sizeBytes: bytes.length, expandedBytes: contentBytes, files };
 }
 
-export async function resolveArtifact(input) {
+export async function resolveArtifact(input, { demoPublisher } = {}) {
   const source = input.source ?? (input.sourceType === 'local' ? { type: 'local', path: input.locator }
     : input.sourceType === 'npm' ? { type: 'npm', spec: input.locator }
       : { type: input.sourceType, url: input.locator, integrity: input.integrity });
   if (source?.type === 'oci' || source?.type === 'oci-layout') {
+    if (demoPublisher !== undefined) throw Error('DEMO_PUBLISHER_SOURCE_PROFILE_UNSUPPORTED');
     const { resolveOciArtifact } = await import('./oci.mjs');
     return resolveOciArtifact({ ...source, locator: source.locator ?? source.url ?? input.locator });
   }
@@ -147,6 +149,11 @@ export async function resolveArtifact(input) {
       if (manifest.name !== pkg.name || manifest.version !== pkg.version) throw new Error('manifest identity differs from package identity');
     }
     const digest = await artifactDigest(artifactDir);
+    // Operator-pinned key/catalogue are separate from candidate-controlled source input.
+    if (demoPublisher !== undefined) metadata.publisherEvidence.push(verifyDemoPublisherManifest({
+      manifest: demoPublisher?.manifest, pinnedPublicKey: demoPublisher?.pinnedPublicKey,
+      expectedIdentity: { publisherId: demoPublisher?.publisherId, name: manifest.name, version: manifest.version, artifactDigest: digest },
+    }));
     const manifestDigest = sha256(canonicalJson(manifest));
     const releaseId = `${manifest.name}@${manifest.version}`;
     const locator = `${source.type === 'local' ? 'local' : 'npm'}:${releaseId}`;
