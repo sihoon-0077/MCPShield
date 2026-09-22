@@ -53,6 +53,15 @@
 - 후속 통합 `c3c46dc`: 위 리뷰 지적을 수정하고 게시자·bounded outbox·Agent bridge·한국어 DLQ 안내를 모두 통합했다. 신규 native 검사를 CI 명령과 CI 계약 회귀 검사에도 연결했다.
 - 새 전체 로컬 검사: **439 PASS / 0 FAIL / 35 SKIP**, 세 demo smoke PASS, backend/dashboard production build PASS. 결과·commit·외부 미검증 범위는 [1차 구현 결과](capstone-progress-2026-09-22.md)에 기록했다.
 - 최초 fixture 수정 SHA `35019f6`의 기존 실패 두 native gate 모두 실제 PASS 확인. 후속 기능의 CI와는 분리한다. 새 통합본을 같은 PR에 push하면 기존 진행 중 run이 workflow concurrency 정책으로 취소될 수 있으므로 개별 gate 성공을 전체 run 성공이라고 하지 않는다.
+- 통합 `fab3ed1` native PostgreSQL outbox PASS. Gateway native 실패 조사 중 공유 daemon 누수 검사의 병렬 충돌을 발견해 두 test file을 순차 실행하도록 수정했다. 가드·누수 검사는 유지하며 실제 재실행으로 확인한다.
+
+## 다음 publisher pipeline 연결 시 주의
+
+현재 서명 검증은 resolver에 연결되었지만 API/독립 validator의 운영자 설정은 아직 연결되지 않았다.
+API source 등록, scoped 준비/재검증, validator 독립 수집 모두 같은 실측 source identity에 대해 검증해야 한다.
+신뢰 공개키는 요청 body나 후보 metadata가 아닌 운영자 catalogue에서 읽고, proof를 기존 frozen/configHash·암호화 evidence bundle에 결합한다.
+기존 서명된 공개 mail fixture와 native prepared scoped fixture는 서로 다르다. 공개 fixture를 바꿔 replay identity를 깨지 않는다.
+서명 실패는 source 인증 실패/ABSTAIN과 연결하고, 서명 성공을 행동 PASS로 승격하지 않는다.
 
 ## 재작성 방지 확인
 

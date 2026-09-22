@@ -38,7 +38,8 @@ test('independent CI diagnostics never remove upstream success gates from image 
   assert.ok(preparedAgent);
   assert.match(preparedAgent, /steps\.runtime_builder\.outcome == 'success'/);
   assert.match(preparedAgent, /^          MCPSHIELD_DOCKER_TESTS: "1"\r?$/m);
-  assert.match(preparedAgent, /node --test apps\/gateway\/test\/prepared-docker\.test\.mjs apps\/gateway\/test\/agent-prepared-docker\.test\.mjs/);
+  assert.match(preparedAgent, /node --test --test-concurrency=1 apps\/gateway\/test\/prepared-docker\.test\.mjs apps\/gateway\/test\/agent-prepared-docker\.test\.mjs/,
+    'Native Gateway tests inventory one shared Docker daemon and must not overlap');
   assert.doesNotMatch(preparedAgent, /continue-on-error|OPENAI_API_KEY|CONTROL_AI_TOKEN/);
   const scoped = steps.find(step => step.startsWith('Exercise scoped Node v2 disclosure and actual isolated probe execution'));
   assert.ok(scoped);
