@@ -86,7 +86,7 @@ export class ReceiptRelayer {
     // An old orphan can fall outside the generic recent-100 reconciler. Rewind only the exact
     // previously observed signed transaction, never an in-flight lease, failed action or changed payload.
     return store.forTenant(tenantId, async (transaction) => {
-      const rows = await transaction.query(`UPDATE cp_chain_actions SET state = 'PREPARED', error_code = 'REORG_RECEIPT_LOST', updated_at = ?
+      const rows = await transaction.query(`UPDATE cp_chain_actions SET state = 'PREPARED', error_code = 'REORG_RECEIPT_LOST', attempts = 0, retry_started_at = NULL, next_attempt_at = NULL, updated_at = ?
         WHERE action_id = ? AND tenant_id = ? AND chain_id = ? AND registry_address = ? AND relayer_address = ? AND tx_hash = ?
         AND raw_tx = ? AND payload = ? AND kind = ? AND nonce = ? AND state = 'COMPLETED' AND (lease_owner IS NULL OR lease_expires_at <= ?) RETURNING action_id`,
       [now, action.action_id, tenantId, this.chainId, this.registryAddress.toLowerCase(), this.signer.address.toLowerCase(), action.tx_hash, action.raw_tx, action.payload, action.kind, action.nonce, now]);
