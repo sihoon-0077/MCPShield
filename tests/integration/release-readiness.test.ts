@@ -24,7 +24,7 @@ test('release smoke contract exercises the real API and complete synthetic judge
 });
 test('independent CI diagnostics never remove upstream success gates from image signing or retention', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/frontend-gateway-devops.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /^        run: node --import tsx --test tests\/api\/control-plane\.test\.ts tests\/api\/preparations\.test\.ts tests\/api\/appeals\.test\.ts tests\/api\/health\.test\.ts\r?$/m,
+  assert.match(workflow, /^        run: node --import tsx --test tests\/api\/control-plane\.test\.ts tests\/api\/preparations\.test\.ts tests\/api\/appeals\.test\.ts tests\/api\/health\.test\.ts tests\/api\/chain-outbox\.test\.ts\r?$/m,
     'The PostgreSQL command is a step property, not an env variable');
   const jobs = workflow.split(/^  (?=[a-z-]+:\s*$)/m);
   for (const name of ['repeat-demo', 'signed-image']) {
@@ -34,6 +34,12 @@ test('independent CI diagnostics never remove upstream success gates from image 
     assert.match(job, /needs: \[verify, postgres\]/);
   }
   const steps = workflow.split(/^      - name: /m);
+  const preparedAgent = steps.find(step => step.startsWith('Exercise isolated prepared npm Gateway and per-call revocation'));
+  assert.ok(preparedAgent);
+  assert.match(preparedAgent, /steps\.runtime_builder\.outcome == 'success'/);
+  assert.match(preparedAgent, /^          MCPSHIELD_DOCKER_TESTS: "1"\r?$/m);
+  assert.match(preparedAgent, /node --test apps\/gateway\/test\/prepared-docker\.test\.mjs apps\/gateway\/test\/agent-prepared-docker\.test\.mjs/);
+  assert.doesNotMatch(preparedAgent, /continue-on-error|OPENAI_API_KEY|CONTROL_AI_TOKEN/);
   const scoped = steps.find(step => step.startsWith('Exercise scoped Node v2 disclosure and actual isolated probe execution'));
   assert.ok(scoped);
   assert.match(scoped, /steps\.runtime_builder\.outcome == 'success'/);
