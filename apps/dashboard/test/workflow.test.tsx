@@ -36,3 +36,15 @@ test("transaction preparation, receipt completion and expired/unsigned API respo
   const unsigned = renderToStaticMarkup(<AdmissionView admission={{ ...admission, decision: "BLOCK", source: "LOCAL_DEMO", snapshot: undefined, signature: undefined }} now={Date.now()} />);
   assert.match(unsigned, /온체인 증명 아님/); assert.match(unsigned, /서명된 스냅샷이 없습니다/);
 });
+
+test("chain retry exhaustion explains operator reconciliation without offering blind resubmission", () => {
+  const html = renderToStaticMarkup(<ChainActionsView actions={[{ ...action, status: "DEAD_LETTER", attempts: 12,
+    retryBudget: { maxAttempts: 12 }, nextAttemptAt: scan.updatedAt, errorCode: "RECEIPT_PENDING" }]} />);
+  assert.match(html, /자동 재시도 중단 · 체인 확인 필요/);
+  assert.match(html, /처리 시도 12회 \/ 최대 12회/);
+  assert.match(html, /전송 결과가 불명확할 수 있습니다/);
+  assert.doesNotMatch(html, /<button|다음 확인/);
+  const pending = renderToStaticMarkup(<ChainActionsView actions={[{ ...action, attempts: 2, nextAttemptAt: scan.updatedAt }]} />);
+  assert.match(pending, /처리 시도 2회/);
+  assert.match(pending, /다음 확인/);
+});
