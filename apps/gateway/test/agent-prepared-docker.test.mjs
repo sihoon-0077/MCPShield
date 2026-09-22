@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { execFile } from 'node:child_process';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { tsImport } from 'tsx/esm/api';
 import { exactReleaseIdentity } from '../../../packages/contracts-sdk/src/v2-identity.mjs';
 import { prepareNpmClosure } from '../../../services/resolver/src/npm-closure.mjs';
@@ -15,12 +17,18 @@ import { createPreparedReleaseBinding } from '../../../services/scanner/src/prep
 import { removeFixtureSnapshot } from '../../../services/scanner/src/snapshot.mjs';
 import { runGatewayAgent } from '../../../benchmarks/gateway-agent.mjs';
 
+const exec = promisify(execFile);
+const ownedContainers = async () => (await exec('docker', ['container', 'ls', '--all', '--quiet', '--no-trunc', '--filter', 'label=io.mcpshield.gateway.owner'],
+  { timeout: 10000, maxBuffer: 131072, windowsHide: true })).stdout.trim().split('\n').filter(Boolean).sort();
+
 // Actual prepared image/SDK/Gateway; local fake model and admission issuer. No provider-quality/quorum claim.
 test('scoped authored mailbox → prepared image → fake model decision → real signed Gateway call and revoke', {
   skip: process.env.MCPSHIELD_DOCKER_TESTS !== '1' || !process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE,
   timeout: 300000,
 }, async () => {
   assert.equal(process.platform, 'linux');
+  // Run daemon-wide leak checks serially with other prepared Gateway tests.
+  const before = await ownedContainers();
   const { scopedTools, scopedMailbox } = await tsImport('../../../tests/api/scoped-fixture.ts', import.meta.url);
   const workspace = await mkdtemp(join(tmpdir(), 'mcpshield-prepared-agent-')), sourceDir = join(workspace, 'source');
   let prepared, server;
@@ -84,15 +92,18 @@ test('scoped authored mailbox → prepared image → fake model decision → rea
     assert.equal(allowed.model.provider, 'custom');
     assert.equal(allowed.modelEvidenceMode, 'LOCAL_CONTRACT_TEST');
     assert.equal(allowed.asrMeasured, false);
+    assert.deepEqual(await ownedContainers(), before, 'normal Agent session must release its prepared container');
     revoked = true;
     const blocked = await runGatewayAgent(options);
     assert.equal(blocked.status, 'GATEWAY_BLOCKED', JSON.stringify(blocked));
     assert.equal(blocked.reasonCode, 'RELEASE_REVOKED');
     assert.equal(blocked.modelAttempted, false);
     assert.equal(modelRequests, 1);
+    assert.deepEqual(await ownedContainers(), before, 'revoked Agent session must leave no prepared container');
   } finally {
     await new Promise(resolve => server ? server.close(resolve) : resolve());
     await prepared?.cleanup?.();
     await removeFixtureSnapshot(workspace);
+    assert.deepEqual(await ownedContainers(), before, 'Agent test cleanup must restore Gateway container inventory');
   }
 });
