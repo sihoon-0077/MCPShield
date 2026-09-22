@@ -40,7 +40,7 @@ Windows / Node 24.13.0. `c3c46dc`에서 `npm test` exit 0.
 ## Linux CI와 리뷰
 
 - 수정 전 `9a251ae`의 [CI 35696784563](https://github.com/sihoon-0077/MCPShield/actions/runs/35696784563)는 scoped scanner/API 2 FAIL이었다.
-- fixture 수정 `35019f6`의 [CI 35736644460](https://github.com/sihoon-0077/MCPShield/actions/runs/35736644460)에서 scoped Node scanner native가 PASS했다. Node24·PostgreSQL job도 PASS했다. 이 문서 작성 시 scoped API native는 진행 중이었다.
+- fixture 수정 `35019f6`의 [CI 35736644460](https://github.com/sihoon-0077/MCPShield/actions/runs/35736644460)에서 기존에 실패하던 **scoped Node scanner 및 scoped API→독립 validator→Gateway native 두 gate가 모두 PASS**했다. Linux sandbox 격리·Node24·PostgreSQL job도 PASS했다. 이 기록 시 Node22의 후속 Compose 등 전체 job은 아직 종료 전이다.
 - 이 CI에는 이후 게시자/재시도/Agent 변경이 없다. 결과를 새 통합 SHA의 native 성공으로 전용하지 않는다.
 - Main과 별도 Security reviewer가 queue head/nonce 보존·Agent 결과 판정·키 분리·모델 증거 표기를 검토했다. 발견한 legacy unsigned queue 정체, PostgreSQL migration 기대값, scoped mail 응답 호환, 다중 호출 완료 오판은 수정했다.
 - main 머지·Railway 재배포·테스트넷 거래·유료 모델 호출은 하지 않았다. 개발 PR은 검증 대기 상태로 유지한다.

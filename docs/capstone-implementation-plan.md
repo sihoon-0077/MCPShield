@@ -52,6 +52,7 @@
 - 교차 리뷰: Main이 outbox의 과거 unsigned/null-domain 행에 의한 queue starvation 및 Agent의 기존 scoped tool 응답 형식 불일치를 발견했다. 담당자가 회귀 검사를 추가해 수정 중이다. Security reviewer는 PostgreSQL migration 개수 기대값과 새 claim SQL 검증 누락도 확인했다.
 - 후속 통합 `c3c46dc`: 위 리뷰 지적을 수정하고 게시자·bounded outbox·Agent bridge·한국어 DLQ 안내를 모두 통합했다. 신규 native 검사를 CI 명령과 CI 계약 회귀 검사에도 연결했다.
 - 새 전체 로컬 검사: **439 PASS / 0 FAIL / 35 SKIP**, 세 demo smoke PASS, backend/dashboard production build PASS. 결과·commit·외부 미검증 범위는 [1차 구현 결과](capstone-progress-2026-09-22.md)에 기록했다.
+- 최초 fixture 수정 SHA `35019f6`의 기존 실패 두 native gate 모두 실제 PASS 확인. 후속 기능의 CI와는 분리한다. 새 통합본을 같은 PR에 push하면 기존 진행 중 run이 workflow concurrency 정책으로 취소될 수 있으므로 개별 gate 성공을 전체 run 성공이라고 하지 않는다.
 
 ## 재작성 방지 확인
 
