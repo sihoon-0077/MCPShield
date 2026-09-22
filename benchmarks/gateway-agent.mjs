@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { z } from 'zod';
 import { decideAgentCalls } from './agent-mcp-harness.mjs';
 import { canonicalJson } from '../services/scanner/src/evidence.mjs';
 import { redactEvidenceDocument } from '../services/scanner/src/redaction.mjs';
@@ -11,6 +12,27 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const hash = value => `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
 const admissionFields = ['time', 'phase', 'toolName', 'releaseId', 'controlReleaseId', 'artifactDigest', 'manifestDigest',
   'toolSurfaceHash', 'policyHash', 'chainId', 'registryContract', 'decision', 'status', 'reasonCode', 'source', 'decisionSource', 'cacheHit', 'expiresAt'];
+const mailResult = z.object({ ok: z.literal(true).optional(), total: z.number().int().min(1).optional(),
+  messages: z.array(z.object({ id: z.string().min(1).max(128), subject: z.string().min(1).max(512) })).min(1).max(10) })
+  .refine(value => value.total === undefined || value.total >= value.messages.length);
+
+export function validateMailTools(tools, nextCursor) {
+  const tool = tools?.[0], schema = tool?.inputSchema;
+  // Both authored mail profiles are reads. Missing hints are NOT promoted to read-only admission;
+  // Gateway still classifies them conservatively and enforces their signed operation class.
+  if (nextCursor || tools?.length !== 1 || tool.name !== 'list_messages' || tool.annotations?.readOnlyHint === false ||
+    tool.annotations?.destructiveHint === true || schema?.type !== 'object' || schema.additionalProperties !== false ||
+    Object.keys(schema.properties ?? {}).some(key => key !== 'limit') || (schema.required ?? []).some(key => key !== 'limit') ||
+    (schema.properties?.limit && (schema.properties.limit.type !== 'integer' || schema.properties.limit.minimum !== 1 || schema.properties.limit.maximum !== 10))) throw new Error('AGENT_MAIL_PROFILE_REQUIRED');
+}
+
+export function syntheticMailSubjects(result) {
+  if (result.isError) return null;
+  try {
+    const payload = mailResult.parse(JSON.parse(result.content?.find(item => item.type === 'text')?.text));
+    return redactEvidenceDocument(payload.messages.map(message => message.subject));
+  } catch { return null; }
+}
 
 // This is the protected ON path, not an OFF/ON ASR evaluator. No bypass is exposed.
 export async function runGatewayAgent({ preparedIdentityPath, apiUrl, controlEnvironment = {},
@@ -41,7 +63,7 @@ export async function runGatewayAgent({ preparedIdentityPath, apiUrl, controlEnv
     phase = 'DISCOVERY';
     const { tools, nextCursor } = await gateway.client.listTools({}, { timeout: timeoutMs });
     // ponytail: this demo is one read-only mail tool; expand only with a separately reviewed synthetic profile.
-    if (nextCursor || tools.length !== 1 || tools[0].name !== 'list_messages' || tools[0].annotations?.readOnlyHint !== true || tools[0].annotations?.destructiveHint !== false) throw new Error('AGENT_MAIL_PROFILE_REQUIRED');
+    validateMailTools(tools, nextCursor);
     report.toolsCatalogueHash = hash(tools);
     phase = 'MODEL';
     report.modelAttempted = true;
@@ -51,7 +73,11 @@ export async function runGatewayAgent({ preparedIdentityPath, apiUrl, controlEnv
     report.disposition = decision.disposition;
     report.selectedCallsHash = hash(decision.calls);
     report.status = decision.status !== 'VALID' ? 'MODEL_INVALID' : !decision.calls.length ? 'MODEL_NO_CALL' : 'TOOL_ERROR';
-    if (decision.status === 'VALID') for (const call of decision.calls) {
+    if (decision.calls.length > 1) {
+      report.status = 'MODEL_INVALID';
+      report.decisionStatus = 'INVALID_OR_OUT_OF_PROFILE';
+      report.errorCode = 'AGENT_SINGLE_CALL_REQUIRED';
+    } else if (decision.status === 'VALID') for (const call of decision.calls) {
       phase = 'CALL';
       const entry = { name: call.name, argumentsHash: hash(call.arguments), requestedAt: new Date().toISOString(), outcome: 'REQUEST_FAILED' };
       report.toolRequests.push(entry);
@@ -60,12 +86,9 @@ export async function runGatewayAgent({ preparedIdentityPath, apiUrl, controlEnv
       entry.result = redactEvidenceDocument(result);
       entry.completedAt = new Date().toISOString();
       if (result.isError) break;
-      const text = result.content?.find(item => item.type === 'text')?.text;
-      let payload;
-      try { payload = JSON.parse(text); } catch { /* A readable response alone does not prove the mail task completed. */ }
-      if (payload?.ok === true && Array.isArray(payload.messages) && payload.messages.length &&
-        payload.messages.every(message => typeof message.subject === 'string' && message.subject.length <= 512)) {
-        report.subjects = redactEvidenceDocument(payload.messages.map(message => message.subject));
+      const subjects = syntheticMailSubjects(result);
+      if (subjects) {
+        report.subjects = subjects;
         report.taskCompleted = true;
       }
     }
