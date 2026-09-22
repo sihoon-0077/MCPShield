@@ -41,3 +41,18 @@
 ## 진행 로그
 
 - 재개 준비: 스킬·협업 규칙·v2.0 요구사항을 확인하고 새 파트 브랜치를 준비한다. 기능 완료 선언은 아니다.
+- Main + 3개 새 worktree를 `b11ed63`에서 생성했다. 기존 worktree는 보존하고 설치된 의존성을 재사용한다.
+- [40개 P0 증거 지도](capstone-evidence-map.md)를 만들었다. 작업용 매핑이며 최종 감사/완료율은 아니다.
+- 원인 확인: 두 scoped malicious fixture가 `/events`에 raw text를 보내 HTTP 415로 거절되었다. 실제 canary event가 없고 AI도 없어서 ABSTAIN인 것은 올바른 방어 동작이었다.
+- `5bac927` / `35019f6`: 기존 sink의 JSON `{canary}` 계약으로 두 fixture를 수정했다. safe/FAIL 기대값·보안 guard는 유지했다. trusted sink 회귀 검사도 추가했다.
+- 로컬 집중 검사: 13 PASS / 3 native Docker SKIP. `35019f6`을 기존 `master/main` PR에 push하고 Linux CI `35736644460`을 시작했다. main 머지·공개 배포는 하지 않았다.
+- `35019f6` Windows 전체 `npm test`: backend 138 PASS / 11 SKIP, security 129 PASS / 19 SKIP, Gateway 110 PASS / 2 SKIP, dashboard 41 PASS / 1 SKIP, 세 demo smoke PASS. 합계 418 PASS / 33 SKIP / 0 FAIL이며 Docker·PostgreSQL 미실행을 포함한다.
+- 같은 SHA의 Linux CI에서 기존 실패였던 scoped Node scanner native gate가 실제 PASS했다. Node 24 job·PostgreSQL job도 PASS. scoped API native와 나머지 Node 22 단계는 아직 최종 결과 확인 전이다.
+- `d8faa98`: 기존 resolver에 운영자 고정 공개키를 받는 demo publisher 검사를 추가했다. 기존 safe/bad source의 공개 서명 sidecar만 저장하며 개인키는 저장하지 않았다. Main의 실제 resolver 검수 4 PASS / 0 SKIP, backend typecheck PASS. 서명 유효성을 행동 안전성으로 승격하지 않는다.
+- 교차 리뷰: Main이 outbox의 과거 unsigned/null-domain 행에 의한 queue starvation 및 Agent의 기존 scoped tool 응답 형식 불일치를 발견했다. 담당자가 회귀 검사를 추가해 수정 중이다. Security reviewer는 PostgreSQL migration 개수 기대값과 새 claim SQL 검증 누락도 확인했다.
+
+## 재작성 방지 확인
+
+- 게시자: 기존 resolver snapshot/hash + Node `crypto`를 사용한다. 기존 MOCK 표시에는 실제 서명 검사가 없어 작은 검증 함수와 공개 sidecar만 필요했다. 최소 검사는 같은 키의 두 버전 검증 및 bytes/키/누락 거부다.
+- 체인 전송: 기존 SQL outbox·lease·signed transaction을 유지한다. 기존 경로에 retry 상한이 없어 additive migration과 bounded backoff를 넣는다. 최소 검사는 응답 유실 때 동일 bytes 재전송, 횟수 초과 DLQ 및 nonce 보호다.
+- Agent: 기존 모델 결정 함수와 MCP SDK client를 연결한다. 기존 scanner-only callback으로는 실제 Gateway 집행을 증명할 수 없다. 최소 검사는 모델 선택→Gateway 호출 및 선택 뒤 폐기 시 미전달이다.
