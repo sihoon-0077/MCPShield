@@ -2,6 +2,20 @@
 
 이 문서는 MCPShield 해커톤 프로토타입을 여러 worktree에서 병렬 개발할 때 사용하는 역할, 코드 소유권, 인터페이스, 병합 및 리뷰 규칙을 정의한다.
 
+## 2026-09-22 캡스톤 v2.0 구현 재개 — 현재 범위
+
+사용자가 `docs/MCPShield_캡스톤_최종_마스터문서_v2.0.md`를 구현 기준으로 지정했다.
+이 문서의 P0 40개를 검수하며 기존 전체 마스터 구현 목표는 장기 Roadmap으로 보존한다.
+과거 잔여 사용량 50% 중단 조건은 사용자 재개 요청으로 해제되었다.
+기존 코드·테스트·스키마를 재사용하고 ponytail 스킬을 적용한다. 보안 검사 우회·임의 완료율 이전은 금지한다.
+
+Main 통합 작업은 `master/main`, 새 독립 작업은 `capstone/security-v2`,
+`capstone/backend-v2`, `capstone/frontend-v2`에서 수행한다. 기존 worktree와 공개 데모는 보존한다.
+아래 경로 소유권은 유지한다. Main은 Frontend에 `benchmarks/gateway-agent*.mjs`와 해당 Gateway 테스트의
+추가 소유권을 부여한다. 공통 Agent 판단 함수 변경이 필요하면 Main/Security와 먼저 합의한다.
+새로운 유료 모델 호출·실제 키 사용·테스트넷 전송·공개 배포는 대상과 권한을 확인한 뒤 수행한다.
+진행·검증·남은 외부 의존은 `docs/capstone-implementation-plan.md`에 기록한다.
+
 ## 2026-09-08 마스터 문서 구현 단계
 
 사용자가 마스터 문서 전체 구현을 요청했으므로, 이번 `master/*` 브랜치에서는
