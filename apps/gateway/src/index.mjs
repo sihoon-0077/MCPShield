@@ -189,10 +189,20 @@ async function admittedSnapshot(artifactDir, options) {
 
 async function admitSnapshot(snapshot, options) {
   const decision = await executionDecision(snapshot, options, "__admission__", "ADMISSION", operationClass(snapshot.tools));
-  log("admission", { releaseId: snapshot.releaseId, artifactDigest: snapshot.artifactDigest, toolSurfaceHash: snapshot.toolSurfaceHash, decision: decision.decision, status: decision.releaseStatus, source: decision.source, cacheHit: decision.cacheHit, expiresAt: decision.expiresAt });
+  logAdmission(snapshot, options, decision, "ADMISSION");
   requireExecutionDecision(snapshot, decision);
   if (snapshot.runtimePolicyIssues.length) throw new Error(`Gateway runtime policy rejected ${snapshot.runtimePolicyIssues[0].path}: ${snapshot.runtimePolicyIssues[0].reason}`);
   return decision;
+}
+
+function logAdmission(snapshot, options, decision, phase, toolName) {
+  log("admission", { phase, toolName, releaseId: snapshot.releaseId, controlReleaseId: decision.releaseId,
+    artifactDigest: snapshot.artifactDigest, manifestDigest: snapshot.manifestDigest, toolSurfaceHash: snapshot.toolSurfaceHash,
+    policyHash: options.policyHash ?? process.env.MCPSHIELD_POLICY_HASH,
+    chainId: options.chainId ?? process.env.MCPSHIELD_CHAIN_ID,
+    registryContract: options.registryContract ?? process.env.MCPSHIELD_REGISTRY_CONTRACT,
+    decision: decision.decision, status: decision.releaseStatus, reasonCode: decision.reasonCode,
+    source: decision.source, decisionSource: decision.decisionSource, cacheHit: decision.cacheHit, expiresAt: decision.expiresAt });
 }
 
 async function executionDecision(snapshot, options, toolName, phase, actionClass) {
@@ -260,6 +270,7 @@ async function checkedDecision(snapshot, options, toolName, phase, actionClass) 
 function recheckSession(snapshot, options) {
   return async (message) => {
     const decision = await executionDecision(snapshot, options, message.params.name, "CALL", operationClass(snapshot.tools.filter((tool) => tool.name === message.params.name)));
+    logAdmission(snapshot, options, decision, "CALL", message.params.name);
     requireExecutionDecision(snapshot, decision);
     emergencySessions.get(snapshot)?.call(message, decision);
     return decision;

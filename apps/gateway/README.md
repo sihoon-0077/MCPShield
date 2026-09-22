@@ -1,5 +1,33 @@
 # MCPShield Gateway
 
+## Capstone single-turn Agent bridge
+
+`node benchmarks/gateway-agent.mjs` connects the existing model-decision harness to the
+official SDK and this same stdio Gateway. It discovers the admitted read-only
+`list_messages` tool, lets the model select/validate its arguments, then sends the
+actual `tools/call`. The synthetic message subjects, redacted result, model metadata,
+request timestamps and Gateway-owned admission identity/reason are grouped in one JSON run.
+Model refusal, invalid output, infrastructure failure and explicit Gateway BLOCK remain separate.
+
+The CLI requires an operator-provisioned Linux prepared identity (`MCPSHIELD_PREPARED_IDENTITY`),
+`MCPSHIELD_API_URL`, and the signed-admission context documented below
+(`MCPSHIELD_POLICY_HASH`, `MCPSHIELD_CONTROL_RELEASE_ID`, `MCPSHIELD_TENANT_ID`,
+`MCPSHIELD_CACHE_PUBLIC_KEY`, `MCPSHIELD_CACHE_KEY_ID`, `MCPSHIELD_CHAIN_ID`,
+`MCPSHIELD_REGISTRY_CONTRACT`, `MCPSHIELD_VALIDATOR_SET_VERSION`, `MCPSHIELD_CONTROL_TOKEN`).
+After approving provider cost and synthetic-data disclosure, explicitly set
+`MCP_SHIELD_ENABLE_REMOTE_AI=true`, `MCP_SHIELD_AI_PROVIDER=openai`,
+`MCP_SHIELD_AI_MODEL` and `MCP_SHIELD_AI_TOKEN` using the operator's secret mechanism.
+The existing transport also accepts an approved custom provider using `MCP_SHIELD_AI_URL`.
+Provider tokens are not passed into the Gateway or candidate runtime.
+
+This path is strict, protected ON only, uses no admission bypass and never falls back to
+host execution or replay. It does not yet measure OFF/ON ASR, prove testnet quorum or
+independently count candidate starts. The prepared network-none runtime remains narrower
+than the observation network. `npm run test:gateway` includes a loopback fake-provider +
+real SDK/Gateway contract test limited to the two authored replay fixtures; its output is
+explicitly `LOCAL_PROVIDER_CONTRACT_TEST`, not evidence of an actual LLM or Docker run.
+Remove the AI opt-in to disable live Agent runs. Existing replay demo commands are unchanged.
+
 The default Gateway accepts an artifact directory, never an API caller-provided release ID, digest, tool hash, executable, or arguments. It copies regular files into a private temporary snapshot, computes the scanner-compatible artifact and tool-surface hashes from those exact bytes, validates the `.mjs` manifest entrypoint, checks admission, and starts only that snapshotted entrypoint with the current Node executable. The separate, operator-local prepared npm and OCI profiles below use committed immutable Docker images instead of this host fixture runner.
 
 The child receives only a minimal system environment. Pass an MCP-specific variable intentionally by listing its exact name in `MCPSHIELD_CHILD_ENV_ALLOWLIST`; unrelated parent secrets are not inherited. Runtime injection variables such as `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, and `DYLD_*` are always removed. Artifact code is ESM-only: `.js`, CommonJS, dynamic, absolute, package, native, and WebAssembly module loads are rejected. Loader-shaped raw source is rejected fail-closed so regex or template syntax cannot hide a dynamic import. `.mjs` code may use only an allowlist of non-network `node:` built-ins and relative `.mjs` modules captured inside its snapshot. Node's permission model prevents reads outside that snapshot, string code generation is disabled, child output is capped, and runtime network egress is not supported by this MVP.
