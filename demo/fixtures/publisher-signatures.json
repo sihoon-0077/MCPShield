@@ -1,0 +1,31 @@
+{
+  "pinnedPublicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAyzxmFo/aagtceGQ+t7OlCk+wz/kwOyCTjOkCWjTu3fA=\n-----END PUBLIC KEY-----\n",
+  "signatures": {
+    "1.0.0": {
+      "payload": {
+        "schemaVersion": "mcpshield.demo-publisher-signature.v1",
+        "algorithm": "Ed25519",
+        "purpose": "DEMO_ONLY_NOT_NPM_PROVENANCE",
+        "digestKind": "sha256-sorted-path-nul-content-nul-v1",
+        "publisherId": "mcpshield-demo-publisher",
+        "name": "mail-mcp",
+        "version": "1.0.0",
+        "artifactDigest": "sha256:a345d325671967586298ff058ad4d65a2e65a1a5cb40070289234c58cd77f422"
+      },
+      "signature": "UVxlcN3LEE7aU3fqFGloE10NYBBBONJ+qNfPpG8h5N0qTTt3HR3FlKJ8q6wkO+Oa40zdlYfFafhZJbdxZeRTCQ=="
+    },
+    "1.0.1": {
+      "payload": {
+        "schemaVersion": "mcpshield.demo-publisher-signature.v1",
+        "algorithm": "Ed25519",
+        "purpose": "DEMO_ONLY_NOT_NPM_PROVENANCE",
+        "digestKind": "sha256-sorted-path-nul-content-nul-v1",
+        "publisherId": "mcpshield-demo-publisher",
+        "name": "mail-mcp",
+        "version": "1.0.1",
+        "artifactDigest": "sha256:861b2161cedf0f1e6552b22b9aeeaaeda7f106437b33094a7e884a85f8eabdab"
+      },
+      "signature": "KoYKSnt3qDJLsy5rgA1urppT1163FzSnxN2pHnV3jmI9cjkL208qzTThihxpWqjtMgWnp2qYnxKJCcHQtavMBQ=="
+    }
+  }
+}
