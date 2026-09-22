@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { runGatewayAgent } from '../../../benchmarks/gateway-agent.mjs';
+import { runGatewayAgent, validateMailTools, syntheticMailSubjects } from '../../../benchmarks/gateway-agent.mjs';
 import { createGatewayClient } from '../../../scripts/demo/mcp-client.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -13,6 +13,20 @@ const replay = resolve(root, 'scripts/demo/replay.json');
 const safe = resolve(root, 'demo/fixtures/mail-mcp-1.0.0');
 const revoked = resolve(root, 'demo/fixtures/mail-mcp-1.0.1');
 const selected = { disposition: 'SELECTED', calls: [{ name: 'list_messages', argumentsJson: '{}' }] };
+
+test('scoped prepared mail schema and result do not require legacy replay annotations or ok flag', () => {
+  const scoped = [{ name: 'list_messages', inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 10 } }, required: ['limit'], additionalProperties: false } }];
+  assert.doesNotThrow(() => validateMailTools(scoped));
+  assert.equal(scoped[0].annotations, undefined, 'do not manufacture read-only trust hints');
+  const result = payload => ({ content: [{ type: 'text', text: JSON.stringify(payload) }] });
+  assert.deepEqual(syntheticMailSubjects(result({ messages: [{ id: 'synthetic-1', subject: 'Welcome', from: 'demo@example.test' }], total: 2 })), ['Welcome']);
+  assert.equal(syntheticMailSubjects(result({ messages: [{ subject: 'Unbound summary' }] })), null);
+  assert.equal(syntheticMailSubjects(result({ ok: false, messages: [{ id: '1', subject: 'Failure' }] })), null);
+  assert.equal(syntheticMailSubjects(result({ messages: [{ id: '1', subject: 'Impossible count' }], total: 0 })), null);
+  assert.equal(syntheticMailSubjects({ isError: true, ...result({ messages: [{ id: '1', subject: 'Error' }], total: 1 }) }), null);
+  assert.throws(() => validateMailTools([{ ...scoped[0], annotations: { destructiveHint: true } }]), /AGENT_MAIL_PROFILE_REQUIRED/);
+  assert.throws(() => validateMailTools([{ ...scoped[0], inputSchema: { type: 'object', properties: { command: { type: 'string' } }, additionalProperties: false } }]), /AGENT_MAIL_PROFILE_REQUIRED/);
+});
 
 test('fake provider → actual SDK → unchanged Gateway: selection, refusal, invalid output and revocation', async t => {
   const temp = await mkdtemp(join(tmpdir(), 'mcpshield-agent-contract-'));
@@ -64,6 +78,15 @@ test('fake provider → actual SDK → unchanged Gateway: selection, refusal, in
       const result = await runGatewayAgent(options);
       assert.equal(result.status, 'MODEL_INVALID');
       assert.deepEqual(result.toolRequests, []);
+    });
+    await t.test('single mail task rejects multiple model-selected calls before forwarding any', async () => {
+      decision = { disposition: 'SELECTED', calls: [selected.calls[0], selected.calls[0]] };
+      const result = await runGatewayAgent(options);
+      assert.equal(result.status, 'MODEL_INVALID');
+      assert.equal(result.errorCode, 'AGENT_SINGLE_CALL_REQUIRED');
+      assert.equal(result.taskCompleted, false);
+      assert.deepEqual(result.toolRequests, []);
+      assert.equal(result.admissions.some(record => record.phase === 'CALL'), false);
     });
     await t.test('revoked candidate is denied before any model selection', async () => {
       const before = requests;

@@ -28,6 +28,17 @@ real SDK/Gateway contract test limited to the two authored replay fixtures; its 
 explicitly `LOCAL_PROVIDER_CONTRACT_TEST`, not evidence of an actual LLM or Docker run.
 Remove the AI opt-in to disable live Agent runs. Existing replay demo commands are unchanged.
 
+The supported mail schemas are the legacy empty arguments and the scoped `limit: 1..10`
+profile. The scoped tool has no annotations: the bridge does not manufacture read-only
+trust hints, and Gateway keeps its conservative signed operation classification.
+Task completion requires a bounded actual `{messages:[{id,subject}]}` response, with
+optional `total`/legacy `ok:true`, not the model's completion claim. The optional Linux test
+`apps/gateway/test/agent-prepared-docker.test.mjs` uses the same authored scoped mailbox,
+the already-provisioned builder image, actual prepared isolation/SDK calls and revocation;
+its model and signed issuer are still local synthetic contracts, not real provider/quorum proof.
+Run it with the same `MCPSHIELD_DOCKER_TESTS=1` and `MCPSHIELD_RUNTIME_BUILDER_IMAGE`
+settings as the prepared Docker test below. A skip is not native execution evidence.
+
 The default Gateway accepts an artifact directory, never an API caller-provided release ID, digest, tool hash, executable, or arguments. It copies regular files into a private temporary snapshot, computes the scanner-compatible artifact and tool-surface hashes from those exact bytes, validates the `.mjs` manifest entrypoint, checks admission, and starts only that snapshotted entrypoint with the current Node executable. The separate, operator-local prepared npm and OCI profiles below use committed immutable Docker images instead of this host fixture runner.
 
 The child receives only a minimal system environment. Pass an MCP-specific variable intentionally by listing its exact name in `MCPSHIELD_CHILD_ENV_ALLOWLIST`; unrelated parent secrets are not inherited. Runtime injection variables such as `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, and `DYLD_*` are always removed. Artifact code is ESM-only: `.js`, CommonJS, dynamic, absolute, package, native, and WebAssembly module loads are rejected. Loader-shaped raw source is rejected fail-closed so regex or template syntax cannot hide a dynamic import. `.mjs` code may use only an allowlist of non-network `node:` built-ins and relative `.mjs` modules captured inside its snapshot. Node's permission model prevents reads outside that snapshot, string code generation is disabled, child output is capped, and runtime network egress is not supported by this MVP.
