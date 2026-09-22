@@ -8,6 +8,7 @@ import { v2RpcRequest } from "../../../packages/contracts-sdk/src/transport.js";
 
 export type ChainActionKind = "REGISTER_RELEASE" | "PUBLISH_POLICY" | "DEPRECATE_POLICY" | "ATTEST" | "QUARANTINE" | "SYNC_EXPIRY" | "REGISTER_RECEIPT_LEDGER" | "ANCHOR_RECEIPTS";
 export type ChainRelayer = Pick<V2Relayer, "provider" | "signer" | "chainId" | "registryAddress" | "alreadyApplied" | "prepare">;
+export const chainRetryBudget = Object.freeze({ maxAttempts: 12, maxElapsedMs: 300000, baseDelayMs: 1000, maxDelayMs: 30000 });
 export const chainActionId = (relayer: ChainRelayer, tenantId: string, kind: ChainActionKind, payload: Record<string, any>) =>
   hash({ tenantId, kind, payload, chainId: relayer.chainId, registryAddress: relayer.registryAddress.toLowerCase() });
 export class V2Relayer {
@@ -76,7 +77,8 @@ export async function enqueueChainAction(store: ControlStore, relayer: ChainRela
   return (await chainActions(store, tenantId, actionId))[0];
 }
 export async function chainActions(store: ControlStore, tenantId: string, actionId?: string) {
-  return (await store.query(`SELECT action_id,release_id,kind,state,tx_hash,error_code,created_at,updated_at,chain_id,registry_address FROM cp_chain_actions WHERE tenant_id = ?${actionId ? " AND action_id = ?" : ""} ORDER BY created_at DESC LIMIT 250`, [tenantId, ...(actionId ? [actionId] : [])])).map((row) => ({ actionId: row.action_id, releaseId: row.release_id, kind: row.kind, status: row.state, txHash: row.tx_hash, errorCode: row.error_code, createdAt: row.created_at, updatedAt: row.updated_at, chainId: row.chain_id, registryAddress: row.registry_address }));
+  return (await store.query(`SELECT action_id,release_id,kind,state,tx_hash,error_code,created_at,updated_at,chain_id,registry_address,attempts,retry_started_at,next_attempt_at FROM cp_chain_actions WHERE tenant_id = ?${actionId ? " AND action_id = ?" : ""} ORDER BY created_at DESC LIMIT 250`, [tenantId, ...(actionId ? [actionId] : [])])).map((row) => ({ actionId: row.action_id, releaseId: row.release_id, kind: row.kind, status: row.state, txHash: row.tx_hash, errorCode: row.error_code, createdAt: row.created_at, updatedAt: row.updated_at, chainId: row.chain_id, registryAddress: row.registry_address,
+    attempts: row.attempts, retryStartedAt: row.retry_started_at, nextAttemptAt: row.next_attempt_at, retryBudget: chainRetryBudget }));
 }
 export async function runChainActionOnce(store: ControlStore, relayer: ChainRelayer) {
   const owner = randomUUID(), now = new Date().toISOString();
@@ -87,17 +89,42 @@ export async function runChainActionOnce(store: ControlStore, relayer: ChainRela
     WHERE chain_id = ? AND relayer_address = ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?) RETURNING chain_id`, [owner, expires, relayer.chainId, address, now]);
   if (!lease.length) return false;
   const releaseLease = () => store.query("UPDATE cp_relayer_leases SET lease_owner = NULL, lease_expires_at = NULL WHERE chain_id = ? AND relayer_address = ? AND lease_owner = ?", [relayer.chainId, address, owner]);
-  const [action] = await store.query(`UPDATE cp_chain_actions SET lease_owner = ?, lease_expires_at = ? WHERE action_id = (
-    SELECT action_id FROM cp_chain_actions WHERE chain_id = ? AND relayer_address = ? AND registry_address = ? AND state IN ('NEW','PREPARED','SUBMITTED')
-      AND (lease_expires_at IS NULL OR lease_expires_at <= ?) ORDER BY created_at LIMIT 1${store.driver === "POSTGRESQL" ? " FOR UPDATE SKIP LOCKED" : ""}) RETURNING *`,
-    [owner, expires, relayer.chainId, relayer.signer.address.toLowerCase(), relayer.registryAddress.toLowerCase(), now]);
+  // Backoff must not let another registry/tenant jump ahead of this account's reserved nonce.
+  // An uncertain signed DLQ entry pauses this account until an operator reconciles chain truth.
+  const [action] = await store.query(`UPDATE cp_chain_actions SET lease_owner = ?, lease_expires_at = ?, retry_started_at = COALESCE(retry_started_at, ?) WHERE action_id = (
+    SELECT action_id FROM cp_chain_actions WHERE chain_id = ? AND relayer_address = ? AND state IN ('NEW','PREPARED','SUBMITTED')
+      AND (registry_address = ? OR nonce IS NOT NULL OR raw_tx IS NOT NULL)
+      ORDER BY CASE WHEN nonce IS NULL THEN 1 ELSE 0 END, nonce, created_at, action_id LIMIT 1${store.driver === "POSTGRESQL" ? " FOR UPDATE SKIP LOCKED" : ""})
+    AND (registry_address = ? OR registry_address IS NULL) AND (lease_expires_at IS NULL OR lease_expires_at <= ?) AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+    AND NOT EXISTS (SELECT 1 FROM cp_chain_actions blocked WHERE blocked.chain_id = ? AND blocked.relayer_address = ? AND blocked.state = 'DEAD_LETTER' AND blocked.raw_tx IS NOT NULL) RETURNING *`,
+    [owner, expires, now, relayer.chainId, address, relayer.registryAddress.toLowerCase(), relayer.registryAddress.toLowerCase(), now, now, relayer.chainId, address]);
   if (!action) { await releaseLease(); return false; }
-  const payload = JSON.parse(action.payload);
+  const exhausted = () => action.attempts >= chainRetryBudget.maxAttempts || Date.now() - Date.parse(action.retry_started_at) >= chainRetryBudget.maxElapsedMs;
+  const fail = async (code: string, terminal = false, manual = false) => {
+    const dead = manual || !terminal && exhausted(), state = terminal ? "FAILED" : dead ? "DEAD_LETTER" : action.raw_tx ? action.state === "SUBMITTED" ? "SUBMITTED" : "PREPARED" : "NEW";
+    const delay = Math.min(chainRetryBudget.maxDelayMs, chainRetryBudget.baseDelayMs * 2 ** Math.max(0, action.attempts - 1));
+    const next = terminal || dead ? null : new Date(Date.now() + delay).toISOString();
+    await store.forTenant(action.tenant_id, async (tx) => {
+      const rows = await tx.query(`UPDATE cp_chain_actions SET state = ?, error_code = ?, next_attempt_at = ?, updated_at = ?,
+        nonce = CASE WHEN raw_tx IS NULL AND ? IN ('FAILED','DEAD_LETTER') THEN NULL ELSE nonce END WHERE action_id = ? AND lease_owner = ? RETURNING action_id`,
+        [state, code, next, new Date().toISOString(), state, action.action_id, owner]);
+      if (rows.length) await tx.event(action.tenant_id, action.release_id, dead ? "chain.action.dead_letter" : terminal ? "chain.action.failed" : "chain.action.retry_scheduled",
+        { actionId: action.action_id, txHash: action.tx_hash, code, attempts: action.attempts, nextAttemptAt: next, retryBudget: chainRetryBudget }, currentTraceId());
+    });
+  };
   try {
+    // A historical signed transaction without a registry domain must never be sent
+    // to whichever registry happens to be configured after upgrading.
+    if (!action.registry_address) { await fail("CHAIN_REGISTRY_UNRESOLVED", false, true); return true; }
+    if (exhausted()) { await fail(action.error_code ?? "WORKER_LOST"); return true; }
+    const started = await store.query("UPDATE cp_chain_actions SET attempts = attempts + 1 WHERE action_id = ? AND lease_owner = ? RETURNING attempts", [action.action_id, owner]);
+    if (!started.length) return false;
+    action.attempts = Number(started[0].attempts);
+    const payload = JSON.parse(action.payload);
     await withSpan("chain.submit", { "mcpshield.chain_id": relayer.chainId }, async () => {
       await store.query("UPDATE cp_chain_actions SET submission_trace_parent = ? WHERE action_id = ? AND lease_owner = ?", [traceHeaders().traceparent ?? null, action.action_id, owner]);
       if (action.state === "NEW" && await relayer.alreadyApplied(action.kind, payload)) {
-        await store.query("UPDATE cp_chain_actions SET state = 'COMPLETED', updated_at = ? WHERE action_id = ? AND lease_owner = ?", [new Date().toISOString(), action.action_id, owner]); return;
+        await store.query("UPDATE cp_chain_actions SET state = 'COMPLETED', error_code = NULL, next_attempt_at = NULL, updated_at = ? WHERE action_id = ? AND lease_owner = ?", [new Date().toISOString(), action.action_id, owner]); return;
       }
       if (!action.raw_tx) {
         if (action.kind === "ATTEST") {
@@ -124,21 +151,21 @@ export async function runChainActionOnce(store: ControlStore, relayer: ChainRela
         try { await relayer.provider.broadcastTransaction(action.raw_tx); }
         catch (error: any) { if (!/already known|known transaction|nonce/i.test(error.message)) throw error; }
         await store.query("UPDATE cp_chain_actions SET state = 'SUBMITTED', updated_at = ? WHERE action_id = ? AND lease_owner = ?", [new Date().toISOString(), action.action_id, owner]);
+        action.state = "SUBMITTED";
         receipt = await relayer.provider.getTransactionReceipt(action.tx_hash);
       }
       if (receipt) {
         const state = receipt.status === 1 ? "COMPLETED" : "FAILED";
-        await store.query("UPDATE cp_chain_actions SET state = ?, error_code = ?, updated_at = ? WHERE action_id = ? AND lease_owner = ?",
+        await store.query("UPDATE cp_chain_actions SET state = ?, error_code = ?, next_attempt_at = NULL, updated_at = ? WHERE action_id = ? AND lease_owner = ?",
           [state, state === "FAILED" ? "TRANSACTION_REVERTED" : null, new Date().toISOString(), action.action_id, owner]);
         await store.event(action.tenant_id, action.release_id, "chain.action.completed", { actionId: action.action_id, txHash: action.tx_hash, status: state }, currentTraceId());
-      }
+      } else throw new Error("CHAIN_RECEIPT_PENDING");
     }, { traceparent: action.trace_parent ?? undefined });
   } catch (error: any) {
     // Prepared bytes are retained on every uncertain outcome; recovery rebroadcasts the identical tx.
-    const terminal = (error.code === "CALL_EXCEPTION" || error.message === "UNSUPPORTED_CHAIN_ACTION") && !action.raw_tx;
-    await store.query("UPDATE cp_chain_actions SET state = ?, error_code = ?, updated_at = ? WHERE action_id = ? AND lease_owner = ?",
-      [terminal ? "FAILED" : action.raw_tx ? "PREPARED" : "NEW", terminal ? "CHAIN_ACTION_REJECTED" : error.message === "CHAIN_TIME_PENDING" ? "CHAIN_TIME_PENDING" : "RPC_UNAVAILABLE", new Date().toISOString(), action.action_id, owner]);
-    if (terminal) await store.query("UPDATE cp_chain_actions SET nonce = NULL WHERE action_id = ? AND raw_tx IS NULL AND lease_owner = ?", [action.action_id, owner]);
+    const terminal = (["CALL_EXCEPTION", "INVALID_ARGUMENT", "UNSUPPORTED_OPERATION"].includes(error.code)
+      || ["UNSUPPORTED_CHAIN_ACTION", "CHAIN_ID_MISMATCH"].includes(error.message) || error instanceof SyntaxError) && !action.raw_tx;
+    await fail(terminal ? "CHAIN_ACTION_REJECTED" : ["CHAIN_TIME_PENDING", "CHAIN_RECEIPT_PENDING"].includes(error.message) ? error.message : "RPC_UNAVAILABLE", terminal);
   } finally {
     await store.query("UPDATE cp_chain_actions SET lease_owner = NULL, lease_expires_at = NULL WHERE action_id = ? AND lease_owner = ?", [action.action_id, owner]);
     await releaseLease();
@@ -152,7 +179,7 @@ export async function reconcileV2Actions(store: ControlStore, relayer: ChainRela
   for (const action of completed) {
     const receipt = await relayer.provider.getTransactionReceipt(action.tx_hash);
     if (!receipt) {
-      await store.query("UPDATE cp_chain_actions SET state = 'PREPARED', error_code = 'REORG_RECEIPT_LOST', updated_at = ? WHERE action_id = ? AND state = 'COMPLETED'", [new Date().toISOString(), action.action_id]);
+      await store.query("UPDATE cp_chain_actions SET state = 'PREPARED', error_code = 'REORG_RECEIPT_LOST', attempts = 0, retry_started_at = NULL, next_attempt_at = NULL, updated_at = ? WHERE action_id = ? AND state = 'COMPLETED'", [new Date().toISOString(), action.action_id]);
       rewound++;
     }
   }

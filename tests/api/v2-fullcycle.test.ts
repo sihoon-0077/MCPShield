@@ -210,7 +210,10 @@ async function fullCycle(realDocker: boolean) {
       assert.equal(await runChainActionOnce(store, relayer), false, "old registry must not claim a new registry action");
       await runChainActionOnce(store, otherRegistry);
       assert.equal((await otherRegistry.registry.releases(safe.release.releaseId)).exists, true);
-      await pause(300); await runChainActionOnce(store, otherRegistry);
+      const [waiting] = await store.query("SELECT next_attempt_at FROM cp_chain_actions WHERE action_id = ?", [anotherAction.actionId]);
+      const delay = waiting.next_attempt_at ? Math.max(300, Date.parse(waiting.next_attempt_at) - Date.now() + 25) : 300;
+      assert.ok(delay <= 5000, "first receipt reconciliation must remain within the test's bounded retry window");
+      await pause(delay); await runChainActionOnce(store, otherRegistry);
       const [scoped] = await store.query("SELECT state FROM cp_chain_actions WHERE action_id = ?", [anotherAction.actionId]);
       assert.equal(scoped.state, "COMPLETED");
     } finally { otherRegistry.close(); }
