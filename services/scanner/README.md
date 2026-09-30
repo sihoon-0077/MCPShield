@@ -923,7 +923,7 @@ transport; each caller must declare its disclosure domain rather than bypass the
 scoped DTO through a caller-supplied prompt. Configured semantics must migrate to
 the scoped path, not remain permanently disabled as the privacy solution.
 
-### Baseline 2.1 portable contract checkpoint — NOT runtime approval
+### Baseline 2.1 Security runtime — API/validator activation still pending
 
 `scopedBaselineReviewPolicy(mode)` explicitly adds
 `mcpshield.scoped-review-policy.v2.1`; `scopedReviewPolicy(mode)` and its existing
@@ -941,7 +941,8 @@ validators. Semantic review still returns `approvalVerdict: ABSTAIN`.
 
 Private semantic input retains `{files,tools,runtime,executionPolicy,
 sourceProvenance,sourceArtifactDigest}` and adds the existing exact five-field
-`sourceIdentity` plus an explicit `baseline`:
+`sourceIdentity`, required raw `comparison` from `comparePreparedClosures`, and an
+explicit `baseline` (exactly nine input keys; unknown/missing fields are rejected):
 
 ```js
 baseline: null // first release, explicitly NOT an update comparison
@@ -986,31 +987,73 @@ version/package.json with changed dependency source is not missed. This helper
 never labels supplied bytes as LIVE acquisition. Its schema is
 `mcpshield.prepared-package-diff.v1`; no baseline produces empty change arrays,
 not a fabricated update. Policy egress changes are not observed network effects.
-This separate comparison is **not yet included in the provider DTO**: dependency
-names/versions/diff metadata have not acquired a provider-disclosure approval.
-The DTO rejects unknown top-level fields rather than silently dropping a supplied
-`packageDiff`. Later integration must reconstruct/project that comparison and
-include all its metadata in the same disclosure union before any transmission.
+The raw comparison has exactly ten fields: `schemaVersion,baselineProvided,
+comparison,currentClosureDigest,baselineClosureDigest,tools,dependencies,
+installedDependencies,installScripts,egressPolicy`. The provider DTO preserves
+the existing `input.comparison` mode string and adds `input.packageDiff`: the raw
+comparison with installed `path` replaced by `packageId=sha256(canonicalJson(path))`.
+Names, versions, hashes and changes are redacted and counted in the **same**
+metadata/source/citation disclosure union as both tools and before/after snippets.
+Only install-script hashes are included, never raw script bodies. Each diff array
+is bounded to 512 rows; unknown fields/over-budget input stop all provider HTTP.
+No CVE database lookup or arbitrary package support is implied by these changes.
 
-This commit does **not** wire baseline image export/discovery, the aggregate 2.1
-assessor, API preparation/rescan, independent validators or public UI. The existing
-aggregate explicitly returns `SCOPED_BASELINE_RUNTIME_NOT_INTEGRATED` for the new
-policy, so rewritten v2.0 evidence cannot accidentally authorize it. Existing
-2.0 scans and API `PREPARED_BASELINE_UNSUPPORTED` behavior are preserved.
+The existing `prepareAndScanRuntime` and `scanPreparedRuntime` now recognize the
+explicit new semantic policy. Their 2.1 `scopedReview` input is exactly
+`{executionPolicy,sourceProvenance,sourceIdentity,baseline}`; here baseline is
+only the four-field selection above or explicit null (not enriched semantic input).
+The scanner reexports the old pinned image **before execution**, verifies its
+inventory against independently supplied runtime pins, and rediscovers tools/list
+in the existing Docker isolation. No old probes, AI decision or PASS are inherited.
+It also exports/discovers the current image, computes the actual closure/tool diff,
+and sends the single bounded DTO to all roles before dispatching current probes.
+Baseline acquisition/authority failure throws a fail-closed `SCOPED_*` error;
+callers must not retry through the old policy. Current observation/review failure
+retains the existing INCONCLUSIVE/ABSTAIN path.
 
-The next trusted runtime contract is `trusted.baseline: null | {...runtimeTrust,
-sourceIdentity,sourceProvenance,sourceBudget,publisher}`: reuse current
+The separate export `assessScopedPreparedPolicyV21(bundle,result,binding,trusted)`
+recomputes baseline authority/closure/discovery, current source identity, actual
+package diff, full DTO/proof, all roles and exact dispatched probe-argument digests.
+Only independently observed **current** violations can FAIL; old findings may raise
+review tier but are not current violations. Missing/withdrawn baseline authority
+ABSTAINS before the current deterministic-FAIL branch. The existing
+`assessScopedPreparedPolicy` still returns `SCOPED_BASELINE_RUNTIME_NOT_INTEGRATED`
+for new policy; v2.0 and OCI domains are unchanged. API preparation/rescan and
+validator activation are **not** implemented by this Security slice: existing API
+`PREPARED_BASELINE_UNSUPPORTED`/2.1 policy rejection remain intentional.
+
+The trusted contract requires `trusted.sourceIdentity` for current source and
+`trusted.baseline: null | {...runtimeTrust,releaseId,sourceIdentity,sourceProvenance,
+sourceBudget,publisher}`. The baseline object has exactly thirteen fields: existing
 `builderImageDigest,collectorDigest,observerDigest,finalImageDigest,platform,
-closureDigest,sourceDescriptorDigest,entrypointDigest` fields; `sourceBudget`
+closureDigest,sourceDescriptorDigest,entrypointDigest` fields, exact prepared
+`releaseId` (not the source ID), plus four fields below. The independent prepared ID
+pins the execution-policy/manifest commitment; same source/image with a different
+egress/semantic policy cannot impersonate the selected baseline. `sourceBudget`
 retains `{sourceArtifactDigest,sourceBytes}` and `publisher` is independently
-verified evidence or explicit `null`, never a report's self-declared VALID. API
+verified `{manifest,verification}` evidence or explicit `null`, never a report's
+self-declared VALID. The scanner compares the locally supplied publisher context;
+it does not replace pinned-key cryptographic verification/reacquisition. API
 and each validator must acquire their own context and compare it to the selection
-and Merkle evidence before approval/signing. No parser in this portable slice
-claims to implement that pending trust contract. Frozen jobs/cache/idempotency
+and Merkle evidence before approval/signing. The caller also enforces the selected
+control policy's stricter source budget (the scanner baseline parser bounds it to
+the existing 16 MiB ceiling). Frozen jobs/cache/idempotency
 must also distinguish exact baseline ID versus null. Actual resolver
 `metadata.retrievedAt` already exists: retain it as an observation timestamp,
 separate from API `createdAt`, but exclude fresh timestamps from stable config
 hashes/independent-equivalence checks.
+
+New private Merkle leaves:
+
+- `prepared/source-identity.json`: exact current five-field identity.
+- `prepared/baseline.json`: explicit null, or exact
+  `{schemaVersion,selection,publisher,closure,tools,discovery,observedAt}`.
+  Schema is `mcpshield.prepared-baseline-evidence.v1`; closure contains
+  `{inventory,report,source,sbom,findings}`, reusing existing private base64 source.
+  `observedAt` is collector observation time only, excluded from identity/equality.
+- `static/package-diff.json`: independently recomputed raw ten-field comparison.
+- Existing report scope becomes `RESTRICTED_NODE_DOCKER_V2_1` and scanner version
+  `prepared-security-v2.1`; semantic input/proof/review retain distinct v2.1 domains.
 
 ```sh
 node --import tsx --test tests/security/scoped-baseline.test.mjs tests/security/scoped-semantic.test.mjs tests/security/scoped-prepared.test.mjs
@@ -1018,6 +1061,12 @@ node --import tsx --test tests/security/scoped-baseline.test.mjs tests/security/
 
 Portable tests use actual numeric-loopback HTTP with authored synthetic model
 responses and inventory bytes. This is not Linux/Docker acquisition, a real
-provider call or measured semantic quality. Native baseline integration and
-actual model normal-update/permission-expansion evidence remain unverified;
-CAP2-005/101/103 are not completed by this contract checkpoint.
+provider call or measured semantic quality. The opt-in native baseline test uses
+`MCPSHIELD_DOCKER_TESTS=1` and a pinned `MCPSHIELD_RUNTIME_BUILDER_IMAGE`: it
+prepares v2.0, independently exports that image, then prepares/rescans v2.1 with
+actual old/current tools and probes. It is SKIP without native prerequisites.
+The shared natural-size mailbox fixture has functional engine/license metadata,
+not padding; the small stripped package remains ABSTAIN with no privacy exemption.
+External model normal-update/permission-expansion quality, native baseline results,
+and Backend independent source/key reacquisition are still unverified/pending.
+CAP2-005/101/103 are not completed merely by this Security checkpoint.
