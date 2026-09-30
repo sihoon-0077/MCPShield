@@ -3,9 +3,10 @@
 import React, { useEffect, useRef, useState, type FormEvent } from "react";
 import { controlApi } from "../lib/control-client";
 import type { ReceiptEvidenceSummary } from "../lib/receipt-summary";
-import { SemanticEvidenceNotice, scopedNodePolicyMode, semanticModeLabel, type SemanticEvidenceScope, type Release } from "./release-workflow";
+import { BaselineNotice, SemanticEvidenceNotice, isBaselinePolicy, scopedNodePolicyMode, semanticModeLabel, type SemanticEvidenceScope, type Release } from "./release-workflow";
+import { BaselineSelect, baselineCandidates, baselineRequestFields, baselineSelectionError } from "./baseline-selection";
 
-export type Preparation = { preparationId: string; sourceReleaseId: string; policyHash: string; status: string; attempts: number; maxAttempts: number; traceId: string; createdAt: string; updatedAt: string;
+export type Preparation = { preparationId: string; sourceReleaseId: string; policyHash: string; baselineReleaseId?: string | null; status: string; attempts: number; maxAttempts: number; traceId: string; createdAt: string; updatedAt: string;
   lastError?: { code: string; retryable: boolean }; result?: SemanticEvidenceScope & { outcome: string; verdict: string; releaseId?: string; scanId?: string; reportRoot: string; issues: string[] } };
 export type PreparationPolicy = { policyHash: string; alias: string; version?: string; deprecatedAt: string | null; document: unknown };
 const short = (value?: string) => value ? `${value.slice(0, 12)}…${value.slice(-8)}` : "없음";
@@ -35,6 +36,7 @@ export function PreparationDetail({ job, operator, summary, onSelect, onEvidence
   return <article className="ops-preparation-detail"><h3>원본 → 준비된 실행 릴리스</h3><dl className="ops-facts">{[["원본 exact release ID (불변)", job.sourceReleaseId], ["준비 결과 exact release ID", result?.releaseId], ["연결된 검사 ID", result?.scanId], ["적용 정책 해시", job.policyHash], ["증거 루트", result?.reportRoot], ["추적 ID", job.traceId]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? "생성되지 않음"}</dd></div>)}</dl>
     <p>원본 파일의 식별자는 유지됩니다. 준비된 이미지·실행 정책·도구 목록은 별도 릴리스로 검증하며, 등록 직후 상태는 UNVERIFIED입니다. 작업 COMPLETED나 구성 파일 다운로드는 실행 허가가 아닙니다.</p>
     <SemanticEvidenceNotice evidence={result} required />
+    {Object.hasOwn(job, "baselineReleaseId") && <BaselineNotice selection={job} label="이 준비 작업에 연결된 검사의 비교 대상" />}
     {result?.issues?.length ? <p className="ops-data-note">남은 확인 항목: {result.issues.join(" · ")}</p> : null}
     <div className="ops-actions"><button onClick={() => onSelect?.(job.sourceReleaseId)}>원본 릴리스 보기</button>{result?.releaseId && <button onClick={() => onSelect?.(result.releaseId!)}>실행 릴리스의 검증 흐름 보기</button>}</div>
     {summary && <p className={verified ? "ops-message" : "ops-message error"} role={verified ? "status" : "alert"}>{verified ? `API가 증거 루트를 검증함 · 파일 ${summary.leafCount}개 · ${date(summary.checkedAt)}` : "증거 루트가 작업 결과와 다릅니다. 검증 완료로 표시하지 않습니다."}<br />브라우저 독립 검증이 아니며 원문 도구·파일·호출 인자는 화면에 전달하지 않습니다.</p>}
@@ -50,11 +52,17 @@ export function PreparationDetail({ job, operator, summary, onSelect, onEvidence
 export function PreparationConsole({ jobs, releases, policies, operator, onRefresh, onSelect }: { jobs: Preparation[]; releases: Release[]; policies: PreparationPolicy[]; operator: boolean; onRefresh: () => Promise<void>; onSelect: (id: string) => void }) {
   const [detail, setDetail] = useState<Preparation | null>(null), [summary, setSummary] = useState<ReceiptEvidenceSummary | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [message, setMessage] = useState("");
-  const [sourceId, setSourceId] = useState(""), [policyHash, setPolicyHash] = useState("");
+  const [sourceId, setSourceId] = useState(""), [policyHash, setPolicyHash] = useState(""), [baseline, setBaseline] = useState("");
   const source = releases.find(release => release.releaseId === sourceId);
   const matchingPolicies = policies.filter(policy => preparationPolicyMatchesRelease(source, policy));
-  const selectedMode = scopedNodePolicyMode(policies.find(policy => policy.policyHash === policyHash)?.document);
+  const selectedPolicy = matchingPolicies.find(policy => policy.policyHash === policyHash);
+  const selectedMode = scopedNodePolicyMode(selectedPolicy?.document), requiresBaseline = isBaselinePolicy(selectedPolicy?.document);
+  const baselines = baselineCandidates(releases, source, selectedPolicy?.document);
   const attempt = useRef<{ signature: string; key: string } | null>(null);
+  useEffect(() => {
+    if (!selectedPolicy) setPolicyHash("");
+    if (!requiresBaseline || baseline && baseline !== "none" && !baselines.some(candidate => candidate.releaseId === baseline)) setBaseline("");
+  }, [releases, policies, sourceId, policyHash, baseline]);
   useEffect(() => {
     if (!detail) return;
     const current = jobs.find(job => job.preparationId === detail.preparationId);
@@ -66,31 +74,35 @@ export function PreparationConsole({ jobs, releases, policies, operator, onRefre
     finally { setBusy(false); }
   }
   function prepare(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); const form = event.currentTarget, data = new FormData(form);
-    const sourceId = String(data.get("sourceId") ?? ""), policyHash = String(data.get("policyHash") ?? "");
-    if (!policies.some(policy => policy.policyHash === policyHash && preparationPolicyMatchesRelease(releases.find(release => release.releaseId === sourceId), policy))) {
+    event.preventDefault(); if (busy) return; const form = event.currentTarget;
+    if (!selectedPolicy) {
       setError("원본 유형에 맞는 준비 전용 정책을 다시 선택하세요."); return;
     }
-    const signature = `${sourceId}:${policyHash}`;
+    let body;
+    try { body = { policyHash, ...baselineRequestFields(releases, source, selectedPolicy.document, baseline) }; }
+    catch { setBaseline(""); setError(baselineSelectionError); return; }
+    const signature = JSON.stringify({ sourceId, ...body });
     if (attempt.current?.signature !== signature) attempt.current = { signature, key: crypto.randomUUID() };
     const key = attempt.current.key;
     void perform(async () => {
-      const { preparation } = await controlApi<{ preparation: Preparation }>(`releases/${encodeURIComponent(sourceId)}/prepare`, { policyHash }, "POST", key);
-      await onRefresh(); attempt.current = null; form.reset(); setSourceId(""); setPolicyHash(""); setDetail(preparation);
+      const { preparation } = await controlApi<{ preparation: Preparation }>(`releases/${encodeURIComponent(sourceId)}/prepare`, body, "POST", key);
+      await onRefresh(); attempt.current = null; form.reset(); setSourceId(""); setPolicyHash(""); setBaseline(""); setDetail(preparation);
       setMessage("준비 요청을 접수했습니다. 원본은 변경되지 않으며 작업·검사·체인 승인 상태를 각각 확인하세요.");
     });
   }
   return <section className="ops-panel ops-preparations" aria-label="npm · OCI 실행 이미지 준비">
     <div className="ops-section-heading"><h2>npm · OCI 실행 이미지 준비</h2><span className="ops-badge">V2 운영 API · 승인과 별도</span></div>
     <p>원본 등록 → 고정 이미지 준비 → 별도 릴리스 검사 → 검증자·체인 승인 → Gateway 실행. 기존 공개 체험의 고정 fixture와 분리된 운영 경로입니다.</p>
-    {operator && <form method="post" className="ops-inline-form" onSubmit={prepare}><label>준비할 원본<select name="sourceId" value={sourceId} onChange={event => { setSourceId(event.target.value); setPolicyHash(""); }} required disabled={busy}><option value="">npm / tarball / OCI 원본 선택</option>{releases.filter(canPrepare).map(release => <option key={release.releaseId} value={release.releaseId}>{release.sourceType} · {release.legacyReleaseId || release.toolId} · {short(release.releaseId)}</option>)}</select></label>
-      <label>원본 유형에 맞는 준비 정책<select name="policyHash" value={policyHash} onChange={event => setPolicyHash(event.target.value)} required disabled={busy || !source}><option value="">{source ? "호환 정책 선택" : "원본을 먼저 선택하세요"}</option>{matchingPolicies.map(policy => <option key={policy.policyHash} value={policy.policyHash}>{policy.alias} · {policy.version}{scopedNodePolicyMode(policy.document) ? ` · ${semanticModeLabel(scopedNodePolicyMode(policy.document))}` : source?.sourceType === "oci" ? " · LOCAL_CONTRACT_TEST" : ""}</option>)}</select></label><button disabled={busy || !matchingPolicies.some(policy => policy.policyHash === policyHash)}>이미지 준비 요청</button></form>}
+    {operator && <form method="post" className="ops-inline-form" onSubmit={prepare}><label>준비할 원본<select name="sourceId" value={sourceId} onChange={event => { setSourceId(event.target.value); setPolicyHash(""); setBaseline(""); }} required disabled={busy}><option value="">npm / tarball / OCI 원본 선택</option>{releases.filter(canPrepare).map(release => <option key={release.releaseId} value={release.releaseId}>{release.sourceType} · {release.legacyReleaseId || release.toolId} · {short(release.releaseId)}</option>)}</select></label>
+      <label>원본 유형에 맞는 준비 정책<select name="policyHash" value={policyHash} onChange={event => { setPolicyHash(event.target.value); setBaseline(""); }} required disabled={busy || !source}><option value="">{source ? "호환 정책 선택" : "원본을 먼저 선택하세요"}</option>{matchingPolicies.map(policy => <option key={policy.policyHash} value={policy.policyHash}>{policy.alias} · {policy.version}{scopedNodePolicyMode(policy.document) ? ` · ${semanticModeLabel(scopedNodePolicyMode(policy.document))}` : source?.sourceType === "oci" ? " · LOCAL_CONTRACT_TEST" : ""}</option>)}</select></label>
+      {requiresBaseline && <BaselineSelect candidates={baselines} value={baseline} disabled={busy} onChange={setBaseline} />}
+      <button disabled={busy || !selectedPolicy || requiresBaseline && !baseline}>이미지 준비 요청</button></form>}
     {selectedMode && <p className="ops-data-note">Node v2 · {semanticModeLabel(selectedMode)}. 선택한 정책은 검사 계획이며 실제 분석 수행이나 실행 승인이 아닙니다. 외부 모델을 호출해도 탐지 품질은 미측정입니다.</p>}
     {source?.sourceType === "oci" && <p className="ops-data-note">OCI 전용 제한 실행 정책만 선택할 수 있습니다. 현재 지원 정책의 AI 부분은 LOCAL_CONTRACT_TEST · PROVIDER_QUALITY_NOT_MEASURED이며 상용 모델 품질 승인 정책이 아닙니다. 네이티브 실행은 별도 Linux Docker 환경에서 검증합니다.</p>}
     <p className="ops-data-note">서버의 준비 worker·고정 builder·AI/critic 설정이 필요합니다. 미설정·판단 불가는 성공으로 대체하지 않습니다. URL·이미지 태그·호스트 경로·비밀값을 이 요청에서 지정할 수 없습니다.</p>
     {message && <p className="ops-message" role="status">{message}</p>}{error && <p className="ops-message error" role="alert">{error} · 상세의 이전 증거 표시는 숨겼습니다.</p>}
     <PreparationRecords jobs={jobs} releases={releases} operator={operator} busy={busy} onOpen={job => void perform(async () => { const next = await controlApi<{ preparation: Preparation }>(`preparations/${encodeURIComponent(job.preparationId)}`); setDetail(next.preparation); })} onRetry={job => void perform(async () => { await controlApi(`preparations/${encodeURIComponent(job.preparationId)}/retry`, {}); await onRefresh(); setDetail(null); setMessage("실패 작업을 다시 대기열에 넣었습니다. 실행 설정은 서버에 고정된 값을 유지합니다."); })} />
     {detail && <PreparationDetail job={detail} operator={operator} summary={summary} onSelect={onSelect} onEvidence={() => void perform(async () => { const [current, evidence] = await Promise.all([controlApi<{ preparation: Preparation }>(`preparations/${encodeURIComponent(detail.preparationId)}`), controlApi<ReceiptEvidenceSummary>(`preparations/${encodeURIComponent(detail.preparationId)}/evidence`)]); setDetail(current.preparation); setSummary(evidence); })} />}
-    {operator && <p className="ops-data-note">응답이 불확실하면 같은 원본·정책으로 재시도하세요. 현재 화면은 요청 식별키를 유지합니다. 페이지를 다시 열기 전 목록에서 기존 작업을 확인하세요.</p>}
+    {operator && <p className="ops-data-note">응답이 불확실하면 같은 원본·정책·비교 선택으로 재시도하세요. 현재 화면은 요청 식별키를 유지합니다. 페이지를 다시 열기 전 목록에서 기존 작업을 확인하세요.</p>}
   </section>;
 }

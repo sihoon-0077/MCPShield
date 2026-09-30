@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AdmissionView, ChainActionsView, PublisherEvidenceNotice, ReleaseWorkflow, policyMatchesRelease, type Release, type Scan, type ChainAction, type Admission, type PublisherVerification } from "../components/release-workflow";
+import { AdmissionView, BaselineNotice, ChainActionsView, PublisherEvidenceNotice, ReleaseWorkflow, policyMatchesRelease, type Release, type Scan, type ChainAction, type Admission, type PublisherVerification } from "../components/release-workflow";
 
 const release: Release = { releaseId: `0x${"1".repeat(64)}`, legacyReleaseId: "synthetic@1.0.0", toolId: "synthetic", version: "1.0.0", status: "UNVERIFIED", artifactDigest: `sha256:${"2".repeat(64)}`, toolSurfaceHash: `0x${"3".repeat(64)}`, policyHash: `0x${"4".repeat(64)}`, reportRoot: null, validUntil: null, chain: null };
 const scan: Scan = { scanId: "synthetic-scan", releaseId: release.releaseId, policyHash: release.policyHash!, status: "COMPLETED", stage: "COMPLETED", attempts: 1, maxAttempts: 3, traceId: "5".repeat(32), createdAt: "2026-09-08T00:00:00Z", updatedAt: "2026-09-08T00:00:01Z", nextAttemptAt: "2026-09-08T00:00:00Z", result: { state: "READY_FOR_VALIDATORS", verdict: "ABSTAIN", scanResult: { scanStatus: "INCONCLUSIVE" } } };
@@ -37,6 +37,20 @@ test("policy selection is bound to the release profile, not registry ordering", 
   assert.equal(policyMatchesRelease({ ...release, runtimeProfile: "restricted-node-docker-v1" }, legacy), false);
   const html = renderToStaticMarkup(<ReleaseWorkflow release={release} scans={[]} policies={[prepared, legacy]} actions={[]} manage={false} onRefresh={async () => {}} />);
   assert.match(html, /legacy-only/); assert.doesNotMatch(html, /prepared-only/);
+});
+
+test("baseline projection is selected-scan context, never a release approval or an inferred null", () => {
+  const baselineId = `0x${"b".repeat(64)}`, previousId = `0x${"c".repeat(64)}`;
+  const current = { ...scan, baselineReleaseId: baselineId, scanId: "current-baseline-scan", createdAt: "2026-10-01T00:00:00Z" };
+  const html = renderToStaticMarkup(<ReleaseWorkflow release={{ ...release, runtimeProfile: "restricted-node-docker-v2", status: "VERIFIED", publisherVerification }} scans={[{ ...scan, baselineReleaseId: previousId }, current]} policies={[]} actions={[]} manage={false} onRefresh={async () => {}} />);
+  assert.match(html, /선택한 검사의 비교 대상/); assert.match(html, new RegExp(baselineId)); assert.doesNotMatch(html, new RegExp(previousId));
+  assert.match(html, /비교 선택은 해당 검사에만 적용/); assert.match(html, /이전 VERIFIED 상태·게시자 서명은 새 승인이 아니며/); assert.doesNotMatch(html, /API: ALLOW/);
+  const without = renderToStaticMarkup(<BaselineNotice selection={{ baselineReleaseId: null }} label="선택한 검사의 비교 대상" />);
+  assert.match(without, /비교하지 않음 · 이전 버전과의 변경 비교가 아닙니다/);
+  for (const baselineReleaseId of [undefined, "", "null", "SYNTHETIC_PRIVATE_PATH", { privateKey: "SYNTHETIC_PRIVATE_KEY" }, [baselineId]]) {
+    const unknown = renderToStaticMarkup(<BaselineNotice selection={{ baselineReleaseId: baselineReleaseId as string }} label="선택한 검사의 비교 대상" />);
+    assert.match(unknown, /비교 대상 미제공 또는 확인 불가/); assert.doesNotMatch(unknown, /SYNTHETIC_PRIVATE|비교하지 않음 · 이전/);
+  }
 });
 
 test("workflow renders real API stages without turning READY, submitted attestations or historical chain state into allow", () => {

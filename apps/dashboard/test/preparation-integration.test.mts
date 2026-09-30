@@ -72,6 +72,7 @@ test("real preparation API/BFF keeps source identity, roles, evidence privacy an
     assert.equal((await request(path, operator, body, "")).status, 400);
     assert.equal((await request(path, operator, body, "csrf", "https://attacker.invalid")).status, 403);
     for (const field of ["image", "root", "builderImageDigest", "privateKey", "apiToken", "arguments"]) assert.equal((await request(path, operator, { ...body, [field]: "synthetic-forbidden" })).status, 400);
+    for (const baselineReleaseId of [null, source.releaseId]) assert.equal((await request(path, operator, { ...body, baselineReleaseId }, "legacy-baseline")).status, 400, "API must keep non-2.1 preparation bodies unchanged");
     const queuedResponse = await request(path, operator, body); assert.equal(queuedResponse.status, 202);
     const queued = (await queuedResponse.json()).preparation;
     assert.equal(queued.status, "QUEUED"); assert.equal(queued.result, undefined);
@@ -138,4 +139,29 @@ test("real preparation API/BFF keeps source identity, roles, evidence privacy an
     await streamReader?.cancel(); names.forEach((name, index) => previous[index] === undefined ? delete process.env[name] : process.env[name] = previous[index]);
     await app.close(); await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("BFF forwards exact optional baseline selection without converting omission/null/ID and rejects forged shapes", async context => {
+  // Transport-boundary regression only, not evidence of a completed 2.1 worker or a browser interaction.
+  const previous = process.env.MCPSHIELD_PUBLIC_ORIGIN; process.env.MCPSHIELD_PUBLIC_ORIGIN = "https://console.test";
+  const forwarded: unknown[] = [], sourceId = `0x${"a".repeat(64)}`, baselineId = `0x${"b".repeat(64)}`;
+  context.mock.method(globalThis, "fetch", async (_url: unknown, options: RequestInit) => { forwarded.push(JSON.parse(String(options.body))); return Response.json({ accepted: true }, { status: 202 }); });
+  const request = (body: unknown) => POST(new NextRequest(`https://console.test/api/control/releases/${sourceId}/prepare`, { method: "POST", headers: {
+    origin: "https://console.test", cookie: "mcpshield_control=synthetic-private-token", "content-type": "application/json", "idempotency-key": "synthetic-baseline-request" }, body: JSON.stringify(body) }), { params: Promise.resolve({ path: ["releases", sourceId, "prepare"] }) });
+  try {
+    for (const body of [{ policyHash: policy.policyHash }, { policyHash: policy.policyHash, baselineReleaseId: null }, { baselineReleaseId: baselineId, policyHash: policy.policyHash }]) {
+      assert.equal((await request(body)).status, 202); assert.deepEqual(forwarded.at(-1), body);
+    }
+    const count = forwarded.length;
+    for (const baselineReleaseId of ["", "null", "0xABC", [baselineId], { releaseId: baselineId }, false, 0]) assert.equal((await request({ policyHash: policy.policyHash, baselineReleaseId })).status, 400);
+    for (const body of [{ baselineReleaseId: null }, { policyHash: [policy.policyHash], baselineReleaseId: null }, { policyHash: policy.policyHash, baselineReleaseId: null, provenancePath: "SYNTHETIC_PRIVATE_PATH" },
+      { policyHash: policy.policyHash, baselineReleaseId: null, baselines: { [sourceId]: baselineId } }]) assert.equal((await request(body)).status, 400);
+    assert.equal(forwarded.length, count);
+    for (const baselineReleaseId of [null, baselineId]) {
+      const html = renderToStaticMarkup(React.createElement(PreparationDetail, { job: { preparationId: "synthetic-job", sourceReleaseId: sourceId, policyHash: policy.policyHash, baselineReleaseId,
+        status: "QUEUED", attempts: 0, maxAttempts: 3, traceId: "synthetic-trace", createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z" }, operator: false, summary: null }));
+      assert.match(html, /이 준비 작업에 연결된 검사의 비교 대상/); assert.match(html, baselineReleaseId === null ? /비교하지 않음/ : new RegExp(baselineId));
+      assert.match(html, /비교 선택은 해당 검사에만 적용/); assert.doesNotMatch(html, /SYNTHETIC_PRIVATE|type="password"/);
+    }
+  } finally { previous === undefined ? delete process.env.MCPSHIELD_PUBLIC_ORIGIN : process.env.MCPSHIELD_PUBLIC_ORIGIN = previous; }
 });

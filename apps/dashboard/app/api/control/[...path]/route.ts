@@ -76,7 +76,9 @@ async function handle(request: NextRequest, context: Context) {
       }
       if (/^releases\/[^/]+\/prepare$/.test(route)) {
         const key = request.headers.get("idempotency-key");
-        if (!/^0x[a-f0-9]{64}$/.test(path[1]) || Object.keys(parsed).join() !== "policyHash" || !/^0x[a-f0-9]{64}$/.test((parsed as { policyHash?: string }).policyHash ?? "") || !key?.trim() || key.length > 256) return json({ error: "원본 릴리스와 준비 전용 정책 해시, 재시도 식별키만 전달할 수 있습니다." }, 400);
+        const input = parsed as { policyHash?: unknown; baselineReleaseId?: unknown };
+        const baselineValid = !Object.hasOwn(input, "baselineReleaseId") || input.baselineReleaseId === null || typeof input.baselineReleaseId === "string" && /^0x[a-f0-9]{64}$/.test(input.baselineReleaseId);
+        if (!/^0x[a-f0-9]{64}$/.test(path[1]) || Object.keys(input).some(key => !["policyHash", "baselineReleaseId"].includes(key)) || typeof input.policyHash !== "string" || !/^0x[a-f0-9]{64}$/.test(input.policyHash) || !baselineValid || !key?.trim() || key.length > 256) return json({ error: "원본 릴리스·정책 해시·재시도 식별키와 선택한 이전 실행 릴리스 ID 또는 null만 전달할 수 있습니다." }, 400);
       }
       if (/^preparations\/[^/]+\/retry$/.test(route) && Object.keys(parsed).length) return json({ error: "재시도에서 실행 이미지·경로·비밀값을 지정할 수 없습니다." }, 400);
       if (/^appeals\/[^/]+\/resolve$/.test(route)) {

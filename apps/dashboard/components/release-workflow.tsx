@@ -1,12 +1,12 @@
 import React, { useEffect, useState, type FormEvent } from "react";
 import { controlApi } from "../lib/control-client";
 // @ts-expect-error Shared browser-safe exact semantic policy validation is ESM JavaScript.
-import { SCOPED_NODE_PROFILE, validateScopedReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
+import { SCOPED_NODE_PROFILE, validateScopedReviewPolicy, validateScopedBaselineReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
 
 export type SemanticEvidenceScope = { semanticEvidenceMode?: string; providerQuality?: string };
 export type PublisherVerification = { status: string; purpose: string; behaviorSafety: string; publisherId?: string; sourceArtifactDigest?: string; publicKeyFingerprint?: string };
 export type Release = SemanticEvidenceScope & { releaseId: string; legacyReleaseId: string; toolId: string; version: string; status: string; artifactDigest: string; toolSurfaceHash: string; policyHash: string | null; reportRoot: string | null; validUntil: string | null; sourceType?: string; runtimeProfile?: string; sourceReleaseId?: string; publisherVerification?: PublisherVerification; chainUnavailable?: boolean; chain: null | { chainId: number; registryContract: string; observedBlock: number; blockHash: string; txHash: string | null } };
-export type Scan = { scanId: string; releaseId: string; policyHash: string; appealId?: string | null; status: string; stage: string; attempts: number; maxAttempts: number; traceId: string; createdAt: string; updatedAt: string; nextAttemptAt: string; lastError?: unknown; result?: SemanticEvidenceScope & { state?: string; verdict?: string; validUntil?: string; reportRoot?: string; scanResult?: { scanStatus?: string } } };
+export type Scan = { scanId: string; releaseId: string; policyHash: string; baselineReleaseId?: string | null; appealId?: string | null; status: string; stage: string; attempts: number; maxAttempts: number; traceId: string; createdAt: string; updatedAt: string; nextAttemptAt: string; lastError?: unknown; result?: SemanticEvidenceScope & { state?: string; verdict?: string; validUntil?: string; reportRoot?: string; scanResult?: { scanStatus?: string } } };
 export type ChainAction = { actionId: string; releaseId: string | null; kind: string; status: string; txHash: string | null; errorCode: string | null; chainId: number; registryAddress: string; createdAt: string; updatedAt: string; attempts?: number; nextAttemptAt?: string | null; retryBudget?: { maxAttempts: number } };
 export type Admission = { decision: string; status: string; reasonCode: string; releaseId: string; policyHash: string; source: string; checkedAt: string; traceId: string; signature?: string; snapshot?: { expiresAt: string; observedBlock: number; blockHash: string; chainId: number; registryContract: string; operationClass: string } };
 const date = (value?: string | null) => value ? new Date(value).toLocaleString("ko-KR") : "기록 없음";
@@ -15,14 +15,21 @@ const actionName: Record<string, string> = { REGISTER_RELEASE: "릴리스 등록
 const actionStatus: Record<string, string> = { NEW: "전송 대기", PREPARED: "서명 준비 · 전송 미확인", SUBMITTED: "전송됨 · 영수증 대기", COMPLETED: "처리됨 · 최종성은 별도 확인", FAILED: "실패", DEAD_LETTER: "자동 재시도 중단 · 체인 확인 필요" };
 export function scopedNodePolicyMode(document: unknown): string | undefined {
   const value = document as { profile?: string; version?: string; semantic?: { evidenceMode?: string } } | undefined;
-  return value && value.profile === SCOPED_NODE_PROFILE && value.version === "2.0.0" && validateScopedReviewPolicy(value.semantic) ? value.semantic!.evidenceMode : undefined;
+  return value && value.profile === SCOPED_NODE_PROFILE && (value.version === "2.0.0" && validateScopedReviewPolicy(value.semantic)
+    || value.version === "2.1.0" && validateScopedBaselineReviewPolicy(value.semantic)) ? value.semantic!.evidenceMode : undefined;
 }
+export const isBaselinePolicy = (document: unknown) => (document as { version?: string } | undefined)?.version === "2.1.0" && Boolean(scopedNodePolicyMode(document));
 export function policyMatchesRelease(release: Pick<Release, "runtimeProfile" | "semanticEvidenceMode"> | undefined, policy: { document?: unknown }) {
   if (!release || (policy.document as { profile?: string } | undefined)?.profile !== release.runtimeProfile) return false;
   const mode = scopedNodePolicyMode(policy.document);
   return release.runtimeProfile !== SCOPED_NODE_PROFILE || Boolean(mode) && mode === release.semanticEvidenceMode;
 }
 export const semanticModeLabel = (mode?: string) => mode === "LOCAL_CONTRACT_TEST" ? "로컬 합성 검사 정책" : mode === "PROVIDER_EXECUTION" ? "외부 모델 검토 정책" : "분석 모드 확인 불가";
+
+export function BaselineNotice({ selection, label }: { selection: { baselineReleaseId?: string | null }; label: string }) {
+  const value = selection.baselineReleaseId;
+  return <p className="ops-data-note"><b>{label} · API 제공 메타데이터</b><br />{value === null ? "비교하지 않음 · 이전 버전과의 변경 비교가 아닙니다." : typeof value === "string" && /^0x[a-f0-9]{64}$/.test(value) ? <>비교할 이전 실행 릴리스: <code>{value}</code></> : "비교 대상 미제공 또는 확인 불가 · 비교하지 않음으로 추정하지 않습니다."}<br />비교 선택은 해당 검사에만 적용됩니다. 이전 VERIFIED 상태·게시자 서명은 새 승인이 아니며, 현재 코드의 위험 검사는 생략하지 않습니다.</p>;
+}
 
 export function PublisherEvidenceNotice({ release, scan }: { release: Release; scan?: Scan }) {
   const proof = release.publisherVerification;
@@ -106,6 +113,7 @@ export function ReleaseWorkflow({ release, scans, policies, actions, manage, onR
     <SemanticEvidenceNotice evidence={scan?.result ?? release} required={release.runtimeProfile === "restricted-oci-offline-v1" || release.runtimeProfile === SCOPED_NODE_PROFILE} />
     <div className="ops-flow-select"><label>확인할 검사<select value={scan?.scanId ?? ""} onChange={(event) => setScanId(event.target.value)} disabled={busy || !releaseScans.length}><option value="">검사 내역 없음</option>{releaseScans.map((item) => <option key={item.scanId} value={item.scanId}>{date(item.createdAt)} · {item.status} · {short(item.scanId)}</option>)}</select></label>{!scan && <label>실행 판정 정책<select value={fallbackPolicy} onChange={(event) => setFallbackPolicy(event.target.value)} disabled={busy}><option value="">정책 선택</option>{policies.map((item) => <option key={item.policyHash} value={item.policyHash}>{item.alias}{item.deprecatedAt ? " (폐기됨)" : ""}</option>)}</select></label>}</div>
     <p className="ops-data-note">현재 정책: {policy?.alias ?? "목록에서 확인 불가"} · <code>{policyHash || "선택 없음"}</code>{policy?.deprecatedAt ? " · DEPRECATED" : ""}</p>
+    {scan && release.runtimeProfile === SCOPED_NODE_PROFILE && <BaselineNotice selection={scan} label="선택한 검사의 비교 대상" />}
     <ol className="ops-flow" aria-label="현재 증빙 단계">
       <li><span>01 · 검사</span><b>{scan?.status ?? "검사 전"}</b><small>분석 {scan?.result?.scanResult?.scanStatus ?? "미완료"}<br />검사 완료 ≠ 보안 통과</small></li>
       <li><span>02 · 증거 준비</span><b>{ready ? "READY" : "준비 미확인"}</b><small>{ready ? `권고 판정 ${scan.result?.verdict ?? "미제공"}` : "완료된 증거가 필요합니다."}<br />READY ≠ PASS</small></li>
