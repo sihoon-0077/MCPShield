@@ -55,6 +55,7 @@
 - 최초 fixture 수정 SHA `35019f6`의 기존 실패 두 native gate 모두 실제 PASS 확인. 후속 기능의 CI와는 분리한다. 새 통합본을 같은 PR에 push하면 기존 진행 중 run이 workflow concurrency 정책으로 취소될 수 있으므로 개별 gate 성공을 전체 run 성공이라고 하지 않는다.
 - 통합 `fab3ed1` native PostgreSQL outbox PASS. Gateway native 실패 조사 중 공유 daemon 누수 검사의 병렬 충돌을 발견해 두 test file을 순차 실행하도록 수정했다. 가드·누수 검사는 유지하며 실제 재실행으로 확인한다.
 - 2026-09-30 재개: 미커밋 상태로 보존된 trace 수정 2파일을 검수하고 `3997871`로 통합했다. 재시도/terminal/DLQ 감사 기록이 원래 action trace에 남는다. 전체 로컬 **442 PASS / 0 FAIL / 35 SKIP**, 세 smoke 및 production build PASS. 종료된 이전 CI의 OCI `STATUS_UNAVAILABLE` 실패는 별도 조사 중이며 전체 Linux 성공·v2 완료를 선언하지 않는다.
+- 2026-09-30 후속: `6f7fe17` CI의 Node24/실제 PG는 성공했지만 builder HIGH 3건으로 Node22가 중단됐다. `8f06733`에서 기존 SRI 검증 절차로 brace-expansion5.0.11/undici6.28.1을 적용하고 label·설치 검사·report를 shared exact patch set으로 일치시켰다. 전체 로컬 **444 PASS / 0 FAIL / 35 SKIP**, 세 smoke/production build 및 별도 reviewer 통과. 새 Linux 이미지 검사 전에는 해결 검증 완료로 세지 않는다. CVE/원본 run/잔여 moderate는 [진행 기록](capstone-progress-2026-09-22.md)에 남겼다.
 
 ## 다음 publisher pipeline 연결 시 주의
 
@@ -63,6 +64,12 @@ API source 등록, scoped 준비/재검증, validator 독립 수집 모두 같�
 신뢰 공개키는 요청 body나 후보 metadata가 아닌 운영자 catalogue에서 읽고, proof를 기존 frozen/configHash·암호화 evidence bundle에 결합한다.
 기존 서명된 공개 mail fixture와 native prepared scoped fixture는 서로 다르다. 공개 fixture를 바꿔 replay identity를 깨지 않는다.
 서명 실패는 source 인증 실패/ABSTAIN과 연결하고, 서명 성공을 행동 PASS로 승격하지 않는다.
+9월 30일 읽기 전용 재검토에서는 `scoped-config.ts`, `control-plane.ts`, `preparation-worker.ts`,
+`scoped-verification.ts`, `prepared-verification.ts`의 기존 경로 재사용을 확인했다. 새 DB/서비스는 필요 없으며,
+strict catalogue에는 별도의 명시적 publisher section 확장이 필요하다. `prepared/source-identity.json`의 고정 5필드를 바꾸지 말고
+기존 Merkle bundle에 별도 publisher proof를 넣고 독립 validator가 자기 source/key로 재검증한다. 최초 prepare와 재스캔 양쪽을 다뤄야 한다.
+기존 공개 mail fixture에는 bin이 없고 prepare는 fixture sourceType를 거부하므로, native scoped-synthetic fixture 전체를 만든 뒤
+같은 임시 demo key로 safe/bad 각각 서명하는 E2E를 우선한다. 이 설계 검토는 API/UI 연결 구현 완료가 아니다.
 
 ## 재작성 방지 확인
 

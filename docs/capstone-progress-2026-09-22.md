@@ -6,6 +6,19 @@
 
 ## 2026-09-30 재개 기록
 
+### 최신 보안 이미지 체크포인트 — `8f06733`
+
+- `6f7fe17`의 [Linux CI 36730385934](https://github.com/sihoon-0077/MCPShield/actions/runs/36730385934)는 **FAILURE**다. Node24 job과 PostgreSQL job은 성공했다. PG는 48 PASS / 0 FAIL / Docker health 1 SKIP이며 실제 SQL outbox·별도 DB 백업/복원은 실행됐다.
+- Node22의 builder 이미지 검사에서 HIGH 3건이 발견되어 뒤 native Docker 단계가 실행되지 않았다. 따라서 이 run은 앞선 OCI head 경합 수정의 native 효과를 검증하지 못했다. [원본 보고서 artifact](https://github.com/sihoon-0077/MCPShield/actions/runs/36730385934/artifacts/11105770873)는 기존 CI 정책상 1일 보존이다.
+- 실제 설치 경로는 `usr/local/lib/node_modules/npm/node_modules/` 아래다. `brace-expansion@5.0.9`의 CVE-2026-102276/102278 두 건과 `undici@6.27.0`의 CVE-2026-19534 한 건이다. 공식 수정 안내: [brace parseCommaParts](https://github.com/juliangruber/brace-expansion/security/advisories/GHSA-6j4f-fj2g-mc7p), [brace nested groups](https://github.com/juliangruber/brace-expansion/security/advisories/GHSA-qhr7-859c-m2p7), [undici WebSocket](https://github.com/nodejs/undici/security/advisories/GHSA-rfgv-xxqx-mfg5).
+- `8f06733`: 기존 SRI 검증 tarball 교체 절차로 `brace-expansion@5.0.11`, `undici@6.28.1`을 고정했다. Main·Reviewer가 공식 registry metadata와 실제 압축 bytes의 SHA-512를 각각 확인했다(12,007 / 295,788 bytes). 같은 major와 기존 dependencies/engines를 유지한다. root lock에는 해당 실행 패키지가 없어 수정하지 않았다.
+- 기존 `closure-files.mjs`에 정확한 패치 목록을 모아 이미지 label, 설치 버전, 생성 report, 재검증 consumer의 불일치를 막았다. HIGH/CRITICAL 0건 gate·격리·ignore-scripts·고정 digest 기준은 그대로다. Dockerfile 목록과 shared contract의 일치 및 HIGH/CRITICAL 거부 portable 회귀를 추가했다.
+- `8f06733`과 동일 작업 트리 전체 `npm test` exit 0: **444 PASS / 0 FAIL / 35 SKIP** (Backend 149/12, Security 133/19, Gateway 120/3, Dashboard 42/1; 각 수는 PASS/SKIP). 세 smoke 및 `npm run build` 성공. Backend는 같은 코드로 별도 재실행도 149 PASS / 0 FAIL / 12 SKIP. 집중 13 PASS / 4 native SKIP, 별도 reviewer 9 PASS / 4 native SKIP.
+- 이 수정 이후 Linux 이미지 재빌드·Trivy·후속 전체 native 결과는 새 CI에서 확인해야 한다. 로컬 Docker가 없어 이를 로컬 성공으로 주장하지 않는다. main 머지·공개 배포·유료 모델·테스트넷 전송 없음.
+- 별도 `npm audit --omit=dev --json`은 HIGH/CRITICAL 0, MODERATE 7개 dependency 노드를 보고했다(`fast-uri` 두 advisory의 전이 영향 포함). 전체 취약점 0건이 아니며 이 batch에서는 root 의존성을 변경하지 않았다. 기존 CI 기준은 `--audit-level=high`다.
+
+### 재개 시점부터의 경로 수정 이력
+
 - 9월 22일 사용량 제한으로 중단한 뒤 사용자가 재개를 요청했다. 당시 Main `2fb36d6`, 원격 `e172651`, Backend worktree의 미커밋 trace 수정 2파일을 확인하고 보존했다.
 - `3997871`에 trace 수정을 통합했다. `chain.submit` span 종료 후 retry/실패/DLQ 감사 로그가 worker trace에 붙던 원인을 공통 `fail()` 경로에서 수정했다. 기존 `withSpan`에 저장된 `action.trace_parent`를 전달한다. nonce·서명 bytes·상태 전이·재시도 상한은 바꾸지 않았다.
 - 결정론적 회귀: foreign worker trace `ffff…`와 원래 요청 `aaaa…`를 구분해 retry/terminal/pre-submit DLQ 세 경로를 검사한다. 담당 worktree에서 outbox + 실제 local EVM/OTLP 8 PASS / 0 FAIL / PG 1 SKIP, 별도 telemetry 2 PASS, TypeScript PASS.

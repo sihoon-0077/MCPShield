@@ -4,7 +4,7 @@
 
 > **후속 사용자 승인: 구현 재개.** 2026-09-22 사용자가 v2.0 구현과 기존 50% 중단 조건 해제를 요청했다. 현재 작업은 [캡스톤 실행 계획](docs/capstone-implementation-plan.md)을 따른다. 아래 9월 19일 중단/미푸시 표시는 당시 이력이며 현재 재개 지시를 취소하지 않는다. 모델·체인·배포의 외부 권한 경계는 유지한다.
 
-> **최신 구현 체크포인트(2026-09-30 재개):** [캡스톤 v2.0 구현 결과·재개 기록](docs/capstone-progress-2026-09-22.md). 게시자 서명·체인 retry/DLQ·실제 Gateway Agent 연결·한국어 재시도 안내를 통합했고, `3997871`에서 재시도 감사 로그 trace 오류까지 수정했다. 로컬 442 PASS / 0 FAIL / 35 SKIP, production build PASS다. 최신 전체 Linux CI·실제 모델·테스트넷 검증은 완료되지 않았다. 다음 작업의 40개 검수 진입점은 [증거 지도](docs/capstone-evidence-map.md)다. 아래 본문의 구현률/중단/브랜치는 **9월 19일 역사 기록**이다.
+> **최신 구현 체크포인트(2026-09-30 재개):** [캡스톤 v2.0 구현 결과·재개 기록](docs/capstone-progress-2026-09-22.md). trace 수정·OCI 테스트 head 안정화 후, CI가 builder의 HIGH 3건을 탐지했다. `8f06733`에서 해당 두 패키지를 공식 수정 버전으로 고정하고 모든 패치 identity 검사도 일치시켰다. 로컬 **444 PASS / 0 FAIL / 35 SKIP**, production build PASS다. HIGH/CRITICAL 차단 기준은 유지했으며 실제 Linux 재검사·전체 native 성공은 별도 확인이 필요하다. 실제 모델·테스트넷·게시자 전체 pipeline 연결은 미완료다. 다음 작업의 40개 검수 진입점은 [증거 지도](docs/capstone-evidence-map.md)다. 아래 본문의 구현률/중단/브랜치는 **9월 19일 역사 기록**이다.
 
 기준일: **2026-09-19 KST**. 기능·CI 기준: **`7bac78a` (`master/main`)**. 이후 변경은 감사 문서·집계기다.
 9월 10일 이후 보안·백엔드·프론트엔드 후속 변경과 종합 상태 점검을 통합했다. 최신 전체 Linux Docker 검증과 공개 배포는 아직 완료되지 않았다.
