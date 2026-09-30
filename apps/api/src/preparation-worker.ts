@@ -4,7 +4,7 @@ import { hash, loadEvidence, saveEvidence, type ControlOptions } from "./control
 import { claimPreparation, failPreparation, preparations, type PreparationJob } from "./preparation-store.js";
 import { inspectPreparedRuntime, preparedAi, preparedTrust } from "./prepared-config.js";
 import { preparedPolicy, ociPolicy, assertRuntimeBudget, policyVerdict, validPolicy, isNodePreparedPolicy } from "./control-policy.js";
-import { scopedPreparationContext, scopedMetadata } from "./scoped-config.js";
+import { scopedPreparationContext, scopedMetadata, publisherDocuments, publicPublisherVerification, assertPublisherEvidence } from "./scoped-config.js";
 import { checkedOciConfig, inspectOciRuntime, ociTrust } from "./oci-config.js";
 import { sourceIdentity } from "./preparation-control.js";
 import { checkedPreparedEvidence, checkedOciEvidence } from "./prepared-evidence.js";
@@ -54,7 +54,7 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
       profile: policy.document.profile, outcome: "INCONCLUSIVE", verdict: "ABSTAIN", issues } }) : undefined);
     if (!originalBundle?.manifest?.root || !verifyEvidenceBundle(originalBundle, originalBundle.manifest.root)) throw new Error("EVIDENCE_INTEGRITY_MISMATCH");
     const bundle = createEvidenceBundle({ ...Object.fromEntries(Object.entries(originalBundle.files).map(([path, content]) => [path, JSON.parse(content as string)])),
-      "prepared/source-identity.json": sourceIdentity(source) });
+      "prepared/source-identity.json": sourceIdentity(source), ...publisherDocuments(originalBundle, scoped?.publisher) });
     const evidenceKey = await saveEvidence(options, job.tenantId, bundle);
     let derived: Record<string, any> | undefined, scanResult: Record<string, any> | undefined;
     if (output.binding) {
@@ -72,12 +72,13 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
         runtimeTrust.sourceProvenance = scoped.scopedReview.sourceProvenance;
         runtimeTrust.scopedConfigHash = hash(scoped.frozen);
         runtimeTrust.sourceBudget = scoped.sourceBudget;
+        runtimeTrust.publisher = scoped.publisher;
       }
       const verdict = policyVerdict(bundle, output.result, policy.document, runtimeTrust);
       const now = Date.now();
       scanResult = { scanResult: output.result, reportRoot: bundle.manifest.root, analysis: output.analysis, policyHash: job.policyHash,
         validFrom: new Date(now).toISOString(), validUntil: new Date(now + policy.document.validitySeconds * 1000).toISOString(), evidenceKey,
-        verdict, ...(oci ? { ociRuntimeTrust: runtimeTrust, semanticEvidenceMode: policy.document.semanticEvidenceMode, providerQuality: "PROVIDER_QUALITY_NOT_MEASURED" }
+        verdict, ...(scoped ? { publisherVerification: publicPublisherVerification(scoped.publisher) } : {}), ...(oci ? { ociRuntimeTrust: runtimeTrust, semanticEvidenceMode: policy.document.semanticEvidenceMode, providerQuality: "PROVIDER_QUALITY_NOT_MEASURED" }
           : { preparedRuntimeTrust: runtimeTrust, ...scopedMetadata(policy.document) }), state: verdict === "ABSTAIN" ? "REVIEW_REQUIRED" : "READY_FOR_VALIDATORS" };
       const owned = oci ? output.runtimeOwnership === "OWNED" : true;
       if (typeof output.cleanup !== "function" || (owned ? typeof output.runtimeTag !== "string"
@@ -86,6 +87,7 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
       derived = { ...identity, artifactDigest: binding.artifactDigest, manifestDigest: binding.manifestDigest, toolSurfaceHash: binding.toolSurfaceHash,
         legacyReleaseId: source.legacyReleaseId, version: source.version, sourceType: oci ? "prepared-oci" : "prepared-npm", runtimeProfile: policy.document.profile, sourceReleaseId: source.releaseId,
         ...(oci ? { runtimeOwnership: output.runtimeOwnership, semanticEvidenceMode: policy.document.semanticEvidenceMode, providerQuality: "PROVIDER_QUALITY_NOT_MEASURED" } : scopedMetadata(policy.document)),
+        ...(scoped ? { publisherVerification: publicPublisherVerification(scoped.publisher) } : {}),
         artifactUri: `prepared-local:${binding.artifactDigest}`, status: "UNVERIFIED", policyHash: null, reportRoot: null, validUntil: null, chain: null,
         preparedEvidenceKey: evidenceKey, preparedReportRoot: bundle.manifest.root, runtimeTag: output.runtimeTag, createdAt: new Date(now).toISOString() };
     }
@@ -109,6 +111,12 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
           const existing = await tx.get(job.tenantId, "release", derived.releaseId);
           check(bundle, existing);
           if (existing?.runtimeProfile !== policy.document.profile) throw new Error("PREPARED_RELEASE_COLLISION");
+          if (scoped) {
+            const saved = await loadEvidence(options, job.tenantId, existing!.preparedEvidenceKey, existing!.preparedReportRoot);
+            check(saved, existing);
+            try { assertPublisherEvidence(saved, scoped.publisher); }
+            catch { throw new Error("PREPARED_RELEASE_COLLISION"); }
+          }
         }
         const request = { releaseId: derived.releaseId, policyHash: job.policyHash, artifactDigest: derived.artifactDigest, preparationId: job.preparationId,
           ...traceHeaders() };
@@ -162,6 +170,7 @@ export async function scanPreparedRelease(scan: ScanJob, release: Record<string,
   const scoped = isNodePreparedPolicy(policy) && policy.profile !== preparedPolicy.profile
     ? await scopedPreparationContext(options, scan.tenantId, policy, sourceRelease!) : undefined;
   if (scoped && hash(scoped.scopedReview.executionPolicy) !== hash(binding.executionPolicy)) throw Error("SCOPED_EXECUTION_POLICY_MISMATCH");
+  if (scoped) assertPublisherEvidence(previous, scoped.publisher);
   const localOci = oci ? checkedOciConfig(options.ociRuntime!) : undefined;
   const runtimeTrust = oci ? await inspectOciRuntime(binding, localOci!, options.inspectOciRuntime)
     : await inspectPreparedRuntime(binding, options.preparedRuntime!, options.inspectPreparedRuntime);
@@ -177,7 +186,7 @@ export async function scanPreparedRelease(scan: ScanJob, release: Record<string,
   assertCanonicalScanResult(output.result);
   if (output.result.scanId !== scan.scanId || output.result.releaseId !== release.legacyReleaseId) throw new Error("PREPARED_SCAN_IDENTITY_MISMATCH");
   const bundle = createEvidenceBundle({ ...Object.fromEntries(Object.entries(output.bundle.files).map(([path, content]) => [path, JSON.parse(content as string)])),
-    "prepared/source-identity.json": source });
+    "prepared/source-identity.json": source, ...publisherDocuments(output.bundle, scoped?.publisher) });
   check(bundle, release);
   if (scoped) {
     const current = await scopedPreparationContext(options, scan.tenantId, policy, sourceRelease!);
@@ -185,7 +194,9 @@ export async function scanPreparedRelease(scan: ScanJob, release: Record<string,
     runtimeTrust.sourceProvenance = current.scopedReview.sourceProvenance;
     runtimeTrust.scopedConfigHash = hash(current.frozen);
     runtimeTrust.sourceBudget = current.sourceBudget;
+    runtimeTrust.publisher = current.publisher;
   }
   return { ...output, bundle, ...(oci ? { ociRuntimeTrust: runtimeTrust } : { preparedRuntimeTrust: runtimeTrust }),
-    ...(scoped ? { scopedConfigHash: hash(scoped.frozen), scopedSourceReleaseId: binding.sourceReleaseId } : {}) };
+    ...(scoped ? { scopedConfigHash: hash(scoped.frozen), scopedSourceReleaseId: binding.sourceReleaseId,
+      publisherVerification: publicPublisherVerification(scoped.publisher) } : {}) };
 }

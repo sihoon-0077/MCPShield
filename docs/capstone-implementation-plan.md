@@ -40,6 +40,14 @@
 
 ## 진행 로그
 
+- 2026-10-01 후속: `3746bd9` baseline2.1 runtime과 `b759be8` 정상/악성 업데이트 회귀를 독립 리뷰 후 통합했다. Main focused32 PASS/0 FAIL/2 native SKIP. `a1f7ac5`는 기존 immutable builder 뒤 별도 순차 native CI gate를 추가하고, 독립 validator의 기존 `ValidatorSources.baselines` 설정 계약을 기록한다. CI 명령/서명 gate 회귀9 PASS. API/worker/validator 연결은 별도 Backend 구현 중이며 외부 AI·실제 Docker 성공을 이 portable 결과로 대체하지 않는다.
+
+- 2026-10-01 후속: indexer의 감사 저장·checkpoint 실패 및 동시 reorg/shorter-fork 저장 경합을 재현하고 기존 `forTenant` 블록 원자화·checkpoint/parent fence로 보완했다. 독립 최종 리뷰 후 `d423102`/`edb3843`/`6bfb51c`에 통합. 담당자 실제 Ganache/SQLite+기존 두 Gateway OTLP2 PASS, Reviewer 실제EVM1 PASS 및 별도 SQL interleaving 재현. 최종 Main6bfb51c 전체466 PASS/0 FAIL/35 SKIP·세 smoke/build/forms3 PASS. 새 Linux 성공은 별도 확인한다. API/validator baseline2.1 연결은 Security stable runtime 계약 확인 뒤 이어간다.
+
+- 2026-10-01 후속: `f1d2929` CI36744373202는 Node24/PG 성공, Node22 기본 검사·빌드 후 Docker readiness 시간 초과로 실패했다. `cee4f04`는 제한시간을 유지하고 서버 OS만 조회하도록 수정했다(집중10 PASS/2 SKIP·독립 리뷰). `6fc9dcf`에 baseline2.1 기반 계약을 통합했다(Main 집중27 PASS/1 SKIP·Reviewer 신규9 PASS). runtime 재취득/API/validator 연결과 실제 모델 증거는 별도 잔여다. indexer block 원자화 draft는 짧은 fork 동시성 경합을 추가 재현하여 보완·리뷰 중이며 완료로 세지 않는다.
+
+- 2026-10-01 후속: publisher Linux `5bad1e9`는 Node22/24 두 테스트 호환 문제로 실패, PG는 성공했다. `86673f6` 테스트만 수정하고 세 검증자 `4fb62d7`을 통합했다. 첫 전체는 Backend157/1/12로 OTLP 내부 EVM RPC 실패, 단독 실행은 성공했다. 근본 원인 미확정으로 고정 단계 진단 `2fa3bc2`를 추가했고 전체 재실행455 PASS/0 FAIL/35 SKIP·세 smoke/build/forms 성공. 새 native 결과는 별도 확인하며 CAP2-202 완료로 아직 세지 않는다. scoped baseline2.1·V2 indexer 원자성/재시작 검수는 승인된 후속 병렬 작업이다.
+
 - 재개 준비: 스킬·협업 규칙·v2.0 요구사항을 확인하고 새 파트 브랜치를 준비한다. 기능 완료 선언은 아니다.
 - Main + 3개 새 worktree를 `b11ed63`에서 생성했다. 기존 worktree는 보존하고 설치된 의존성을 재사용한다.
 - [40개 P0 증거 지도](capstone-evidence-map.md)를 만들었다. 작업용 매핑이며 최종 감사/완료율은 아니다.
@@ -59,7 +67,11 @@
 
 - 2026-10-01 KST: `8569025`에 기존 admission smoke의 opt-in 원자료(최대8,000건)를 추가하고 깨끗한 SHA에서 phase당100회·총800회를 실제 측정했다. 추적 JSON·SHA·환경·집계 대조·제외 범위는 [진행 기록](capstone-progress-2026-09-22.md)에 연결했다. 전체 로컬445 PASS/0 FAIL/35 SKIP·세 smoke PASS. `7df0453` Linux의 builder security와 OCI 전체 폐기 경로는 PASS, 전체 run은 진행 중이며 후속 측정기 SHA의 CI와 구분한다.
 
-## 다음 publisher pipeline 연결 시 주의
+- 2026-10-01 KST 후속: `7df0453` [CI36732591060](https://github.com/sihoon-0077/MCPShield/actions/runs/36732591060) 전체 SUCCESS. Node22/24·PG·필수 native·Compose·실제 관측 파이프라인 성공을 완료 로그로 확인했다. 빠른 suite의 SKIP과 별도 실제 실행을 구분했고 dispatch 전용10회 반복/이미지 서명은 SKIP이다. 다음 publisher API/validator/UI 연결은 별도 worktree에서 구현·리뷰하며 이 선행 성공으로 대신하지 않는다.
+
+## publisher pipeline 연결 — 설계 당시 경계 및 현재 결과
+
+아래 설계는 `b8ec89d`/`4225255`와 Dashboard `235d52b`/`751cd5f`/`6edbe6a`로 통합했다. additive operator 계약은 `1e34a82`에 기록했다. 독립 source/key 재검증·암호화 publisher leaf·준비 identity 충돌 보존·행동 안전과 분리된 화면을 구현했다. 이후 초기화 실패 cleanup을 `cbf7760`, 테스트 파일 worker 상한을 `c53e016`으로 수정했다. 같은 구현의 기본 전체 검사453 PASS/0 FAIL/35 SKIP·세 smoke·production build·built-form HTTP3건 PASS. 새 Linux/Docker/PG CI는 별도 확인한다. [실패 이력을 포함한 검증 수치와 미완료 경계](capstone-progress-2026-09-22.md)를 먼저 읽는다. 아래 문단은 구현 전 설계 기록이다.
 
 현재 서명 검증은 resolver에 연결되었지만 API/독립 validator의 운영자 설정은 아직 연결되지 않았다.
 API source 등록, scoped 준비/재검증, validator 독립 수집 모두 같은 실측 source identity에 대해 검증해야 한다.

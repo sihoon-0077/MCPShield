@@ -47,6 +47,12 @@ test('independent CI diagnostics never remove upstream success gates from image 
   assert.match(scoped, /^          MCPSHIELD_DOCKER_TESTS: "1"\r?$/m);
   assert.match(scoped, /^        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE=.* node --import tsx --test tests\/security\/scoped-prepared\.test\.mjs\r?$/m);
   assert.doesNotMatch(scoped, /continue-on-error|OPENAI_API_KEY|CONTROL_AI_TOKEN/);
+  const baseline = steps.find(step => step.startsWith('Exercise pinned Node baseline against safe and malicious updates'));
+  assert.ok(baseline);
+  assert.match(baseline, /matrix\.node == 22 && steps\.runtime_builder\.outcome == 'success'/);
+  assert.match(baseline, /^          MCPSHIELD_DOCKER_TESTS: "1"\r?$/m);
+  assert.match(baseline, /^        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="\$\(cat runtime-builder-artifact\/image-id\.txt\)" node --import tsx --test tests\/security\/scoped-baseline\.test\.mjs\r?$/m);
+  assert.doesNotMatch(baseline, /continue-on-error|OPENAI_API_KEY|CONTROL_AI_TOKEN/);
   const scopedCycle = steps.find(step => step.startsWith('Exercise scoped Node v2 API and independent source validators through V2 and Gateway'));
   assert.ok(scopedCycle);
   assert.match(scopedCycle, /matrix\.node == 22 && steps\.runtime_builder\.outcome == 'success'/);

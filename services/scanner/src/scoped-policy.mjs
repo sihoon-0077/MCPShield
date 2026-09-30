@@ -6,6 +6,9 @@ export const SCOPED_OCI_PROFILE = 'restricted-oci-offline-v2';
 export const SCOPED_INPUT_SCHEMA = 'mcpshield.scoped-semantic-input.v2';
 export const SCOPED_PROOF_SCHEMA = 'mcpshield.scoped-disclosure-proof.v2';
 export const SCOPED_REVIEW_SCHEMA = 'mcpshield.scoped-semantic-review.v2';
+export const SCOPED_BASELINE_INPUT_SCHEMA = 'mcpshield.scoped-semantic-input.v2.1';
+export const SCOPED_BASELINE_PROOF_SCHEMA = 'mcpshield.scoped-disclosure-proof.v2.1';
+export const SCOPED_BASELINE_REVIEW_SCHEMA = 'mcpshield.scoped-semantic-review.v2.1';
 export const SCOPED_EVIDENCE_MODES = Object.freeze(['PROVIDER_EXECUTION', 'LOCAL_CONTRACT_TEST']);
 export const SCOPED_LIMITS = Object.freeze({ inputBytes: 64 * 1024, snippetChars: 32 * 1024, fileSnippetChars: 2048,
   fileFraction: 0.25, localSourceBytes: 8 * 1024 * 1024, localFiles: 50_000, snippets: 64, disclosureWork: 8_000_000 });
@@ -26,6 +29,20 @@ export function scopedReviewPolicy(evidenceMode) {
 
 export function validateScopedReviewPolicy(value) {
   try { return canonicalJson(value) === canonicalJson(scopedReviewPolicy(value.evidenceMode)); }
+  catch { return false; }
+}
+
+// Explicit opt-in. Never change the bytes/defaults of the v2.0 commitment above.
+export function scopedBaselineReviewPolicy(evidenceMode) {
+  const previous = scopedReviewPolicy(evidenceMode);
+  return { ...previous, schemaVersion: 'mcpshield.scoped-review-policy.v2.1', tierPolicy: 'LOCAL_RISK_TIERED_BASELINE_V1',
+    privacyScope: { ...previous.privacyScope, selection: 'ALL_CURRENT_RISK_PLUS_PINNED_BASELINE_DIFF' },
+    baseline: { selection: 'EXPLICIT_PREPARED_RELEASE_OR_NULL', authority: 'SAME_TOOL_OPERATOR_REACQUIRED_SOURCE_AND_RUNTIME',
+      currentCoverage: 'NO_BASELINE_EXEMPTION', acquisition: 'IMAGE_EXPORT_AND_ISOLATED_TOOLS_LIST',
+      approvalInheritance: 'NONE', unverifiable: 'ABSTAIN' } };
+}
+export function validateScopedBaselineReviewPolicy(value) {
+  try { return canonicalJson(value) === canonicalJson(scopedBaselineReviewPolicy(value.evidenceMode)); }
   catch { return false; }
 }
 

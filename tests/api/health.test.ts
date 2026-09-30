@@ -177,6 +177,21 @@ test("PostgreSQL heartbeat writes are visible across actual worker/API connectio
   } finally { await worker.stop(); await one.query("DELETE FROM cp_records WHERE tenant_id=? AND kind=?", [tenant, HEARTBEAT_KIND]); await Promise.all([one.close(), two.close()]); }
 });
 
+test("Docker readiness queries only the server OS with unchanged bounds and sanitized failures", async () => {
+  const unavailable = { status: "DOWN", code: "DOCKER_UNAVAILABLE" };
+  for (const stdout of ['"linux"\n', '"windows"', 'null', '{"Client":{"Os":"linux"}}', 'invalid']) {
+    let invocation: unknown;
+    const result = await probeScannerDocker(async (...args) => { invocation = args; return { stdout }; });
+    assert.deepEqual(invocation, ["docker", ["version", "--format", "{{json .Server.Os}}"],
+      { timeout: 1500, killSignal: "SIGKILL", maxBuffer: 1024, windowsHide: true }]);
+    assert.deepEqual(result, stdout === '"linux"\n' ? { status: "UP", code: "DOCKER_AVAILABLE" } : unavailable);
+  }
+  for (const signal of [undefined, "SIGKILL"]) {
+    const result = await probeScannerDocker(async () => { throw Object.assign(Error("SYNTHETIC_PRIVATE_DOCKER_ENDPOINT"), { signal, stdout: '"linux"' }); });
+    assert.deepEqual(result, signal ? { status: "DOWN", code: "DOCKER_TIMEOUT" } : unavailable);
+  }
+});
+
 test("native Linux Docker availability probe reports the actual daemon, not configured flags", { skip: process.env.MCPSHIELD_DOCKER_TESTS !== "1" }, async () => {
   assert.deepEqual(await probeScannerDocker(), { status: "UP", code: "DOCKER_AVAILABLE" });
 });

@@ -34,6 +34,8 @@ import { prepareAndScanRuntime } from "../../services/scanner/src/prepared-scan.
 import { runArtifact } from "../../apps/gateway/src/index.mjs";
 // @ts-expect-error Actual bounded original-source acquisition.
 import { resolveArtifact } from "../../services/resolver/src/resolver.mjs";
+// @ts-expect-error Existing demo signature over the complete synthetic source tree.
+import { signDemoPublisherManifest } from "../../services/resolver/src/demo-publisher.mjs";
 
 const preparedMailInput = [
   { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "prepared-fullcycle", version: "1" } } },
@@ -78,6 +80,8 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
   let scopedProvider: Awaited<ReturnType<typeof scopedContractServer>> | undefined;
   const apiCataloguePath = join(dir, "api-provenance.json"), validatorCataloguePath = join(dir, "validator-provenance.json"), validatorSourcesPath = join(dir, "validator-sources.json");
   const declarations: any[] = [], validatorSources: any[] = [];
+  // One ephemeral publisher signs safe and malicious sources; authentication is not safety.
+  const publisherKey = generateKeyPairSync("ed25519"), publishers: Record<string, any> = {}, publisherId = "synthetic-fullcycle-publisher";
   const aiCounts = { analyzer: 0, critic: 0, probes: 0 };
   const ai = createServer(async (request, response) => {
     try {
@@ -142,8 +146,10 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
           sourceType: "tarball", artifactDir: acquired.artifactDir, artifactUri: "synthetic-local-scoped-fixture:not-registry-provenance", legacyReleaseId: acquired.releaseId,
           version, status: "UNVERIFIED", metadata: acquired.metadata };
         declarations.push({ schemaVersion: "mcpshield.operator-code-artifact.v1", authority: "OPERATOR_LOCAL_CATALOG", contentClass: "CODE_ARTIFACT_NO_CUSTOMER_DATA", sourceArtifactDigest: source.artifactDigest });
+        publishers[source.artifactDigest] = { publisherId, pinnedPublicKey: publisherKey.publicKey.export({ type: "spki", format: "pem" }).toString(),
+          manifest: signDemoPublisherManifest({ publisherId, name: pkg.name, version, artifactDigest: source.artifactDigest }, publisherKey.privateKey) };
         // Separate operator/validator-owned files, never sourced from an API response.
-        for (const filename of [apiCataloguePath, validatorCataloguePath]) await writeFile(filename, JSON.stringify({ schemaVersion: "mcpshield.scoped-provenance-catalogue.v1", artifacts: declarations }), { mode: 0o600 });
+        for (const filename of [apiCataloguePath, validatorCataloguePath]) await writeFile(filename, JSON.stringify({ schemaVersion: "mcpshield.scoped-provenance-catalogue.v1", artifacts: declarations, publishers }), { mode: 0o600 });
         validatorSources.push({ releaseId: source.releaseId, sourceType: "local", locator: root });
         await writeFile(validatorSourcesPath, JSON.stringify({ schemaVersion: "mcpshield.validator-sources.v1", sources: validatorSources }), { mode: 0o600 });
       } else {
@@ -169,7 +175,14 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
       assert.notEqual(release.releaseId, source.releaseId); assert.equal(release.status, "UNVERIFIED");
       assert.deepEqual(await store!.get(tenantId, "release", source.releaseId), source, "immutable source must not become the prepared release");
       assert.equal(scan.result?.scanResult.source, "LIVE"); assert.equal(scan.result?.state, "READY_FOR_VALIDATORS");
-      if (scoped) { assert.equal(scan.result?.semanticEvidenceMode, "LOCAL_CONTRACT_TEST"); assert.equal(release.runtimeProfile, "restricted-node-docker-v2"); }
+      if (scoped) {
+        assert.equal(scan.result?.semanticEvidenceMode, "LOCAL_CONTRACT_TEST"); assert.equal(release.runtimeProfile, "restricted-node-docker-v2");
+        assert.equal(release.publisherVerification.status, "VERIFIED"); assert.equal(release.publisherVerification.behaviorSafety, "NOT_ASSESSED");
+        assert.equal(release.publisherVerification.sourceArtifactDigest, source.artifactDigest);
+        assert.deepEqual(scan.result?.publisherVerification, release.publisherVerification);
+        const publicRelease = (await app!.inject({ url: `/v1/releases/${release.releaseId}`, headers: auth })).json().release;
+        assert.deepEqual(publicRelease.publisherVerification, release.publisherVerification);
+      }
       if (version === "1.0.1") assert.ok(scan.result?.scanResult.findings.some((finding: any) => finding.code === "CANARY_EXFILTRATION" && finding.deterministic));
       await settle((await post(`/v1/releases/${release.releaseId}/register`)).action.actionId);
       const response = await app!.inject({ url: `/v1/releases/${release.releaseId}/gateway-config`, headers: auth }); assert.equal(response.statusCode, 200);
@@ -178,13 +191,20 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
     };
     const admission = (release: any) => post("/v1/admission/check", { releaseId: release.releaseId, artifactDigest: release.artifactDigest,
       toolSurfaceHash: release.toolSurfaceHash, policyHash, mode: "strict", operationClass: "READ_PRIVATE" });
-    const vote = async (scanId: string) => {
+    const validatorExecutions: { pid: number; validator: string; releaseId: string; kind: string; txHash: string; receipt: any }[] = [];
+    const vote = async (scan: any) => {
+      const scanId = scan.scanId, malicious = scan.result.verdict === "FAIL";
+      // C's emergency vote verifies/signs before A/B's terminal FAIL quorum.
+      // Safe C may attest after VERIFIED; no third FAIL is sent after REVOKED.
+      const participants = scoped ? (malicious ? [3, 1, 2] : [1, 2, 3]) : [1, 2];
       let pumping = true;
       const pump = (async () => { while (pumping) { await chain.provider.request({ method: "evm_mine", params: [] }); await runChainActionOnce(store!, relayer!); await pause(100); } })();
       try {
-        for (const { secretKey } of accounts.slice(1, 3)) {
+        for (const [step, index] of participants.entries()) {
+          const { secretKey } = accounts[index], validator = new Wallet(secretKey).address, quarantineOnly = scoped && malicious && index === 3;
+          const receiptPath = join(dir, `verification-${scanId}-${index}.jsonl`);
           // Separate key-owning process; neither validator receives its peer's key or an injected scanner/proof callback.
-          const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../../apps/validator/src/v2.ts", import.meta.url))],
+          const child = promisify(execFile)(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../../apps/validator/src/v2.ts", import.meta.url)), ...(quarantineOnly ? ["--quarantine-only"] : [])],
             { timeout: 240000, maxBuffer: 256 * 1024, windowsHide: true, env: { ...getDefaultEnvironment(), VALIDATOR_PRIVATE_KEY: secretKey,
               CONTROL_API_URL: apiUrl, CONTROL_API_TOKEN: token, CONTROL_SCAN_ID: scanId, CONTROL_V2_RPC_URLS: rpc,
               CONTROL_V2_CHAIN_ID: "1337", CONTROL_V2_REGISTRY_ADDRESS: deployment.releaseRegistry.address, CONTROL_VALIDATOR_POLICY_HASH: policyHash,
@@ -193,10 +213,29 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
               MCPSHIELD_AI_DISCLOSURE_POLICY: "LOCAL_CONTRACT_TEST",
               ...(scoped ? { VALIDATOR_SCOPED_PROVENANCE_PATH: validatorCataloguePath, VALIDATOR_SOURCES_PATH: validatorSourcesPath,
                 VALIDATOR_SCOPED_AI_CONFIG: JSON.stringify(scopedProvider!.ai) } : {}),
-              VALIDATOR_VERIFICATION_RECEIPTS_PATH: join(dir, "local-verifications.jsonl") } });
+              VALIDATOR_VERIFICATION_RECEIPTS_PATH: receiptPath } });
+          const pid = child.child.pid; assert.ok(pid && pid !== process.pid);
+          const { stdout, stderr } = await child;
           assert.ok(!stdout.includes(secretKey) && !stderr.includes(secretKey) && !stdout.includes(token) && !stderr.includes(token));
           const outcome = JSON.parse(stdout.trim().split("\n").at(-1)!);
           assert.equal(outcome.mode, "SINGLE_VALIDATOR"); assert.equal(outcome.operations.length, 1);
+          assert.deepEqual(outcome.validators, [validator]);
+          const operation = outcome.operations[0];
+          assert.equal(operation.status, "COMPLETED"); assert.equal(operation.kind, quarantineOnly ? "QUARANTINE" : "ATTEST");
+          assert.match(operation.txHash, /^0x[0-9a-f]{64}$/);
+          const rows = (await readFile(receiptPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+          assert.equal(rows.length, 1); const receipt = rows[0];
+          assert.equal(receipt.validator, validator); assert.equal(receipt.releaseId, scan.releaseId);
+          assert.equal(receipt.chainId, 1337); assert.equal(receipt.registryContract.toLowerCase(), deployment.releaseRegistry.address.toLowerCase());
+          assert.equal(receipt.policyHash, policyHash); assert.equal(receipt.originalReportRoot, scan.result.reportRoot);
+          assert.equal(receipt.verdict, malicious ? "FAIL" : "PASS");
+          validatorExecutions.push({ pid, validator, releaseId: scan.releaseId, kind: operation.kind, txHash: operation.txHash, receipt });
+          if (scoped) {
+            const decision = await relayer!.registry.getDecision(scan.releaseId, policyHash);
+            assert.equal(decision.approvals, malicious ? 0n : BigInt(step + 1));
+            assert.equal(decision.rejections, malicious ? BigInt(step) : 0n);
+            assert.equal(decision.status, malicious ? (step < 2 ? 2n : 3n) : (step === 0 ? 0n : 1n));
+          }
         }
       } finally { pumping = false; await pump; }
       await indexV2(store!, relayer!, { deploymentBlock: deployment.releaseRegistry.blockNumber, confirmations: 1 });
@@ -205,7 +244,7 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
     const gatewayContext = { mode: "live", apiBaseUrl: apiUrl, timeoutMs: 5000, policyHash, tenantId, publicKey, keyId: "prepared-integration", chainId: 1337,
       registryContract: deployment.releaseRegistry.address, validatorSetVersion: 1, apiToken: token, operationClass: "READ_PRIVATE", admissionMode: "strict" };
     const safe = await prepare("1.0.0");
-    assert.equal((await admission(safe.release)).decision, "BLOCK"); await vote(safe.scan.scanId);
+    assert.equal((await admission(safe.release)).decision, "BLOCK"); await vote(safe.scan);
     assert.equal((await admission(safe.release)).decision, "ALLOW");
     const safeGatewayEventsSince = new Date().toISOString();
     const client = new Client({ name: "prepared-fullcycle", version: "1" }), transport = new StdioClientTransport({ command: process.execPath,
@@ -222,7 +261,8 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
     } finally { await client.close(); }
     const safeEvents = await dockerEvents(safeGatewayEventsSince);
     for (const action of ["create", "start"]) assert.ok(safeEvents.some(event => event.Action === action && event.Actor.Attributes.image === safe.imageDigest), `Safe Gateway must positively demonstrate observable Docker ${action}`);
-    const bad = await prepare("1.0.1"); await vote(bad.scan.scanId);
+    const bad = await prepare("1.0.1"); await vote(bad.scan);
+    if (scoped) assert.equal(bad.release.publisherVerification.publicKeyFingerprint, safe.release.publisherVerification.publicKeyFingerprint);
     const finalDenied = await admission(bad.release);
     assert.deepEqual({ decision: finalDenied.decision, status: finalDenied.status, reasonCode: finalDenied.reasonCode, snapshotStatus: finalDenied.snapshot?.status },
       { decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED", snapshotStatus: "REVOKED" });
@@ -243,16 +283,25 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
     const deniedEvents = await dockerEvents(deniedEventsSince);
     assert.equal(deniedEvents.filter(event => event.Actor.Attributes.image === bad.imageDigest && ["create", "start"].includes(event.Action)).length, 0, "Revoked candidate must be blocked before Docker create/start");
     assert.deepEqual(await containers(), before, "No Gateway container may remain after either denied process");
-    const receipts = (await readFile(join(dir, "local-verifications.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    assert.equal(receipts.length, 4); assert.equal(new Set(receipts.map((receipt) => receipt.independentReportRoot)).size, 4);
+    const receipts = validatorExecutions.map(execution => execution.receipt), expectedValidators = scoped ? 3 : 2;
+    assert.equal(receipts.length, expectedValidators * 2); assert.equal(new Set(receipts.map((receipt) => receipt.independentReportRoot)).size, expectedValidators * 2);
     assert.ok(receipts.every((receipt) => receipt.originalReportRoot !== receipt.independentReportRoot && receipt.state === "LOCAL_VERIFICATION_ONLY"));
-    assert.equal(receipts.filter((receipt) => receipt.verdict === "PASS").length, 2); assert.equal(receipts.filter((receipt) => receipt.verdict === "FAIL").length, 2);
+    assert.equal(receipts.filter((receipt) => receipt.verdict === "PASS").length, expectedValidators); assert.equal(receipts.filter((receipt) => receipt.verdict === "FAIL").length, expectedValidators);
+    for (const { release } of [safe, bad]) {
+      const executions = validatorExecutions.filter(execution => execution.releaseId === release.releaseId);
+      assert.equal(new Set(executions.map(execution => execution.pid)).size, expectedValidators);
+      assert.equal(new Set(executions.map(execution => execution.validator)).size, expectedValidators);
+    }
     if (scoped) {
-      assert.ok(scopedProvider!.counts.probe >= 3 && scopedProvider!.counts.analyzer >= 3 && scopedProvider!.counts.critic >= 3, "safe worker and both signers perform fresh loopback model review; observed FAIL may precede semantic review");
+      assert.ok(scopedProvider!.counts.probe >= 4 && scopedProvider!.counts.analyzer >= 4 && scopedProvider!.counts.critic >= 4, "safe worker and all three signers perform fresh loopback model review; observed FAIL may precede semantic review");
       assert.ok(receipts.every(receipt => receipt.semanticEvidenceMode === "LOCAL_CONTRACT_TEST" && receipt.providerQuality === "PROVIDER_QUALITY_NOT_MEASURED"));
+      const badExecutions = validatorExecutions.filter(execution => execution.releaseId === bad.release.releaseId);
+      assert.deepEqual(badExecutions.map(execution => execution.kind), ["QUARANTINE", "ATTEST", "ATTEST"], "three FAIL verifications are one emergency signature plus two terminal quorum signatures");
     } else assert.ok(aiCounts.probes >= 6 && aiCounts.analyzer >= 6 && aiCounts.critic >= 6, "each worker/signer must perform its own paid-provider contract requests");
     t.diagnostic(JSON.stringify({ mode: "ACTUAL_LINUX_DOCKER_LOCAL_EVM_STUB_AI_SINGLE_INSTITUTION", independentScans: receipts.length, independentGatewayProcesses: gateways.length,
-      deniedGatewayCreateOrStartEvents: 0, dockerEventEvidence: "BOUNDED_LOCAL_DAEMON_WINDOW_WITH_SAFE_POSITIVE_CONTROL", aiCounts: scopedProvider?.counts ?? aiCounts, scoped }));
+      deniedGatewayCreateOrStartEvents: 0, dockerEventEvidence: "BOUNDED_LOCAL_DAEMON_WINDOW_WITH_SAFE_POSITIVE_CONTROL", aiCounts: scopedProvider?.counts ?? aiCounts, scoped,
+      validatorExecutions: validatorExecutions.map(({ receipt, ...execution }) => ({ ...execution, originalReportRoot: receipt.originalReportRoot, independentReportRoot: receipt.independentReportRoot,
+        verdict: receipt.verdict, receiptState: receipt.state })) }));
   } finally {
     if (app) await app.close(); else { relayer?.close(); await store?.close(); }
     await chain.close().catch(() => {}); ai.closeAllConnections(); await new Promise<void>((done) => ai.close(() => done()));

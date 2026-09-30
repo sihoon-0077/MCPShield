@@ -1,6 +1,6 @@
 import { isAbsolute } from "node:path";
 import { hash } from "../../api/src/control-plane.js";
-import { checkedScopedAi, loadScopedProvenance, type ScopedAi } from "../../api/src/scoped-config.js";
+import { checkedScopedAi, loadScopedAuthority, publisherEvidence, type ScopedAi } from "../../api/src/scoped-config.js";
 import { sourceIdentity } from "../../api/src/preparation-control.js";
 import { loadValidatorSources } from "./source-verification.js";
 import { validPolicy } from "../../api/src/control-policy.js";
@@ -20,13 +20,13 @@ export function checkedScopedValidatorConfig(value: any): ScopedValidatorConfig 
 export async function checkedScopedSource(policy: any, binding: any, expectedSource: any, options?: ScopedValidatorConfig) {
   if (!validPolicy(policy) || policy.profile !== SCOPED_NODE_PROFILE || hash(policy.semantic) !== hash(binding.executionPolicy.semantic)) throw Error("SCOPED_POLICY_REQUIRED");
   const config = checkedScopedValidatorConfig(options);
-  const sourceProvenance = await loadScopedProvenance(config.provenancePath, binding.sourceArtifactDigest);
+  const { sourceProvenance, demoPublisher } = await loadScopedAuthority(config.provenancePath, binding.sourceArtifactDigest);
   const catalogue = await loadValidatorSources(config.sourcesPath);
   const selected = catalogue.sources.find(item => item.releaseId === binding.sourceReleaseId);
   if (!selected || selected.sourceType === "oci") throw Error("SCOPED_VALIDATOR_SOURCE_REQUIRED");
   let resolved;
   try {
-    resolved = await resolveArtifact({ sourceType: selected.sourceType, locator: selected.locator });
+    resolved = await resolveArtifact({ sourceType: selected.sourceType, locator: selected.locator }, { demoPublisher });
     const acquired = sourceIdentity({ ...resolved, ...exactReleaseIdentity(resolved), artifactDigest: resolved.artifactDigest,
       manifestDigest: resolved.manifestDigest, toolSurfaceHash: resolved.toolSurfaceHash });
     if (hash(acquired) !== hash(expectedSource) || acquired.releaseId !== binding.sourceReleaseId || acquired.artifactDigest !== binding.sourceArtifactDigest
@@ -35,10 +35,12 @@ export async function checkedScopedSource(policy: any, binding: any, expectedSou
     if (!Number.isSafeInteger(sourceBytes) || sourceBytes < 0 || sourceBytes > policy.maxArtifactBytes) throw Error("SCOPED_SOURCE_BUDGET_EXCEEDED");
     const sourceBudget = { sourceArtifactDigest: acquired.artifactDigest, sourceBytes };
     const ai = checkedScopedAi(config.ai, policy.semantic);
-    const configHash = hash({ selected, sourceProvenance, sourceBudget, ai });
-    return { sourceProvenance, ai, configHash, sourceIdentity: acquired, sourceBudget };
+    const publisher = publisherEvidence(resolved, demoPublisher);
+    const configHash = hash({ selected, sourceProvenance, sourceBudget, ai, ...(publisher ? { publisher, publisherTrustHash: hash(demoPublisher) } : {}) });
+    return { sourceProvenance, ai, configHash, sourceIdentity: acquired, sourceBudget, publisher };
   } catch (error: any) {
     if (/^SCOPED_[A-Z0-9_]+$/.test(error?.message ?? "")) throw error;
+    if (/^DEMO_PUBLISHER_/.test(error?.message ?? "")) throw Error("SCOPED_PUBLISHER_SIGNATURE_INVALID");
     throw Error("SCOPED_VALIDATOR_SOURCE_UNAVAILABLE");
   } finally { await resolved?.cleanup?.(); }
 }

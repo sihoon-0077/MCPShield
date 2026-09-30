@@ -19,7 +19,7 @@ function sourcesIn(candidate) {
     if (typeof value === 'string') sources[path] = value;
     else if (value && typeof value === 'object') for (const [name, child] of Object.entries(value)) visit(child, path ? `${path}.${name}` : name);
   };
-  for (const key of ['tools', 'baselineTools', 'excerpts']) visit(candidate[key], key);
+  for (const key of ['tools', 'baselineTools', 'excerpts', ...(candidate.schemaVersion === 'mcpshield.scoped-semantic-input.v2.1' ? ['packageDiff'] : [])]) visit(candidate[key], key);
   return sources;
 }
 
