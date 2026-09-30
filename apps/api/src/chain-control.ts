@@ -36,10 +36,14 @@ export async function registerChainRoutes(api: FastifyInstance, store: ControlSt
     let trust = oci ? await checkedOciTrust(scan.result.ociRuntimeTrust, options.ociRuntime) : checkedPreparedTrust(scan.result.preparedRuntimeTrust, options.preparedRuntime);
     if (isNodePreparedPolicy(policy.document) && policy.document.profile !== preparedPolicy.profile) {
       const { binding } = checkedPreparedEvidence(bundle, release);
-      const current = await scopedPreparationContext(options, tenantId, policy.document, (await store.get(tenantId, "release", binding.sourceReleaseId))!);
+      const current = await scopedPreparationContext(options, tenantId, policy.document, (await store.get(tenantId, "release", binding.sourceReleaseId))!, store, scan.request.baselineReleaseId);
       if (!trust || trust.scopedConfigHash !== hash(current.frozen) || hash(binding.executionPolicy) !== hash(current.scopedReview.executionPolicy)) throw failure("SCOPED_CONFIG_CHANGED", 409);
       assertPublisherEvidence(bundle, current.publisher);
       trust = { ...trust, sourceProvenance: current.scopedReview.sourceProvenance };
+      if (Object.hasOwn(current.trusted, "baseline")) {
+        if (hash(trust.baseline) !== hash(current.trusted.baseline) || hash(trust.sourceIdentity) !== hash(current.trusted.sourceIdentity) ||
+          scan.request.scopedConfigHash !== hash(current.frozen)) throw failure("SCOPED_CONFIG_CHANGED", 409);
+      }
     }
     const verdict = policyVerdict(bundle, scan.result.scanResult, policy.document, trust);
     const context = await client.context(validator);

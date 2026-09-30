@@ -15,10 +15,10 @@ import { verifyEvidenceBundle } from "../../../services/scanner/src/evidence.mjs
 import { assertCanonicalScanResult } from "../../../services/scanner/src/protocol-schema.mjs";
 
 type Source = { releaseId: string; sourceType: "local" | "npm" | "tarball" | "oci"; locator: string };
-export type ValidatorSources = { schemaVersion: "mcpshield.validator-sources.v1"; sources: Source[] };
+export type ValidatorSources = { schemaVersion: "mcpshield.validator-sources.v1"; sources: Source[]; baselines?: Record<string, string | null> };
 const exact = (value: any, fields: string[]) => value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join() === fields.sort().join();
 export function checkedValidatorSources(value: any): ValidatorSources {
-  if (!exact(value, ["schemaVersion", "sources"]) || value.schemaVersion !== "mcpshield.validator-sources.v1" || !Array.isArray(value.sources)
+  if (!(exact(value, ["schemaVersion", "sources"]) || exact(value, ["schemaVersion", "sources", "baselines"])) || value.schemaVersion !== "mcpshield.validator-sources.v1" || !Array.isArray(value.sources)
     || value.sources.length < 1 || value.sources.length > 128 || Buffer.byteLength(JSON.stringify(value)) > 512 * 1024) throw Error("VALIDATOR_SOURCES_INVALID");
   for (const source of value.sources) {
     if (!exact(source, ["releaseId", "sourceType", "locator"]) || !/^0x[a-f0-9]{64}$/.test(source.releaseId)
@@ -33,6 +33,9 @@ export function checkedValidatorSources(value: any): ValidatorSources {
     if (source.sourceType === "oci" && !/@sha256:[a-f0-9]{64}$/.test(source.locator)) throw Error("VALIDATOR_OCI_DIGEST_REQUIRED");
   }
   if (new Set(value.sources.map((source: Source) => source.releaseId)).size !== value.sources.length) throw Error("VALIDATOR_SOURCE_DUPLICATE");
+  if (Object.hasOwn(value, "baselines") && (!value.baselines || typeof value.baselines !== "object" || Array.isArray(value.baselines) ||
+    Object.keys(value.baselines).length > 128 || Object.entries(value.baselines).some(([key, selected]) => !/^0x[a-f0-9]{64}$/.test(key) ||
+      selected !== null && (typeof selected !== "string" || !/^0x[a-f0-9]{64}$/.test(selected))))) throw Error("VALIDATOR_BASELINES_INVALID");
   return structuredClone(value);
 }
 export async function loadValidatorSources(filename: string) {
