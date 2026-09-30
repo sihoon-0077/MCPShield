@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
@@ -96,6 +96,14 @@ test("Node v2 policies preserve v1 hashes and require exact semantic mode withou
 
 test("publisher authority is operator-only, bound to actual bytes, and source authentication never means safe behavior", async () => {
   const f = await fixture(true), headers = { authorization: `Bearer ${token}` };
+  // Resolver snapshots are 0500 on POSIX. Alter only this test's owned copy,
+  // then restore its mode so rejection exercises the signature, not EACCES.
+  const tamperSnapshot = async (root: string) => {
+    const mode = (await stat(root)).mode & 0o777;
+    await chmod(root, mode | 0o200);
+    try { await writeFile(join(root, "extra.txt"), "synthetic post-acquisition mutation"); }
+    finally { await chmod(root, mode); }
+  };
   try {
     const entry = f.authority.publishers[f.source.artifactDigest];
     for (const edit of [
@@ -136,13 +144,15 @@ test("publisher authority is operator-only, bound to actual bytes, and source au
     assert.equal(bad.json().release.status, "UNVERIFIED", "a valid malicious signature is not an execution verdict");
     f.options.resolveArtifact = async input => {
       const acquired = await resolveArtifact(input);
-      await writeFile(join(acquired.artifactDir, "extra.txt"), "synthetic post-acquisition mutation");
-      return { ...acquired, metadata: { ...acquired.metadata, publisherVerification: { status: "VALID", verified: true } } };
+      try {
+        await tamperSnapshot(acquired.artifactDir);
+        return { ...acquired, metadata: { ...acquired.metadata, publisherVerification: { status: "VALID", verified: true } } };
+      } catch (error) { await acquired.cleanup(); throw error; }
     };
     const changed = await f.app.inject({ method: "POST", url: "/v1/releases/resolve", headers, payload: body });
     assert.equal(changed.statusCode, 400, changed.body);
     assert.equal(changed.json().error.code, "SCOPED_PUBLISHER_SIGNATURE_INVALID", "actual snapshot verification, never injected VALID");
-    await writeFile(join(f.source.artifactDir, "extra.txt"), "synthetic mutation");
+    await tamperSnapshot(f.source.artifactDir);
     await assert.rejects(scopedPreparationContext(f.options, tenant, policy, f.source), /PUBLISHER_SIGNATURE_INVALID/);
   } finally { await f.close(); }
 });
