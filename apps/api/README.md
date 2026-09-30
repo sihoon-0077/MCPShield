@@ -146,7 +146,9 @@ The real control-worker CLI writes tenant-isolated `scannerHeartbeat` records to
 the existing `cp_records` table every five seconds after each completed probe.
 Only its configured operator/admin tenants are covered. `--chain-only` writes no
 scanner heartbeat; static-only workers are LIMITED. Docker UP requires a successful
-bounded native `docker info` call reporting a Linux daemon, not an enabled flag.
+bounded native `docker version --format '{{json .Server.Os}}'` call reporting a Linux
+daemon, not the client OS or an enabled flag. It retains the 1500ms deadline and
+avoids `docker info`'s unrelated CLI-plugin discovery.
 This demonstrates worker/daemon availability, **not** successful image acquisition,
 scan completion, remote AI availability, or sufficient worker capacity.
 
