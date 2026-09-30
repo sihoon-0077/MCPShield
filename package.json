@@ -27,7 +27,7 @@
     "scan:malicious": "node services/scanner/src/cli.mjs --fixture demo/fixtures/mail-mcp-1.0.1 --baseline demo/fixtures/mail-mcp-1.0.0",
     "benchmark:security": "node benchmarks/evaluate.mjs --runs 10",
     "test": "npm run test:backend && npm run test:security && npm run test:gateway && npm run test:dashboard && npm run demo:smoke && npm run demo:mcp-e2e && npm run demo:live-smoke",
-    "test:backend": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "test:backend": "node --import tsx --test --test-concurrency=4 \"tests/**/*.test.ts\"",
     "test:security": "node --import tsx --test tests/security/*.test.mjs",
     "test:gateway": "npm test --workspace @mcpshield/gateway",
     "test:dashboard": "node --import tsx --test apps/dashboard/test/*.test.*",
