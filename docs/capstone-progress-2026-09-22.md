@@ -4,7 +4,7 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
-## 2026-10-01 KST — 게시자 증거 연결, 통합 검증 진행 중
+## 2026-10-01 KST — 게시자 증거 연결, 로컬 통합 통과·새 Linux 검증 대기
 
 기능 기준 `b8ec89d` + `4225255`, 화면 `235d52b` + `751cd5f` + `6edbe6a`, 계약 기록 `1e34a82`.
 기존 resolver의 Ed25519 검사를 API → prepared/scoped scan → 독립 validator → Dashboard에 연결했다. 새 서비스·DB·의존성은 추가하지 않았다.
@@ -16,13 +16,23 @@
 - 공개 `publisherVerification`은 등록/검사 시의 인증 증거다. 실시간 키 상태 또는 실행 허가가 아니며 catalogue에서 키를 지웠다고 기존 체인 승인이 자동 폐기되는 기능은 아니다. npm 공식 provenance가 아닌 `DEMO_ONLY_NOT_NPM_PROVENANCE`다.
 - 집중 backend 검사 36 PASS / 5 환경별 SKIP, 별도 reviewer 10 PASS / 0 SKIP 및 TypeScript PASS. 후속 collision 재검사 PASS. 화면 workflow/error 집중 9 PASS 및 forms 3 PASS. 이는 아래 전체 검사의 실패를 대체하지 않는다.
 
-### 최신 전체 검사에서 발견한 실패 — 해결 전 기록
+### 수정 및 같은 구현의 전체 로컬 재검증
+
+- `cbf7760`: 배포 helper와 CLI의 provider 수명 전체를 `finally`로 감싸고, fullcycle의 초기화 전부터 자원 정리 범위에 포함했다. 앱 생성 전 실패와 일부 cleanup 실패에서도 다른 소유 자원을 닫고 최초 오류는 `cause`에 보존한다. force `process.exit`·RPC timeout 확대·보안 기대값 변경은 없다.
+- 실제 setup 실패 회귀: 수정 전 열린 Ganache 때문에 child가 10초 후 강제 종료되어 실패했다. 수정 후 약 2.5초에 자연 종료했다. 별도 503 RPC helper/CLI 사례는 수정 전에도 자연 종료했으므로 provider retry hang을 직접 재현했다고 주장하지 않는다. 최종 diff의 독립 리뷰 통과.
+- `cbf7760` 기본 병렬 전체 검사에서 초기 RPC 실패는 한 번 더 발생했다(Backend155 PASS/1 FAIL/12 SKIP). 다만 이번에는 프로세스가 정상 종료하여 실패를 즉시 보고했다. 같은 SHA의 `--test-concurrency=4` 비교는 **156 PASS/0 FAIL/12 SKIP**, 약81.9초였다.
+- 이 PC의 Node24.13.0은 availableParallelism20, 기본 파일 worker19개다. Solidity 동기 컴파일과 내부 subprocess를 동시에 실행한다. `c53e016`은 기존 `test:backend`에 `--test-concurrency=4` 한 옵션만 추가했다. 동일38개 파일·파일 내부의 동시성 검사·모든 판정과 timeout을 유지한다. **동시 부하와 관련된 재현 차이이며 최초 transport 장애의 정확한 원인은 미확정**이다. 고정4가 저사양 runner의 기존 기본값보다 클 수 있어 Linux 결과를 별도 확인한다.
+- `c53e016`의 기본 **`npm test` exit0, 453 PASS / 0 FAIL / 35 SKIP**: Backend156/12, Security133/19, Gateway120/3, Dashboard44/1(PASS/SKIP). replay·실제 MCP·live 세 smoke 모두 PASS. 이어 `npm run build`와 built-form HTTP3 PASS/0 SKIP. 원래 실패를 삭제하거나 과거 성공으로 대체하지 않는다.
+- tracked secret 검사는 CI와 같은 Git/GNU grep POSIX ERE allowlist로 PASS했다. 처음 PowerShell 정규식으로 대조한 결과는 POSIX 문자클래스 차이로 synthetic fixture를 오탐하여 폐기했다. 원문 매칭 내용/비밀값은 출력하지 않았다.
+- 이 체크포인트는 아직 최신 Linux/Docker/PG 실행 결과가 아니다. 선행 `7df0453` Linux SUCCESS와 구분하며 **publisher native E2E·최종 RC 전체 완료는 미확정**이다.
+
+### 수정 전 전체 검사 실패 — 이력 보존
 
 `1e34a82`의 `npm test`는 **Backend 152 PASS / 1 FAIL / 12 SKIP, exit1**이다. 뒤 Security/Gateway/Dashboard와 smoke 단계는 실행되지 않았다. 과거의 445 PASS를 이 버전의 결과로 사용하지 않는다.
 
-`tests/api/v2-fullcycle.test.ts`가 초기 로컬 RPC 연결에서 `SERVICE_TRANSPORT_UNAVAILABLE`로 약 6.4초에 실패했지만, 초기화가 cleanup 영역 밖에 있어 Ganache/provider가 남아 테스트 부모가 약 848초 종료되지 않았다. 해당 테스트의 PID·부모·파일을 확인한 뒤 그 자식 프로세스 하나만 종료하여 숨겨진 오류 출력을 수집했다. 당시 체인은 block0, API/DB 준비 전이었다. publisher DB 경로의 교착으로 확인된 것은 아니다.
+`tests/api/v2-fullcycle.test.ts`가 초기 로컬 RPC 연결에서 `SERVICE_TRANSPORT_UNAVAILABLE`로 약 6.4초에 실패했지만, 초기화가 cleanup 영역 밖에 있어 Ganache listener가 남아 테스트 부모가 약 848초 종료되지 않았다. 해당 테스트의 PID·부모·파일을 확인한 뒤 그 자식 프로세스 하나만 종료하여 숨겨진 오류 출력을 수집했다. 당시 체인은 block0, API/DB 준비 전이었다. publisher DB 경로의 교착으로 확인된 것은 아니다.
 
-담당 backend가 초기화 실패 시 자원 정리와 제한 시간 내 subprocess 종료 회귀를 수정한다. RPC 보안/시간 제한이나 판정 기대값은 완화하지 않는다. 수정 후 전체 로컬 검사와 같은 새 SHA의 Linux/Docker 검증이 필요하다. **publisher native E2E·최종 RC 완료를 아직 주장하지 않는다.**
+이 실패 이후 수정·회귀 및 현재 결과는 바로 위 절에 기록했다. RPC 보안/시간 제한과 판정 기대값을 완화하지 않았다.
 
 ### 다음 안전한 구현과 외부 실증의 경계
 

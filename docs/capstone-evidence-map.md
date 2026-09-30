@@ -53,7 +53,7 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 
 ## 이번 실행 기록의 출처
 
-- 2026-10-01 최신 기록: [재개·publisher 연결·실패 경계](capstone-progress-2026-09-22.md). 선행 `7df0453` Linux CI는 전체 SUCCESS. 후속 `1e34a82` 로컬 전체 검사는 초기 RPC 연결 실패/cleanup 누락으로 Backend152 PASS/1 FAIL/12 SKIP이며 나머지 suite 미실행. 같은 새 RC 검수 전까지 전체 완료율을 확정하지 않는다.
+- 2026-10-01 최신 기록: [재개·publisher 연결·실패/수정 경계](capstone-progress-2026-09-22.md). 선행 `7df0453` Linux CI는 전체 SUCCESS. 후속 실패의 cleanup을 `cbf7760`, 파일 worker 상한을 `c53e016`에 반영했다. `c53e016` 기본 전체 검사453 PASS/0 FAIL/35 SKIP·세 smoke·production build·built HTTP forms3건 PASS. 새 publisher Linux/Docker 검증 전까지 같은 RC 완료율을 확정하지 않는다.
 
 - 수정 전: [PR CI 35696784563](https://github.com/sihoon-0077/MCPShield/actions/runs/35696784563), head `9a251ae`. Node 22 scoped scanner 및 scoped API 두 FAIL. Node 24와 PostgreSQL job 성공은 별도 경로의 증거다.
 - 최초 수정: `35019f6`의 두 authored fixture가 sink의 기존 JSON 계약을 사용하도록 수정. scanner/validator guard는 변경하지 않았다.

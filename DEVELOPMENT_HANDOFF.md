@@ -1,6 +1,6 @@
 # MCPShield 개발 인수인계 — 여기서 시작하세요
 
-> **가장 최근 상태 — 2026-10-01 KST:** publisher 실제 서명 증거의 API→prepared/scoped→독립 validator→화면 연결을 `b8ec89d`/`4225255` 및 `235d52b`/`751cd5f`/`6edbe6a`에 통합했다. [operator 계약](docs/interface-contract.md)과 [구현·검증 기록](docs/capstone-progress-2026-09-22.md)을 확인한다. 집중 검사는 성공했지만 `1e34a82` 전체 검사는 **Backend152 PASS/1 FAIL/12 SKIP**: 로컬 RPC 초기 연결 실패 후 테스트/provider 정리가 빠져 종료가 지연됐다. 뒤 suite는 실행되지 않았다. cleanup 수정 및 전체 재검증 진행 중이며 과거445 PASS/선행 Linux 성공을 최신 publisher 성공으로 사용하지 않는다. scoped baseline·3검증자·실제 AI·Base Sepolia·새 RC10회 반복/평가/산출물은 남아 있다. 아래는 날짜/SHA가 다른 체크포인트 기록이다.
+> **가장 최근 상태 — 2026-10-01 KST:** publisher 실제 서명 증거를 API→prepared/scoped→독립 validator→화면에 연결했다. 초기화 실패의 자원 정리 누락을 `cbf7760`에서 고치고, `c53e016`에서 backend 파일 worker를4개로 제한했다. 같은 구현의 기본 **`npm test` 453 PASS/0 FAIL/35 SKIP**, 세 smoke·production build·built-form HTTP3건 PASS. [operator 계약](docs/interface-contract.md)과 [실패 이력을 포함한 검증 기록](docs/capstone-progress-2026-09-22.md)을 확인한다. 선행 `7df0453` Linux SUCCESS는 새 publisher 버전의 성공을 뜻하지 않으며 **새 Linux/Docker/PG 검증은 대기**다. scoped baseline·3검증자·실제 AI·Base Sepolia·새 RC10회 반복/평가/산출물은 남아 있다. 아래는 날짜/SHA가 다른 체크포인트 기록이다.
 
 > **2026-09-22 캡스톤 범위 기준:** [캡스톤 최종 마스터 문서 v2.0](docs/MCPShield_캡스톤_최종_마스터문서_v2.0.md)을 먼저 읽는다. 기존 구현 최대 재사용, P0 40개 검수 단위와 원본 범위 매핑을 정의한다. 아래 구현률·CI·브랜치 상태는 기존 체크포인트 기록이며 새 CAP2 완료율이 아니다. 문서 작성은 구현·배포의 자동 재개를 뜻하지 않는다.
 
