@@ -31,6 +31,7 @@ test("control client explains failures while retaining codes, HTTP status and pr
     [400, "SCOPED_BASELINE_EVIDENCE_MISMATCH", "원래 증거가 일치하지 않습니다"],
     [400, "SCOPED_BASELINE_CLOSURE_MISMATCH", "설치 파일이 증거와 일치하지 않습니다"],
     [400, "SCOPED_BASELINE_DISCOVERY_INCOMPLETE", "도구 목록을 안전하게 확인하지 못했습니다"],
+    [409, "IDEMPOTENCY_CONFLICT", "이전 요청과 내용 또는 검사 설정이 다릅니다"],
     [429, "SCAN_QUOTA_EXCEEDED", "조직의 사용 한도"], [503, "CONTROL_PLANE_FAILED", "기록을 확인"],
   ] as const) {
     status = http; payload = { error: { code, message: code, details: { reason: "SYNTHETIC_PRIVATE_DIAGNOSTIC" } } };
