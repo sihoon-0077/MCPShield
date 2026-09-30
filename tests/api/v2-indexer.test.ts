@@ -110,27 +110,61 @@ test("V2 indexer: atomic audits, canonical order, duplicate/restart/reorg recove
         return replacement;
       } finally { other.close(); await otherStore.close(); }
     };
-    // A has actual old RPC logs/block in flight; B persists a real replacement fork first.
-    const staleSnapshot = await chain.provider.request({ method: "evm_snapshot", params: [] });
-    const staleRegistration = await (await registry.registerRelease(id("synthetic-stale-rpc"), digest, digest, surface)).wait();
-    await pause(300);
     let getBlock = relayer.provider.getBlock.bind(relayer.provider), replacement: any;
+    // Another indexer may commit the same canonical block while A waits; that is a safe duplicate.
+    const sameBlock = await (await registry.registerRelease(id("synthetic-same-block"), digest, digest, surface)).wait();
+    await pause(300);
+    let competed = false;
     relayer.provider.getBlock = async (...args) => {
       const captured = await getBlock(...args);
-      if (args[0] === staleRegistration.blockNumber && !replacement) {
-        assert.equal(await chain.provider.request({ method: "evm_revert", params: [staleSnapshot] }), true);
-        replacement = await competingReplacement("synthetic-competing-insert");
+      if (args[0] === sameBlock.blockNumber && !competed) {
+        competed = true;
+        const otherStore = await ControlStore.open(join(dir!, "control.sqlite"));
+        const other = new V2Relayer(rpc, deployment.releaseRegistry.address, 1337, accounts[0].secretKey);
+        try { assert.equal((await indexV2(otherStore, other, options)).observed, 1); }
+        finally { other.close(); await otherStore.close(); }
       }
       return captured;
     };
-    await assert.rejects(indexV2(store, relayer, options), /INDEXER_CHECKPOINT_CONFLICT/);
+    assert.equal((await indexV2(store, relayer, options)).observed, 0);
     relayer.provider.getBlock = getBlock;
-    assert.equal(replacement.blockNumber, staleRegistration.blockNumber);
-    assert.notEqual(replacement.blockHash, staleRegistration.blockHash);
-    assert.equal((await store.query("SELECT * FROM cp_v2_events WHERE transaction_hash = ?", [staleRegistration.hash])).length, 0);
-    assert.deepEqual((await store.query("SELECT transaction_hash FROM cp_v2_events WHERE block_number = ?", [replacement.blockNumber])).map(row => row.transaction_hash), [replacement.hash]);
-    assert.equal((await store.query("SELECT block_hash FROM cp_v2_blocks WHERE block_number = ?", [replacement.blockNumber]))[0].block_hash, replacement.blockHash);
-    await pause(300); await indexV2(store, relayer, options);
+    assert.equal(competed, true);
+    assert.equal((await store.query("SELECT * FROM cp_v2_events WHERE transaction_hash = ?", [sameBlock.hash])).length, 1);
+    assert.equal((await store.query("SELECT block_hash FROM cp_v2_blocks WHERE block_number = ?", [sameBlock.blockNumber]))[0].block_hash, sameBlock.blockHash);
+    // A has actual old RPC logs/block in flight; B persists a same-height or shorter replacement fork first.
+    for (const shorterFork of [false, true]) {
+      const staleSnapshot = await chain.provider.request({ method: "evm_snapshot", params: [] });
+      let oldParent: any;
+      if (shorterFork) {
+        oldParent = await (await registry.registerRelease(id("synthetic-old-parent"), digest, digest, surface)).wait();
+        await pause(300); await indexV2(store, relayer, options);
+      }
+      const staleRegistration = await (await registry.registerRelease(id(`synthetic-stale-rpc-${shorterFork}`), digest, digest, surface)).wait();
+      await pause(300); replacement = undefined;
+      getBlock = relayer.provider.getBlock.bind(relayer.provider);
+      relayer.provider.getBlock = async (...args) => {
+        const captured = await getBlock(...args);
+        if (args[0] === staleRegistration.blockNumber && !replacement) {
+          assert.equal(await chain.provider.request({ method: "evm_revert", params: [staleSnapshot] }), true);
+          replacement = await competingReplacement(`synthetic-competing-insert-${shorterFork}`);
+        }
+        return captured;
+      };
+      let rejected: unknown;
+      try { await indexV2(store, relayer, options); } catch (error) { rejected = error; }
+      relayer.provider.getBlock = getBlock;
+      assert.equal(replacement.blockNumber, staleRegistration.blockNumber - Number(shorterFork));
+      assert.notEqual(replacement.blockHash, (oldParent ?? staleRegistration).blockHash);
+      assert.equal((await store.query("SELECT * FROM cp_v2_events WHERE transaction_hash = ?", [staleRegistration.hash])).length, 0, "stale child cannot be committed over a replacement parent");
+      assert.ok(rejected instanceof Error && rejected.message === "INDEXER_CHECKPOINT_CONFLICT");
+      assert.deepEqual((await store.query("SELECT transaction_hash FROM cp_v2_events WHERE block_number = ?", [replacement.blockNumber])).map(row => row.transaction_hash), [replacement.hash]);
+      assert.equal((await store.query("SELECT block_hash FROM cp_v2_blocks WHERE block_number = ?", [replacement.blockNumber]))[0].block_hash, replacement.blockHash);
+      if (shorterFork) {
+        assert.equal((await store.query("SELECT * FROM cp_v2_events WHERE transaction_hash = ?", [oldParent.hash])).length, 0);
+        assert.equal((await store.query("SELECT * FROM cp_v2_blocks WHERE block_number = ?", [staleRegistration.blockNumber])).length, 0);
+      }
+      await pause(300); await indexV2(store, relayer, options);
+    }
     let snapshot = await chain.provider.request({ method: "evm_snapshot", params: [] });
     let quarantine = await (await registry.connect(await relayer.provider.getSigner(1)).quarantine(identity.releaseId, policyHash, root, id("CANARY_EXFILTRATION"), now + 600)).wait();
     await pause(300);
