@@ -53,6 +53,7 @@ export class ControlStore {
     const extensions = [
       { name: "005_chain_action_domain", column: "registry_address", sql: migration("005_chain_action_domain") },
       { name: "008_submission_trace", column: "submission_trace_parent", sql: migration("008_submission_trace") },
+      { name: "011_chain_retry_budget", column: "attempts", sql: migration("011_chain_retry_budget") },
     ];
     if (store.sqlite) {
       store.sqlite.exec("BEGIN IMMEDIATE");

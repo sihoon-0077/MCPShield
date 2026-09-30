@@ -28,21 +28,25 @@ import { artifactDigest, loadManifest, toolSurfaceHash } from "../../services/sc
 // @ts-expect-error Shared scanner/Gateway are ESM JavaScript.
 import { AdmissionBlockedError, getAdmission, runArtifact } from "../../apps/gateway/src/index.mjs";
 
-async function fullCycle(realDocker: boolean) {
+async function fullCycle(realDocker: boolean, expectedChainId = 1337) {
   const chain: any = ganache.server({ logging: { quiet: true }, wallet: { deterministic: true, totalAccounts: 5 } });
+  const owned: { app?: Awaited<ReturnType<typeof buildApp>>; relayer?: V2Relayer; store?: ControlStore; reader?: ReturnType<typeof v2ChainReader>; dir?: string } = {};
+  const originalMode = process.env.CONTROL_SANDBOX_MODE;
+  let primaryFailure: unknown;
+  try {
   await chain.listen(0, "127.0.0.1");
   const rpc = `http://127.0.0.1:${chain.address().port}`;
   const accounts = Object.values(chain.provider.getInitialAccounts()) as {secretKey: string}[];
   const validators = accounts.slice(1, 4).map((a) => new Wallet(a.secretKey));
-  const deployment = await deployV2(rpc, accounts[0].secretKey, validators.map((v) => v.address), 1337);
-  const relayer = new V2Relayer(rpc, deployment.releaseRegistry.address, 1337, accounts[0].secretKey);
-  const dir = await mkdtemp(join(tmpdir(), "mcpshield-v2-test-"));
-  const store = await ControlStore.open(join(dir, "control.sqlite"));
+  const deployment = await deployV2(rpc, accounts[0].secretKey, validators.map((v) => v.address), expectedChainId);
+  const relayer = owned.relayer = new V2Relayer(rpc, deployment.releaseRegistry.address, 1337, accounts[0].secretKey);
+  const dir = owned.dir = await mkdtemp(join(tmpdir(), "mcpshield-v2-test-"));
+  const store = owned.store = await ControlStore.open(join(dir, "control.sqlite"));
   const key = generateKeyPairSync("ed25519"), token = "synthetic-v2-test-admin-token";
   const options: ControlOptions = { store, credentials: [{ token, tenantId: "test-team", role: "admin" }],
     artifactPath: join(dir, "artifacts"), evidencePath: join(dir, "evidence"), evidenceKey: "9".repeat(64),
     signingKey: key.privateKey.export({ format: "pem", type: "pkcs8" }).toString(), signingKeyId: "v2-integration",
-    v2Relayer: relayer, chainDecision: v2ChainReader({ rpcUrls: [rpc], registryContract: deployment.releaseRegistry.address, chainId: 1337, confirmations: 1 }) };
+    v2Relayer: relayer, chainDecision: owned.reader = v2ChainReader({ rpcUrls: [rpc], registryContract: deployment.releaseRegistry.address, chainId: 1337, confirmations: 1 }) };
   if (!realDocker) options.scanArtifact = async ({ artifactDir }) => {
     // Explicit report test double: the regular test proves trust-plane/outbox logic; the opt-in case executes Docker.
     const manifest = await loadManifest(artifactDir), malicious = manifest.version === "1.0.1";
@@ -51,9 +55,8 @@ async function fullCycle(realDocker: boolean) {
     return { result, bundle: createEvidenceBundle({ "report.json": { ...result, scope: "STATIC_AI_SANDBOX" },
       "sandbox/events.json": { mode: "DOCKER", complete: true }, "sandbox/mcp.json": { complete: true }, "static/findings.json": [], "semantic/model-output.json": { findings: [] } }) };
   };
-  const originalMode = process.env.CONTROL_SANDBOX_MODE;
   if (realDocker) process.env.CONTROL_SANDBOX_MODE = "docker";
-  const app = await buildApp({ adminApiToken: "unused-legacy-admin", scannerApiToken: "unused-legacy-scan", controlPlane: options });
+  const app = owned.app = await buildApp({ adminApiToken: "unused-legacy-admin", scannerApiToken: "unused-legacy-scan", controlPlane: options });
   await app.listen({ host: "127.0.0.1", port: 0 });
   const apiUrl = `http://127.0.0.1:${(app.server.address() as any).port}`, auth = { authorization: `Bearer ${token}` };
   const post = async (url: string, payload: any = {}, headers = {}) => {
@@ -81,7 +84,6 @@ async function fullCycle(realDocker: boolean) {
     assert.equal((await post(`/v1/validator/${quarantine ? "quarantines" : "attestations"}`, { scanId, payload: template.payload, signature })).action.actionId, response.action.actionId);
     return { template, signature };
   };
-  try {
     await settle((await post(`/v1/policies/${hash(defaultPolicy)}/publish`)).action.actionId);
     const prepareRelease = async (version: string) => {
       const release = (await post("/v1/releases/resolve", { sourceType: "fixture", locator: `mail-mcp-${version}` })).release;
@@ -210,7 +212,10 @@ async function fullCycle(realDocker: boolean) {
       assert.equal(await runChainActionOnce(store, relayer), false, "old registry must not claim a new registry action");
       await runChainActionOnce(store, otherRegistry);
       assert.equal((await otherRegistry.registry.releases(safe.release.releaseId)).exists, true);
-      await pause(300); await runChainActionOnce(store, otherRegistry);
+      const [waiting] = await store.query("SELECT next_attempt_at FROM cp_chain_actions WHERE action_id = ?", [anotherAction.actionId]);
+      const delay = waiting.next_attempt_at ? Math.max(300, Date.parse(waiting.next_attempt_at) - Date.now() + 25) : 300;
+      assert.ok(delay <= 5000, "first receipt reconciliation must remain within the test's bounded retry window");
+      await pause(delay); await runChainActionOnce(store, otherRegistry);
       const [scoped] = await store.query("SELECT state FROM cp_chain_actions WHERE action_id = ?", [anotherAction.actionId]);
       assert.equal(scoped.state, "COMPLETED");
     } finally { otherRegistry.close(); }
@@ -220,12 +225,21 @@ async function fullCycle(realDocker: boolean) {
     await indexV2(store, relayer, { deploymentBlock: deployment.releaseRegistry.blockNumber, confirmations: 1 });
     assert.equal((await store.get("test-team", "release", bad.release.releaseId))?.status, "UNVERIFIED");
     assert.ok((await store.events("test-team", bad.release.releaseId)).some((event) => event.eventName === "chain.event.orphaned"));
-  } finally {
+  } catch (error) { primaryFailure = error; throw error; }
+  finally {
     if (originalMode === undefined) delete process.env.CONTROL_SANDBOX_MODE; else process.env.CONTROL_SANDBOX_MODE = originalMode;
-    await app.close(); await chain.close(); await rm(dir, { recursive: true, force: true });
+    // buildApp owns these hooks only after it returns. A failed setup/close must
+    // not strand the other owned providers, Ganache listener or temporary files.
+    const cleanup: PromiseSettledResult<unknown>[] = await Promise.allSettled([Promise.resolve().then(() => owned.app?.close())]);
+    const fallback = owned.app && cleanup[0].status === "fulfilled" ? [] : [() => owned.relayer?.close(), () => owned.reader?.close(), () => owned.store?.close()];
+    cleanup.push(...await Promise.allSettled([...fallback, () => chain.close()].map(close => Promise.resolve().then(close))));
+    if (owned.dir) cleanup.push(...await Promise.allSettled([rm(owned.dir, { recursive: true, force: true })]));
+    const failures = cleanup.filter(item => item.status === "rejected");
+    if (failures.length) throw new AggregateError(failures.map(item => item.reason), "FULLCYCLE_CLEANUP_FAILED", { cause: primaryFailure });
   }
 }
 test("V2 genuine EVM outbox/quorum/quarantine and two signed Gateway decisions (report fixture)", { timeout: 120000 }, () => fullCycle(false));
+test("V2 early setup failure closes owned listeners before any database or app exists", () => assert.rejects(fullCycle(false, 1338), /CHAIN_ID_MISMATCH/));
 test("V2 real Docker scan to EVM quorum and two-Gateway blocking", { timeout: 300000, skip: process.env.MCPSHIELD_DOCKER_TESTS !== "1" }, () => fullCycle(true));
 // The subprocess OTLP contract test must flush the final batch after all real API/EVM work.
 if (process.env.MCPSHIELD_FULLCYCLE_OTLP_TEST === "1") after(() => shutdownTelemetry());

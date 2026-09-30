@@ -35,8 +35,10 @@ export async function withSourceProvenance<T extends object>(run: () => Promise<
 
 async function main() {
   const { values } = parseArgs({ options: { requests: { type: "string" }, concurrency: { type: "string" }, identities: { type: "string" },
-    profile: { type: "string", default: "smoke" }, plan: { type: "boolean", default: false }, "matrix-child": { type: "boolean", default: false }, "full-matrix": { type: "boolean", default: false } } });
+    profile: { type: "string", default: "smoke" }, plan: { type: "boolean", default: false }, "raw-samples": { type: "boolean", default: false },
+    "matrix-child": { type: "boolean", default: false }, "full-matrix": { type: "boolean", default: false } } });
   if (!["smoke", "matrix"].includes(values.profile)) throw Error("Profile must be smoke or matrix");
+  if (values["raw-samples"] && (values.profile !== "smoke" || values.plan)) throw Error("--raw-samples supports measured smoke only; matrix and plan remain aggregate-only");
   const fullMatrix = values["full-matrix"];
   if (fullMatrix && (values.profile !== "matrix" || values.requests !== undefined)) throw Error("--full-matrix requires --profile matrix and fixes hot=1000/uniform=10000 requests; omit --requests");
   const options = { requests: Number(values.requests ?? 40), concurrency: Number(values.concurrency ?? (fullMatrix ? 16 : 4)),
@@ -66,7 +68,7 @@ async function main() {
   const result = await withSourceProvenance(async () => {
     // Snapshot before importing the code that will actually be measured.
     const { measureAdmission, measureAdmissionMatrix } = await import("../../tests/integration/admission-measure.js");
-    return values.profile === "matrix" ? measureAdmissionMatrix(options) : measureAdmission(options);
+    return values.profile === "matrix" ? measureAdmissionMatrix(options) : measureAdmission({ ...options, rawSamples: values["raw-samples"] });
   });
   console.log(JSON.stringify(result, null, 2));
   if (result.status === "PARTIAL_FAILED") process.exitCode = 1;

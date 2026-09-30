@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { hash } from "../../api/src/control-plane.js";
 import { policyVerdict, preparedPolicy, validPolicy, isNodePreparedPolicy } from "../../api/src/control-policy.js";
 import { checkedScopedSource, type ScopedValidatorConfig } from "./scoped-verification.js";
-import { scopedMetadata } from "../../api/src/scoped-config.js";
+import { scopedMetadata, publisherDocuments, assertPublisherEvidence } from "../../api/src/scoped-config.js";
 import { checkedPreparedEvidence } from "../../api/src/prepared-evidence.js";
 import { checkedAiDisclosurePolicy, inspectPreparedRuntime, type PreparedConfig } from "../../api/src/prepared-config.js";
 import { checkedServiceUrl } from "../../../packages/contracts-sdk/src/transport.js";
@@ -35,6 +35,8 @@ export function comparePreparedScans(original: any, independent: any, policy: an
   const first = checkedPreparedEvidence(original.bundle), second = checkedPreparedEvidence(independent.bundle);
   if (hash(first.binding) !== hash(second.binding) || hash(first.source) !== hash(second.source)
     || original.result.scanId === independent.result.scanId) throw new Error("INDEPENDENT_SCAN_IDENTITY_MISMATCH");
+  assertPublisherEvidence(original.bundle, trusted.publisher);
+  assertPublisherEvidence(independent.bundle, trusted.publisher);
   const originalVerdict = policyVerdict(original.bundle, original.result, policy, trusted), independentVerdict = policyVerdict(independent.bundle, independent.result, policy, trusted);
   if (originalVerdict === "ABSTAIN" || originalVerdict !== independentVerdict
     || hash(deterministicScopes(original.result)) !== hash(deterministicScopes(independent.result))) throw new Error("INDEPENDENT_SCAN_DID_NOT_CONFIRM");
@@ -47,7 +49,8 @@ export async function independentlyScanPrepared(original: any, policy: any, conf
   const scoped = policy.profile !== preparedPolicy.profile ? await checkedScopedSource(policy, binding, source, scopedConfig) : undefined;
   const localAi = scoped?.ai ?? checkedPreparedValidatorAi(ai);
   const trusted = await inspectPreparedRuntime(binding, config);
-  if (scoped) { trusted.sourceProvenance = scoped.sourceProvenance; trusted.sourceBudget = scoped.sourceBudget; }
+  if (scoped) { trusted.sourceProvenance = scoped.sourceProvenance; trusted.sourceBudget = scoped.sourceBudget; trusted.publisher = scoped.publisher; }
+  assertPublisherEvidence(original.bundle, scoped?.publisher);
   if (policyVerdict(original.bundle, original.result, policy, trusted) === "ABSTAIN") throw new Error("INDEPENDENT_ORIGINAL_NOT_APPROVABLE");
   // Fresh local AI plan + independent analyzer/critic and actual Docker runs. No API probe/model/url or advertised execution flag is accepted.
   const result = await scanPreparedRuntime({ descriptor: binding.descriptor, expectedDescriptorDigest: binding.descriptorDigest,
@@ -55,7 +58,7 @@ export async function independentlyScanPrepared(original: any, policy: any, conf
     ...(scoped ? { scopedReview: { executionPolicy: binding.executionPolicy, sourceProvenance: scoped.sourceProvenance } } : {}) });
   if (!result.binding || !result.result || !result.bundle) throw new Error("INDEPENDENT_SCAN_INCOMPLETE");
   const bundle = createEvidenceBundle({ ...Object.fromEntries(Object.entries(result.bundle.files).map(([path, content]) => [path, JSON.parse(content as string)])),
-    "prepared/source-identity.json": source });
+    "prepared/source-identity.json": source, ...publisherDocuments(result.bundle, scoped?.publisher) });
   const independent = { result: result.result, bundle };
   if (scoped) {
     const current = await checkedScopedSource(policy, binding, source, scopedConfig);
@@ -63,6 +66,7 @@ export async function independentlyScanPrepared(original: any, policy: any, conf
     trusted.scopedVerificationConfigHash = current.configHash;
     trusted.sourceProvenance = current.sourceProvenance;
     trusted.sourceBudget = current.sourceBudget;
+    trusted.publisher = current.publisher;
   }
   return { trusted, independent, comparison: comparePreparedScans(original, independent, policy, trusted) };
 }

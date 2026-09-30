@@ -210,6 +210,38 @@ before broadcast and retained for identical rebroadcast after uncertain outcomes
 An expiring SQL lease serializes each relayer's nonce stream. Reorg reconciliation
 rewinds missing receipts and indexer checkpoints, appending orphan notices to history.
 
+V2 chain retries use the existing SQL outbox, not a new broker. The fixed capstone
+budget (`chainRetryBudget` in `src/chain-outbox.ts`) is 12 execution attempts,
+with no new attempt after 5 minutes from the first claim. In-flight RPC calls retain
+their transport timeouts; this is a scheduling deadline, not transaction cancellation.
+Failures and pending receipts back off exponentially from 1 second to 30 seconds.
+Attempts are persisted before RPC work, so restarting a worker does not reset them.
+The claim starts the elapsed-time budget; a crash before the separate attempt increment
+consumes lease/time but no RPC attempt, since no external work has started yet.
+Malformed/explicitly rejected unsigned actions become `FAILED` without retry;
+transient failures or unconfirmed receipts exhaust into `DEAD_LETTER`. A genuine
+receipt reorg starts a new bounded recovery cycle for the same signed transaction.
+
+Inspect `/v1/chain/actions/:actionId` for `attempts`, `retryStartedAt`, `nextAttemptAt`,
+`retryBudget`, and the last safe `errorCode`; `/v1/events` records
+`chain.action.retry_scheduled`, `chain.action.failed`, and `chain.action.dead_letter`.
+DLQ is a work queue outcome, not proof that a submitted transaction failed on chain.
+The raw signed transaction/hash/nonce are retained but raw bytes are never returned
+by this API. An unresolved signed DLQ transaction pauses that account's writes across
+registry domains; backoff also prevents another tenant from skipping its nonce head.
+Other relayer accounts continue independently.
+Historical unsigned rows with an unknown registry are not adopted or allowed to starve
+known-domain work. A signed/reserved legacy row with no domain is stopped explicitly
+with `CHAIN_REGISTRY_UNRESOLVED`; its signed bytes are retained for operator review.
+
+No blind DLQ retry endpoint is provided. Pause the affected worker and inspect the
+exact chain ID/registry/transaction hash/nonce with the configured RPC. A confirmed
+receipt must be reconciled before clearing the pause; an absent/uncertain receipt
+must not cause nonce reuse, a new signature, or a fabricated success. Keep admission
+fail-closed, record the operator's resolution, and preserve the original outbox row.
+Do not delete a stuck action to make later writes proceed. If a repair cannot be
+proved safe, leave that account paused for manual investigation.
+
 `node --import tsx apps/validator/src/v2.ts` independently reacquires source and reruns
 the local scanner before signing; checking a supplied Merkle root alone is insufficient.
 Supply `CONTROL_API_URL`, `CONTROL_API_TOKEN`, `CONTROL_SCAN_ID`, and a private
@@ -527,7 +559,8 @@ API and worker require:
   Tier 3 requires independently transmitted distinct OpenAI model selections and
   distinct nonempty response model identities, not merely different aliases.
 
-The catalogue file has exactly this local-only shape (digest shown as a placeholder):
+The unsigned-compatible catalogue has this exact local-only shape; the only
+optional additional top-level field is `publishers` below (digest is a placeholder):
 
 ```json
 {
@@ -568,11 +601,60 @@ performs a fresh scoped review and Docker run. It reloads/reacquires before sign
 API-supplied provenance, an absent independent scan, changed source/archive/mode,
 over-budget source or mismatched verdict cannot authorize a signature.
 
-Public summaries include only policy-derived `semanticEvidenceMode` and fixed
+Public scoped-review summaries include policy-derived `semanticEvidenceMode` and fixed
 `providerQuality: PROVIDER_QUALITY_NOT_MEASURED`. The mode does **not** prove that a
 provider request happened: budget/config failures can cause zero requests. Raw
 review execution evidence stays encrypted and operator-only. Paths, provider keys,
 catalogues, runtime trust and private source budgets are not public projections.
+
+#### Optional operator-pinned demo publisher
+
+The same catalogue may add `publishers`, a map keyed by the **exact original
+source tree digest**, not the download archive or prepared image digest. Each
+entry has exactly `{publisherId, pinnedPublicKey, manifest}`: `pinnedPublicKey`
+is an Ed25519 SPKI PEM, and `manifest` is the existing
+`mcpshield.demo-publisher-signature.v1` signed document. The entire catalogue
+retains the 512 KiB / 128-artifact limits; at most 128 publisher entries are
+allowed and each must reference a declared artifact. Keys and manifests are
+installed by each operator, never accepted from request bodies or candidate metadata.
+
+An absent `publishers` section explicitly preserves unsigned configuration. If
+the section exists, an empty map or a missing selected digest is
+`SCOPED_PUBLISHER_SIGNATURE_REQUIRED`, not unsigned fallback. Actual bounded
+source bytes plus package name/version are verified using the existing resolver's
+operator-only argument. Invalid pins/signatures/identity return fixed
+`SCOPED_PUBLISHER_SIGNATURE_INVALID`; configured OCI sources are unsupported.
+The original five-field source identity and four-field provenance remain unchanged.
+
+Initial preparation and rescans store `{manifest,verification}` in the separate
+tenant-encrypted Merkle leaf `prepared/publisher.json`. The frozen configuration
+also commits the proof and operator trust hash. Removing/replacing authority
+between queueing, execution and final persistence fails closed. Each validator
+reacquires its own source and reads its own catalogue before its independent run
+and again before signing; it compares both bundles against its locally verified
+proof. Missing/forged or signed-vs-unsigned evidence fails with
+`SCOPED_PUBLISHER_EVIDENCE_MISMATCH`. API `VALID` metadata is never authority.
+
+Resolve and release list/detail responses, plus scoped scan results, expose only
+`publisherVerification:{status,purpose,behaviorSafety,publisherId?,sourceArtifactDigest?,publicKeyFingerprint?}`.
+Status is `VERIFIED` or `NOT_CONFIGURED`; purpose is always
+`DEMO_ONLY_NOT_NPM_PROVENANCE` and behaviorSafety is always `NOT_ASSESSED`.
+The three optional identity fields occur only when verified. Older records may
+lack the projection. No raw PEM, manifest, signature or private path is public.
+This is a **historical source-authentication snapshot**, not current admission:
+one publisher may sign both safe and malicious bytes, and signature `VERIFIED`
+can coexist with scan `FAIL` and release `REVOKED`. Removing the catalogue does
+not erase past evidence or revoke a chain release; normal admission/quorum rules
+still apply. Prepare a new source under its explicit authority rather than
+relabeling signed evidence as unsigned.
+
+If a preparation produces an already stored exact runtime identity, its publisher
+proof must match that release's original encrypted proof. Same-authority repeats
+are allowed; unsigned→signed, signature removal or publisher-key rotation produces
+`PREPARED_RELEASE_COLLISION` and rolls back the new child scan. Only the new
+untransferred image tag is cleaned up; original proof, chain status and ownership
+are preserved. Silent historical-identity upgrades and migration tooling are
+outside this batch.
 
 Rollback: disable the separate scoped configuration or deprecate its policy; keep
 existing v1 configuration unchanged. Do not relabel existing v2 evidence as v1.
@@ -586,6 +668,7 @@ The separate real Linux fullcycle is
 `node --import tsx --test --test-name-pattern="scoped Node v2 source" tests/api/prepared-fullcycle.test.ts`
 with `MCPSHIELD_DOCKER_TESTS=1`, `MCPSHIELD_SCOPED_DOCKER_TESTS=1` and a pinned local
 `MCPSHIELD_RUNTIME_BUILDER_IMAGE`. It uses a naturally sized authored mailbox,
-separate local catalogues, two real validator subprocesses, local EVM quorum and
+separate local catalogues with the same ephemeral publisher signing both complete
+safe/malicious sources, two real validator subprocesses, local EVM quorum and
 Gateway allow/revoke with Docker create/start evidence. No paid provider, actual
 customer data or public-registry provenance is claimed.

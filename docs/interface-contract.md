@@ -160,7 +160,44 @@ Removing a declaration fails at the next check, not by cancelling a provider req
 that was already sent. Ordinary scan and appeal transactions reject mismatched or
 absent v2 evidence modes before consuming queue quota or the appeal rescan slot.
 
-Public Node v2 summaries reuse only `semanticEvidenceMode` and fixed
+The same local catalogue may additionally contain an operator-owned `publishers`
+object keyed by the exact original tree digest. Each value has exactly
+`{publisherId, pinnedPublicKey, manifest}` using the existing Ed25519 demo publisher
+manifest. No API request, candidate package or API report may supply trust keys.
+When the section exists, an absent source entry or invalid signature is an error,
+not an unsigned fallback. The existing catalogue size/count limits still apply.
+An absent section preserves the unsigned compatibility path, explicitly without
+publisher verification; it does not mean npm provenance was checked.
+
+The API verifies actual acquired source bytes before projecting publisher evidence.
+Scoped prepare/rescan and validator reacquisition repeat verification against their
+own operator configuration. Frozen configuration/configHash binds the selected
+publisher trust, and encrypted Merkle evidence uses a separate
+`prepared/publisher.json` leaf. Existing source-identity five fields, provenance
+four fields, execution identity and behavior policy remain unchanged. Independent
+verification compares the original and independently reconstructed publisher leaf;
+missing, substituted or configured/unconfigured evidence cannot be silently accepted.
+Changing/removing trust during a job cannot reuse its earlier configuration hash.
+If preparation produces an already stored scoped execution identity, its saved
+publisher leaf must also match the freshly verified authority. A differing proof
+is `PREPARED_RELEASE_COLLISION`: the transaction rolls back rather than combining
+a new scan with an old publisher record. Existing evidence, image ownership and
+chain state are not rewritten. Repeating the identical authority remains valid;
+automatic migration of historical unsigned or differently signed identities is
+outside this additive connection.
+
+Public source/prepared release and scoped scan summaries may add
+`publisherVerification` with `status: VERIFIED|NOT_CONFIGURED`,
+`purpose: DEMO_ONLY_NOT_NPM_PROVENANCE`, `behaviorSafety: NOT_ASSESSED`.
+Only VERIFIED adds `publisherId`, `sourceArtifactDigest`, `publicKeyFingerprint`.
+Key/manifest bytes, local paths and trust configuration stay private. This is the
+authentication evidence at registration/preparation/scan time, not a live key-status
+or execution-approval query. The UI identifies API-provided test publisher evidence,
+keeps FAIL/REVOKED visible and does not claim independent browser verification.
+A correctly signed malicious update must still receive its independent behavior
+FAIL and Gateway BLOCK; signature validity never grants PASS or ALLOW.
+
+Public Node v2 semantic summaries reuse `semanticEvidenceMode` and fixed
 `providerQuality: "PROVIDER_QUALITY_NOT_MEASURED"`, derived from the validated policy.
 Paths, provider configuration, credentials and runtime trust objects stay private.
 UI policy selection must match both v2 profile and evidence mode; absent/unknown

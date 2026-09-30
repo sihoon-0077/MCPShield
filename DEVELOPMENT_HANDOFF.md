@@ -1,8 +1,12 @@
 # MCPShield 개발 인수인계 — 여기서 시작하세요
 
+> **가장 최근 상태 — 2026-10-01 KST:** publisher 실제 서명 증거를 API→prepared/scoped→독립 validator→화면에 연결했다. 초기화 실패의 자원 정리 누락을 `cbf7760`에서 고치고, `c53e016`에서 backend 파일 worker를4개로 제한했다. 같은 구현의 기본 **`npm test` 453 PASS/0 FAIL/35 SKIP**, 세 smoke·production build·built-form HTTP3건 PASS. [operator 계약](docs/interface-contract.md)과 [실패 이력을 포함한 검증 기록](docs/capstone-progress-2026-09-22.md)을 확인한다. 선행 `7df0453` Linux SUCCESS는 새 publisher 버전의 성공을 뜻하지 않으며 **새 Linux/Docker/PG 검증은 대기**다. scoped baseline·3검증자·실제 AI·Base Sepolia·새 RC10회 반복/평가/산출물은 남아 있다. 아래는 날짜/SHA가 다른 체크포인트 기록이다.
+
 > **2026-09-22 캡스톤 범위 기준:** [캡스톤 최종 마스터 문서 v2.0](docs/MCPShield_캡스톤_최종_마스터문서_v2.0.md)을 먼저 읽는다. 기존 구현 최대 재사용, P0 40개 검수 단위와 원본 범위 매핑을 정의한다. 아래 구현률·CI·브랜치 상태는 기존 체크포인트 기록이며 새 CAP2 완료율이 아니다. 문서 작성은 구현·배포의 자동 재개를 뜻하지 않는다.
 
 > **후속 사용자 승인: 구현 재개.** 2026-09-22 사용자가 v2.0 구현과 기존 50% 중단 조건 해제를 요청했다. 현재 작업은 [캡스톤 실행 계획](docs/capstone-implementation-plan.md)을 따른다. 아래 9월 19일 중단/미푸시 표시는 당시 이력이며 현재 재개 지시를 취소하지 않는다. 모델·체인·배포의 외부 권한 경계는 유지한다.
+
+> **최신 구현 체크포인트(2026-10-01 KST):** [캡스톤 v2.0 구현 결과·재개 기록](docs/capstone-progress-2026-09-22.md). `8569025`에서 기존 admission 측정기에 제한된 opt-in 원자료를 추가했다. 로컬 **445 PASS / 0 FAIL / 35 SKIP**, 세 smoke PASS. [800건 원자료](benchmarks/results/admission-smoke-100-8569025-2026-10-01.json)는 깨끗한 해당 SHA에서 측정하고 집계와 대조했다. hash/spawn·테스트넷·정식 RC 평가는 포함하지 않는다. 선행 `7df0453`의 [Linux CI36732591060](https://github.com/sihoon-0077/MCPShield/actions/runs/36732591060)는 **전체 SUCCESS**: Node22·Node24·실제 PostgreSQL, 필수 native Docker·Compose·관측성 검사가 통과했다. dispatch 전용 10회 반복/이미지 서명 job은 SKIP이며 후속 변경의 CI 성공으로 전용하지 않는다. 실제 모델·테스트넷·게시자 전체 pipeline 연결은 미완료다. 다음 작업의 40개 검수 진입점은 [증거 지도](docs/capstone-evidence-map.md)다. 아래 본문의 구현률/중단/브랜치는 **9월 19일 역사 기록**이다.
 
 기준일: **2026-09-19 KST**. 기능·CI 기준: **`7bac78a` (`master/main`)**. 이후 변경은 감사 문서·집계기다.
 9월 10일 이후 보안·백엔드·프론트엔드 후속 변경과 종합 상태 점검을 통합했다. 최신 전체 Linux Docker 검증과 공개 배포는 아직 완료되지 않았다.

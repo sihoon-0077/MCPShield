@@ -4,14 +4,15 @@ import { controlApi } from "../lib/control-client";
 import { SCOPED_NODE_PROFILE, validateScopedReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
 
 export type SemanticEvidenceScope = { semanticEvidenceMode?: string; providerQuality?: string };
-export type Release = SemanticEvidenceScope & { releaseId: string; legacyReleaseId: string; toolId: string; version: string; status: string; artifactDigest: string; toolSurfaceHash: string; policyHash: string | null; reportRoot: string | null; validUntil: string | null; sourceType?: string; runtimeProfile?: string; sourceReleaseId?: string; chainUnavailable?: boolean; chain: null | { chainId: number; registryContract: string; observedBlock: number; blockHash: string; txHash: string | null } };
+export type PublisherVerification = { status: string; purpose: string; behaviorSafety: string; publisherId?: string; sourceArtifactDigest?: string; publicKeyFingerprint?: string };
+export type Release = SemanticEvidenceScope & { releaseId: string; legacyReleaseId: string; toolId: string; version: string; status: string; artifactDigest: string; toolSurfaceHash: string; policyHash: string | null; reportRoot: string | null; validUntil: string | null; sourceType?: string; runtimeProfile?: string; sourceReleaseId?: string; publisherVerification?: PublisherVerification; chainUnavailable?: boolean; chain: null | { chainId: number; registryContract: string; observedBlock: number; blockHash: string; txHash: string | null } };
 export type Scan = { scanId: string; releaseId: string; policyHash: string; appealId?: string | null; status: string; stage: string; attempts: number; maxAttempts: number; traceId: string; createdAt: string; updatedAt: string; nextAttemptAt: string; lastError?: unknown; result?: SemanticEvidenceScope & { state?: string; verdict?: string; validUntil?: string; reportRoot?: string; scanResult?: { scanStatus?: string } } };
-export type ChainAction = { actionId: string; releaseId: string | null; kind: string; status: string; txHash: string | null; errorCode: string | null; chainId: number; registryAddress: string; createdAt: string; updatedAt: string };
+export type ChainAction = { actionId: string; releaseId: string | null; kind: string; status: string; txHash: string | null; errorCode: string | null; chainId: number; registryAddress: string; createdAt: string; updatedAt: string; attempts?: number; nextAttemptAt?: string | null; retryBudget?: { maxAttempts: number } };
 export type Admission = { decision: string; status: string; reasonCode: string; releaseId: string; policyHash: string; source: string; checkedAt: string; traceId: string; signature?: string; snapshot?: { expiresAt: string; observedBlock: number; blockHash: string; chainId: number; registryContract: string; operationClass: string } };
 const date = (value?: string | null) => value ? new Date(value).toLocaleString("ko-KR") : "기록 없음";
 const short = (value?: string | null) => value ? `${value.slice(0, 12)}…${value.slice(-8)}` : "없음";
 const actionName: Record<string, string> = { REGISTER_RELEASE: "릴리스 등록", PUBLISH_POLICY: "정책 공개", DEPRECATE_POLICY: "정책 폐기", ATTEST: "검증자 서명 제출", QUARANTINE: "긴급 격리", SYNC_EXPIRY: "만료 반영" };
-const actionStatus: Record<string, string> = { NEW: "전송 대기", PREPARED: "서명 준비 · 전송 미확인", SUBMITTED: "전송됨 · 영수증 대기", COMPLETED: "처리됨 · 최종성은 별도 확인", FAILED: "실패" };
+const actionStatus: Record<string, string> = { NEW: "전송 대기", PREPARED: "서명 준비 · 전송 미확인", SUBMITTED: "전송됨 · 영수증 대기", COMPLETED: "처리됨 · 최종성은 별도 확인", FAILED: "실패", DEAD_LETTER: "자동 재시도 중단 · 체인 확인 필요" };
 export function scopedNodePolicyMode(document: unknown): string | undefined {
   const value = document as { profile?: string; version?: string; semantic?: { evidenceMode?: string } } | undefined;
   return value && value.profile === SCOPED_NODE_PROFILE && value.version === "2.0.0" && validateScopedReviewPolicy(value.semantic) ? value.semantic!.evidenceMode : undefined;
@@ -22,6 +23,21 @@ export function policyMatchesRelease(release: Pick<Release, "runtimeProfile" | "
   return release.runtimeProfile !== SCOPED_NODE_PROFILE || Boolean(mode) && mode === release.semanticEvidenceMode;
 }
 export const semanticModeLabel = (mode?: string) => mode === "LOCAL_CONTRACT_TEST" ? "로컬 합성 검사 정책" : mode === "PROVIDER_EXECUTION" ? "외부 모델 검토 정책" : "분석 모드 확인 불가";
+
+export function PublisherEvidenceNotice({ release, scan }: { release: Release; scan?: Scan }) {
+  const proof = release.publisherVerification;
+  const scope = proof?.purpose === "DEMO_ONLY_NOT_NPM_PROVENANCE" && proof.behaviorSafety === "NOT_ASSESSED";
+  const verified = scope && proof.status === "VERIFIED" && typeof proof.publisherId === "string" && /^[a-z0-9][a-z0-9._-]{0,127}$/.test(proof.publisherId)
+    && typeof proof.sourceArtifactDigest === "string" && /^sha256:[a-f0-9]{64}$/.test(proof.sourceArtifactDigest)
+    && typeof proof.publicKeyFingerprint === "string" && /^sha256:[a-f0-9]{64}$/.test(proof.publicKeyFingerprint);
+  return <section className="ops-chain-admin" aria-label="게시자 서명과 행동 안전성">
+    <h3>서명이 맞아도, 위험한 행동은 차단합니다.</h3>
+    <dl className="ops-facts"><div><dt>01 · 누가 올린 파일인가?</dt><dd><b>{verified ? "테스트 게시자 서명 확인됨" : "게시자 서명 미검증"}</b><p>API 제공 결과 · {verified ? "등록·준비 시 원본 파일의 서명 확인" : scope && proof.status === "NOT_CONFIGURED" ? "검증 설정 없음" : "증거 미제공 또는 확인 불가"}</p></dd></div>
+      <div><dt>02 · 실행해도 안전한가?</dt><dd><b>행동 안전성은 별도 검사</b><p>선택한 검사 권고: {["PASS", "FAIL", "ABSTAIN"].includes(scan?.result?.verdict ?? "") ? scan!.result!.verdict : "미확인"}<br />릴리스 API 상태: {release.chainUnavailable ? "현재 조회 불가 · 이전 기록은 아래에서 확인" : release.status}</p></dd></div></dl>
+    <p>서명 확인은 안전성·체인 승인·실행 허가가 아닙니다. 테스트 전용 증거이며 npm provenance가 아닙니다. 브라우저가 서명을 독립 검증한 결과가 아닙니다.</p>
+    {verified && <details><summary>검증한 원본의 공개 식별자</summary><dl className="ops-facts">{[["테스트 게시자 ID", proof.publisherId], ["서명 대상 원본 파일 해시", proof.sourceArtifactDigest], ["고정 공개키 지문", proof.publicKeyFingerprint]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><p>준비된 실행 이미지의 해시와 원본 파일의 해시는 서로 다를 수 있습니다. 키·서명 원문·파일 경로는 표시하지 않습니다.</p></details>}
+  </section>;
+}
 
 export function SemanticEvidenceNotice({ evidence, required = false }: { evidence?: SemanticEvidenceScope; required?: boolean }) {
   if (!required && !evidence?.semanticEvidenceMode && !evidence?.providerQuality) return null;
@@ -34,7 +50,7 @@ export function SemanticEvidenceNotice({ evidence, required = false }: { evidenc
 }
 
 export function ChainActionsView({ actions }: { actions: ChainAction[] }) {
-  return <div className="ops-table-wrap"><table><thead><tr><th>작업 / 범위</th><th>전송 상태</th><th>트랜잭션</th><th>최근 변경</th></tr></thead><tbody>{actions.map((item) => <tr key={item.actionId}><td>{actionName[item.kind] ?? item.kind}<small>{item.releaseId ? "현재 릴리스" : "조직 정책 작업 · 적용 정책 확인 필요"}</small><small title={item.actionId}>{short(item.actionId)}</small></td><td><b>{item.status}</b><small>{actionStatus[item.status] ?? "알 수 없는 상태"}</small>{item.errorCode && <small className="ops-flow-error">{item.errorCode}</small>}</td><td><code title={item.txHash ?? ""}>{short(item.txHash)}</code><small>chain {item.chainId} · {short(item.registryAddress)}</small></td><td>{date(item.updatedAt)}</td></tr>)}</tbody></table>{!actions.length && <p className="ops-empty">불러온 내역에 체인 작업이 없습니다. 전송 또는 검증 완료로 간주하지 않습니다.</p>}</div>;
+  return <div className="ops-table-wrap"><table><thead><tr><th>작업 / 범위</th><th>전송 상태</th><th>트랜잭션</th><th>최근 변경</th></tr></thead><tbody>{actions.map((item) => <tr key={item.actionId}><td>{actionName[item.kind] ?? item.kind}<small>{item.releaseId ? "현재 릴리스" : "조직 정책 작업 · 적용 정책 확인 필요"}</small><small title={item.actionId}>{short(item.actionId)}</small></td><td><b>{item.status}</b><small>{actionStatus[item.status] ?? "알 수 없는 상태"}</small>{Number.isSafeInteger(item.attempts) && <small>처리 시도 {item.attempts}회{Number.isSafeInteger(item.retryBudget?.maxAttempts) ? ` / 최대 ${item.retryBudget!.maxAttempts}회` : ""}</small>}{item.nextAttemptAt && ["NEW", "PREPARED", "SUBMITTED"].includes(item.status) && <small>다음 확인 {date(item.nextAttemptAt)}</small>}{item.status === "DEAD_LETTER" && <small className="ops-flow-error">전송 결과가 불명확할 수 있습니다. 관리자가 체인 기록을 확인한 뒤 조치해야 합니다.</small>}{item.errorCode && <small className="ops-flow-error">{item.errorCode}</small>}</td><td><code title={item.txHash ?? ""}>{short(item.txHash)}</code><small>chain {item.chainId} · {short(item.registryAddress)}</small></td><td>{date(item.updatedAt)}</td></tr>)}</tbody></table>{!actions.length && <p className="ops-empty">불러온 내역에 체인 작업이 없습니다. 전송 또는 검증 완료로 간주하지 않습니다.</p>}</div>;
 }
 
 export function AdmissionView({ admission, now }: { admission: Admission | null; now: number }) {
@@ -86,6 +102,7 @@ export function ReleaseWorkflow({ release, scans, policies, actions, manage, onR
   return <section className="ops-workflow" aria-label="V2 검증에서 실행 판정까지">
     <div className="ops-section-heading"><h3>검사 → 검증자 → 체인 → 실행 판정</h3><span className="ops-badge">V2 운영 API · REPLAY 아님</span></div>
     <p>연결된 API의 실제 기록입니다. 로컬 체인도 chain ID로 구분하며, 전송 접수와 실행 허용을 혼동하지 않습니다.</p>
+    <PublisherEvidenceNotice release={release} scan={scan} />
     <SemanticEvidenceNotice evidence={scan?.result ?? release} required={release.runtimeProfile === "restricted-oci-offline-v1" || release.runtimeProfile === SCOPED_NODE_PROFILE} />
     <div className="ops-flow-select"><label>확인할 검사<select value={scan?.scanId ?? ""} onChange={(event) => setScanId(event.target.value)} disabled={busy || !releaseScans.length}><option value="">검사 내역 없음</option>{releaseScans.map((item) => <option key={item.scanId} value={item.scanId}>{date(item.createdAt)} · {item.status} · {short(item.scanId)}</option>)}</select></label>{!scan && <label>실행 판정 정책<select value={fallbackPolicy} onChange={(event) => setFallbackPolicy(event.target.value)} disabled={busy}><option value="">정책 선택</option>{policies.map((item) => <option key={item.policyHash} value={item.policyHash}>{item.alias}{item.deprecatedAt ? " (폐기됨)" : ""}</option>)}</select></label>}</div>
     <p className="ops-data-note">현재 정책: {policy?.alias ?? "목록에서 확인 불가"} · <code>{policyHash || "선택 없음"}</code>{policy?.deprecatedAt ? " · DEPRECATED" : ""}</p>

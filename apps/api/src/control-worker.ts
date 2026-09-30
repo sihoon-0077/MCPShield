@@ -39,6 +39,7 @@ export async function runControlWorkerOnce(store: ControlStore, options: Control
     const evidenceKey = await saveEvidence(options, scan.tenantId, result.bundle);
     const completedResult = { scanResult: result.result, reportRoot: result.bundle.manifest.root,
       analysis: result.analysis, policyHash: scan.policyHash, validFrom, validUntil, evidenceKey, verdict,
+      ...(result.scopedConfigHash ? { publisherVerification: result.publisherVerification } : {}),
       ...(oci ? { ociRuntimeTrust: result.ociRuntimeTrust, semanticEvidenceMode: policy.document.semanticEvidenceMode, providerQuality: "PROVIDER_QUALITY_NOT_MEASURED" }
         : prepared ? { preparedRuntimeTrust: result.preparedRuntimeTrust, ...scopedMetadata(policy.document) } : {}), state: verdict === "ABSTAIN" ? "REVIEW_REQUIRED" : "READY_FOR_VALIDATORS" };
     await store.forTenant(scan.tenantId, async tx => {

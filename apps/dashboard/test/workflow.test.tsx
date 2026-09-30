@@ -2,11 +2,32 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AdmissionView, ChainActionsView, ReleaseWorkflow, policyMatchesRelease, type Release, type Scan, type ChainAction, type Admission } from "../components/release-workflow";
+import { AdmissionView, ChainActionsView, PublisherEvidenceNotice, ReleaseWorkflow, policyMatchesRelease, type Release, type Scan, type ChainAction, type Admission, type PublisherVerification } from "../components/release-workflow";
 
 const release: Release = { releaseId: `0x${"1".repeat(64)}`, legacyReleaseId: "synthetic@1.0.0", toolId: "synthetic", version: "1.0.0", status: "UNVERIFIED", artifactDigest: `sha256:${"2".repeat(64)}`, toolSurfaceHash: `0x${"3".repeat(64)}`, policyHash: `0x${"4".repeat(64)}`, reportRoot: null, validUntil: null, chain: null };
 const scan: Scan = { scanId: "synthetic-scan", releaseId: release.releaseId, policyHash: release.policyHash!, status: "COMPLETED", stage: "COMPLETED", attempts: 1, maxAttempts: 3, traceId: "5".repeat(32), createdAt: "2026-09-08T00:00:00Z", updatedAt: "2026-09-08T00:00:01Z", nextAttemptAt: "2026-09-08T00:00:00Z", result: { state: "READY_FOR_VALIDATORS", verdict: "ABSTAIN", scanResult: { scanStatus: "INCONCLUSIVE" } } };
 const action: ChainAction = { actionId: "synthetic-action", releaseId: release.releaseId, kind: "ATTEST", status: "SUBMITTED", txHash: `0x${"6".repeat(64)}`, errorCode: null, chainId: 31337, registryAddress: `0x${"7".repeat(40)}`, createdAt: scan.createdAt, updatedAt: scan.updatedAt };
+const publisherVerification: PublisherVerification = { status: "VERIFIED", purpose: "DEMO_ONLY_NOT_NPM_PROVENANCE", behaviorSafety: "NOT_ASSESSED", publisherId: "synthetic-publisher", sourceArtifactDigest: release.artifactDigest, publicKeyFingerprint: `sha256:${"9".repeat(64)}` };
+
+test("publisher signature remains separate from FAIL, REVOKED and current admission for source and prepared releases", () => {
+  for (const runtimeProfile of [undefined, "restricted-node-docker-v2"]) {
+    const html = renderToStaticMarkup(<ReleaseWorkflow release={{ ...release, runtimeProfile, publisherVerification, status: "REVOKED" }} scans={[{ ...scan, result: { ...scan.result, verdict: "FAIL", scanResult: { scanStatus: "FAILED" } } }]} policies={[]} actions={[]} manage={false} onRefresh={async () => {}} />);
+    for (const value of ["테스트 게시자 서명 확인됨", "행동 안전성은 별도 검사", "FAIL", "FAILED", "REVOKED", "직접 조회 필요", "테스트 전용 증거이며 npm provenance가 아닙니다", "브라우저가 서명을 독립 검증한 결과가 아닙니다", publisherVerification.publisherId!, publisherVerification.sourceArtifactDigest!, publisherVerification.publicKeyFingerprint!]) assert.ok(html.includes(value), value);
+    assert.doesNotMatch(html, /API: ALLOW|type="password"/);
+  }
+});
+
+test("missing, unconfigured and malformed publisher evidence never becomes a verified signature or exposes raw fields", () => {
+  for (const proof of [undefined, null, {}, "VERIFIED", { ...publisherVerification, status: "NOT_CONFIGURED" }, { ...publisherVerification, status: "VALID" },
+    { ...publisherVerification, purpose: "NPM_PROVENANCE" }, { ...publisherVerification, behaviorSafety: "SAFE" }, { ...publisherVerification, publisherId: "<script>unknown</script>" },
+    { ...publisherVerification, sourceArtifactDigest: [release.artifactDigest] }, { ...publisherVerification, publicKeyFingerprint: undefined }]) {
+    const html = renderToStaticMarkup(<PublisherEvidenceNotice release={{ ...release, publisherVerification: proof as PublisherVerification }} />);
+    assert.match(html, /게시자 서명 미검증/); assert.match(html, /미확인/);
+    assert.doesNotMatch(html, /테스트 게시자 서명 확인됨|검증한 원본의 공개 식별자|<script>|NPM_PROVENANCE|SAFE/);
+  }
+  const html = renderToStaticMarkup(<PublisherEvidenceNotice release={{ ...release, publisherVerification: { ...publisherVerification, privateKey: "SYNTHETIC_PRIVATE_KEY", manifestPath: "SYNTHETIC_PRIVATE_PATH", manifest: { signature: "SYNTHETIC_RAW_SIGNATURE" } } as PublisherVerification, chainUnavailable: true }} />);
+  assert.match(html, /테스트 게시자 서명 확인됨/); assert.match(html, /현재 조회 불가/); assert.doesNotMatch(html, /SYNTHETIC_PRIVATE|SYNTHETIC_RAW/);
+});
 
 test("policy selection is bound to the release profile, not registry ordering", () => {
   const prepared = { policyHash: `0x${"a".repeat(64)}`, alias: "prepared-only", deprecatedAt: null, document: { profile: "restricted-node-docker-v1" } };
@@ -35,4 +56,16 @@ test("transaction preparation, receipt completion and expired/unsigned API respo
   assert.match(expired, /스냅샷 만료/); assert.match(expired, /서명 검증·도구 실행은 하지 않으며/);
   const unsigned = renderToStaticMarkup(<AdmissionView admission={{ ...admission, decision: "BLOCK", source: "LOCAL_DEMO", snapshot: undefined, signature: undefined }} now={Date.now()} />);
   assert.match(unsigned, /온체인 증명 아님/); assert.match(unsigned, /서명된 스냅샷이 없습니다/);
+});
+
+test("chain retry exhaustion explains operator reconciliation without offering blind resubmission", () => {
+  const html = renderToStaticMarkup(<ChainActionsView actions={[{ ...action, status: "DEAD_LETTER", attempts: 12,
+    retryBudget: { maxAttempts: 12 }, nextAttemptAt: scan.updatedAt, errorCode: "RECEIPT_PENDING" }]} />);
+  assert.match(html, /자동 재시도 중단 · 체인 확인 필요/);
+  assert.match(html, /처리 시도 12회 \/ 최대 12회/);
+  assert.match(html, /전송 결과가 불명확할 수 있습니다/);
+  assert.doesNotMatch(html, /<button|다음 확인/);
+  const pending = renderToStaticMarkup(<ChainActionsView actions={[{ ...action, attempts: 2, nextAttemptAt: scan.updatedAt }]} />);
+  assert.match(pending, /처리 시도 2회/);
+  assert.match(pending, /다음 확인/);
 });

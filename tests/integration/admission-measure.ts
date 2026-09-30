@@ -34,19 +34,38 @@ const expectedFailures = {
   SUPERSEDED_BY_DENIAL: "Admission superseded by a newer denial or invalid response",
 } as const;
 type ExpectedFailure = keyof typeof expectedFailures;
-type MeasuredDecision = { outcome: "ALLOW" | "BLOCK" | "FAIL_CLOSED_ERROR"; cacheHit: boolean; releaseStatus?: string; reasonCode?: string; failureCode?: ExpectedFailure };
+type MeasuredDecision = { outcome: "ALLOW" | "BLOCK" | "FAIL_CLOSED_ERROR"; cacheHit: boolean; releaseStatus?: string; reasonCode?: string; failureCode?: ExpectedFailure; source?: string; decisionSource?: string };
 
 export async function measuredDecision(run: () => Promise<any>, expectedFailure?: ExpectedFailure | ExpectedFailure[]): Promise<MeasuredDecision> {
   try {
     const result = await run();
     assert.ok(["ALLOW", "BLOCK"].includes(result.decision), "Unexpected admission decision");
-    return { outcome: result.decision, cacheHit: result.cacheHit, releaseStatus: result.releaseStatus, reasonCode: result.reasonCode };
+    return { outcome: result.decision, cacheHit: result.cacheHit, releaseStatus: result.releaseStatus, reasonCode: result.reasonCode,
+      source: result.source, decisionSource: result.decisionSource };
   } catch (error) {
     const expected = Array.isArray(expectedFailure) ? expectedFailure : expectedFailure ? [expectedFailure] : [];
     const failureCode = error instanceof Error && error.name === "Error" ? expected.find(code => error.message === expectedFailures[code]) : undefined;
     if (!failureCode) throw error;
     return { outcome: "FAIL_CLOSED_ERROR", cacheHit: false, failureCode };
   }
+}
+
+const smokePhases = ["actual_http_evm_strict_hot_key", "actual_http_evm_strict_uniform_keys", "injected_api_offline_balanced_read_signed_cache",
+  "injected_api_offline_strict_read", "injected_api_offline_balanced_write", "injected_api_offline_expired_signed_cache",
+  "actual_http_injected_rpc_failure", "actual_http_evm_revoked_signed_block"] as const;
+type SmokePhase = typeof smokePhases[number];
+const rawSampleLimit = 8000;
+export function admissionRawSample(phase: SmokePhase, requestIndex: number, latencyMs: number, result: MeasuredDecision, expectedOutcome: MeasuredDecision["outcome"]) {
+  assert.ok(smokePhases.includes(phase) && Number.isInteger(requestIndex) && requestIndex >= 0 && requestIndex < 1000);
+  assert.ok(Number.isFinite(latencyMs) && latencyMs >= 0);
+  const known = (value: unknown, allowed: readonly string[]) => typeof value === "string" && allowed.includes(value) ? value : "UNKNOWN";
+  // Exact projection only: never spread a response/error or serialize its message, URL, key or identity.
+  return { phase, requestIndex, latencyMs, outcome: known(result.outcome, ["ALLOW", "BLOCK", "FAIL_CLOSED_ERROR"]),
+    expectedOutcome: known(expectedOutcome, ["ALLOW", "BLOCK", "FAIL_CLOSED_ERROR"]), cacheHit: result.cacheHit === true,
+    releaseStatus: known(result.releaseStatus, ["VERIFIED", "REVOKED", "UNVERIFIED", "QUARANTINED", "EXPIRED"]),
+    reasonCode: known(result.reasonCode, ["RELEASE_VERIFIED", "RELEASE_REVOKED", "STATUS_UNAVAILABLE"]),
+    failureCode: result.failureCode === undefined ? null : known(result.failureCode, Object.keys(expectedFailures)),
+    source: known(result.source, ["LIVE", "MOCK", "REPLAY"]), decisionSource: known(result.decisionSource, ["API", "CACHE", "ORG_INDEXER", "DIRECT_RPC"]) };
 }
 
 export function admissionMatrixPlan({ requests = 40, concurrency = 4, identities = 64, fullMatrix = false } = {}) {
@@ -375,7 +394,8 @@ export function assertFreshRevocation(result: MeasuredDecision) {
 
 // Integration measurement, not a production SLO: actual local EVM, SQL, HTTP and
 // signature checks; only the stated outage conditions and scan reports are synthetic.
-export async function measureAdmission({ requests = 40, concurrency = 4, identities = 4 } = {}) {
+export async function measureAdmission({ requests = 40, concurrency = 4, identities = 4, rawSamples = false } = {}) {
+  assert.equal(typeof rawSamples, "boolean");
   for (const [value, max] of [[requests, 1000], [concurrency, 16], [identities, 16]]) assert.ok(Number.isInteger(value) && value >= 1 && value <= max, "bounded benchmark options required");
   const chain: any = ganache.server({ logging: { quiet: true }, wallet: { deterministic: true, totalAccounts: 4 } });
   const directory = await mkdtemp(join(tmpdir(), "mcpshield-admission-measure-"));
@@ -428,13 +448,20 @@ export async function measureAdmission({ requests = 40, concurrency = 4, identit
       publicKey: key.publicKey.export({ type: "spki", format: "pem" }).toString(), keyId: "benchmark", policyHash, chainId: 1337,
       registryContract: deployment.releaseRegistry.address, validatorSetVersion: 1, tenantId: "benchmark", apiToken: token, operationClass: "READ_PRIVATE" };
     const phases: Array<ReturnType<typeof latencySummary> & { name: string; elapsedMs: number; throughputQps: number; allowed: number; blocked: number; failClosedErrors: number; deniedTotal: number; failureCodes: Partial<Record<ExpectedFailure, number>>; cacheHits: number }> = [];
-    const measure = async (name: string, run: (index: number) => Promise<MeasuredDecision>, expectedOutcome: MeasuredDecision["outcome"]) => {
+    const rawRecords: ReturnType<typeof admissionRawSample>[] = [];
+    const measure = async (name: SmokePhase, run: (index: number) => Promise<MeasuredDecision>, expectedOutcome: MeasuredDecision["outcome"]) => {
       const latencies: number[] = [], failureCodes: Partial<Record<ExpectedFailure, number>> = {}; let next = 0, allowed = 0, blocked = 0, failClosedErrors = 0, cacheHits = 0;
-      const start = performance.now();
+      const start = performance.now(), rawOffset = rawRecords.length;
       await Promise.all(Array.from({ length: Math.min(concurrency, requests) }, async () => {
         while (next < requests) {
           const index = next++, begin = performance.now(), result = await run(index);
-          latencies.push(performance.now() - begin); allowed += Number(result.outcome === "ALLOW"); blocked += Number(result.outcome === "BLOCK");
+          const latencyMs = performance.now() - begin;
+          latencies.push(latencyMs); allowed += Number(result.outcome === "ALLOW"); blocked += Number(result.outcome === "BLOCK");
+          if (rawSamples) {
+            assert.ok(rawOffset + index < rawSampleLimit, "BENCHMARK_RAW_SAMPLE_LIMIT");
+            // Index is assigned before the request starts, not when it completes.
+            rawRecords[rawOffset + index] = admissionRawSample(name, index, latencyMs, result, expectedOutcome);
+          }
           failClosedErrors += Number(result.outcome === "FAIL_CLOSED_ERROR"); cacheHits += Number(result.cacheHit === true);
           if (result.failureCode) failureCodes[result.failureCode] = (failureCodes[result.failureCode] ?? 0) + 1;
           assert.equal(result.outcome, expectedOutcome, `${name} decision mismatch`);
@@ -489,6 +516,10 @@ export async function measureAdmission({ requests = 40, concurrency = 4, identit
     assert.equal(staleCache.failureCode, "EMPTY_CACHE", "fresh revoke must invalidate older signed allow");
     return { status: "MEASURED", measuredAt: started, environment: { chain: "LOCAL_GANACHE_EVM", database: "SQLITE_WAL", http: "LOOPBACK", node: process.version, platform: process.platform, logicalProcessors: availableParallelism() },
       inputs: { requestsPerPhase: requests, concurrency, identities, confirmations: 1 }, phases,
+      ...(rawSamples ? { rawSamples: { schemaVersion: "mcpshield.admission-smoke-samples.v1", scope: "MEASURED_SMOKE_PHASES_ONLY",
+        latencyBoundary: "ADMISSION_CALL_START_TO_DECISION_OR_EXPECTED_FAIL_CLOSED_ERROR", latencyUnit: "ms", latencyRounded: false,
+        ordering: "PHASE_THEN_ZERO_BASED_REQUEST_START_INDEX_NOT_COMPLETION_ORDER", maxRecords: rawSampleLimit, records: rawRecords,
+        excluded: ["WARMUP_AND_CONTROL_CHECKS", "ARTIFACT_HASHING", "CANDIDATE_SPAWN", "TESTNET", "MATRIX"] } } : {}),
       gas: Object.fromEntries(Object.entries(gas).map(([kind, values]) => [kind, { samples: values.length, min: Math.min(...values), max: Math.max(...values), mean: Math.round(values.reduce((a, b) => a + b, 0) / values.length) }])),
       revocation: { actualEvm: true, blockNumber: receipt!.blockNumber, receiptToNextCheckBlockedMs: Number(propagationMs.toFixed(3)), status: blocked.releaseStatus, reasonCode: blocked.reasonCode, cacheHit: blocked.cacheHit, staleCacheResurrection: false, subsequentOfflineFailure: staleCache.failureCode },
       limitations: ["Synthetic scan reports; this benchmark does not measure scanner detection.", "Local single-host closed-loop measurements are not production load capacity or a Base Sepolia SLO.",

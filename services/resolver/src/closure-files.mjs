@@ -3,6 +3,9 @@ import { chmod, lstat, readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export const CLOSURE_LIMITS = Object.freeze({ files: 8192, bytes: 100 * 1024 * 1024, archiveBytes: 112 * 1024 * 1024 });
+// One exact patch set for builder labels, installed versions and closure evidence.
+export const TOOLCHAIN_PATCHES = Object.freeze({ 'brace-expansion': '5.0.11', 'ip-address': '10.3.1', tar: '7.5.22', undici: '6.28.1' });
+export const TOOLCHAIN_PATCH_SET = Object.entries(TOOLCHAIN_PATCHES).map(([name, version]) => `${name}@${version}`).join(',');
 export const sha256 = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 export function closurePath(path) {
   return typeof path === 'string' && path.length <= 1024 && path.split('/').every((part) => part && part !== '.' && part !== '..' &&

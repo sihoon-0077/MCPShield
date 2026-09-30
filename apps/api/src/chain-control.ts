@@ -5,7 +5,7 @@ import { chainActionId, chainActions, enqueueChainAction, type V2Relayer } from 
 import { ControlStore } from "./control-store.js";
 import { hash, loadEvidence, type ControlOptions, type Credential } from "./control-plane.js";
 import { ociPolicy, preparedPolicy, policyVerdict, validPolicy, isNodePreparedPolicy } from "./control-policy.js";
-import { scopedPreparationContext } from "./scoped-config.js";
+import { scopedPreparationContext, assertPublisherEvidence } from "./scoped-config.js";
 import { withSpan } from "../../../packages/telemetry/index.mjs";
 import { checkedPreparedTrust } from "./prepared-config.js";
 import { checkedPreparedEvidence, checkedOciEvidence } from "./prepared-evidence.js";
@@ -38,6 +38,7 @@ export async function registerChainRoutes(api: FastifyInstance, store: ControlSt
       const { binding } = checkedPreparedEvidence(bundle, release);
       const current = await scopedPreparationContext(options, tenantId, policy.document, (await store.get(tenantId, "release", binding.sourceReleaseId))!);
       if (!trust || trust.scopedConfigHash !== hash(current.frozen) || hash(binding.executionPolicy) !== hash(current.scopedReview.executionPolicy)) throw failure("SCOPED_CONFIG_CHANGED", 409);
+      assertPublisherEvidence(bundle, current.publisher);
       trust = { ...trust, sourceProvenance: current.scopedReview.sourceProvenance };
     }
     const verdict = policyVerdict(bundle, scan.result.scanResult, policy.document, trust);
