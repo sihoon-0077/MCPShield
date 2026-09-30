@@ -59,6 +59,8 @@
 
 - 2026-10-01 KST: `8569025`에 기존 admission smoke의 opt-in 원자료(최대8,000건)를 추가하고 깨끗한 SHA에서 phase당100회·총800회를 실제 측정했다. 추적 JSON·SHA·환경·집계 대조·제외 범위는 [진행 기록](capstone-progress-2026-09-22.md)에 연결했다. 전체 로컬445 PASS/0 FAIL/35 SKIP·세 smoke PASS. `7df0453` Linux의 builder security와 OCI 전체 폐기 경로는 PASS, 전체 run은 진행 중이며 후속 측정기 SHA의 CI와 구분한다.
 
+- 2026-10-01 KST 후속: `7df0453` [CI36732591060](https://github.com/sihoon-0077/MCPShield/actions/runs/36732591060) 전체 SUCCESS. Node22/24·PG·필수 native·Compose·실제 관측 파이프라인 성공을 완료 로그로 확인했다. 빠른 suite의 SKIP과 별도 실제 실행을 구분했고 dispatch 전용10회 반복/이미지 서명은 SKIP이다. 다음 publisher API/validator/UI 연결은 별도 worktree에서 구현·리뷰하며 이 선행 성공으로 대신하지 않는다.
+
 ## 다음 publisher pipeline 연결 시 주의
 
 현재 서명 검증은 resolver에 연결되었지만 API/독립 validator의 운영자 설정은 아직 연결되지 않았다.

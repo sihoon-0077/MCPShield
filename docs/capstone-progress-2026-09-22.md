@@ -29,7 +29,24 @@ node --import tsx scripts/ops/evaluate-admission.ts --requests 100 --identities 
 - 환경: Windows, Node24.13.0, SQLite WAL, loopback HTTP, local Ganache, concurrency4. API 장애는 즉시 실패를 주입했으므로 TCP timeout 지연이 아니다. Ganache의 Node24 µWS fallback 경고가 있었으며 stderr를 JSON 증거에 섞지 않았다.
 - 측정 범위는 admission 호출 시작→결정/예상 fail-closed다. scanner는 합성 report이며 **파일 hash·프로세스 시작·warmup/control 검사·테스트넷·matrix를 포함하지 않는다**. 이전 날짜 smoke와 통제된 성능 비교가 아니며 p99 안정성·production 처리량/SLO·CAP2-504 전체 완료를 주장하지 않는다.
 - 같은 구현의 전체 `npm test` exit0: **445 PASS / 0 FAIL / 35 SKIP** (Backend150/12, Security133/19, Gateway120/3, Dashboard42/1; PASS/SKIP). 세 smoke PASS. Security는 별도 재실행도133/0/19다. 집중 측정기 검사12 PASS/0 SKIP 및 TypeScript PASS, 독립 reviewer 확인. 가장 최근 전체 production build는 선행 `8f06733`에서 성공했으며 이후 변경은 측정기/회귀 검사뿐이다.
-- 선행 `7df0453`의 [Linux CI36732591060](https://github.com/sihoon-0077/MCPShield/actions/runs/36732591060): Node24·실제 PostgreSQL job 성공. rebuilt builder HIGH/CRITICAL gate 및 이전 실패였던 OCI worker→독립 검증자→V2→두 Gateway 단계20 모두 PASS. 기록 시 후속 prepared/scoped/Compose 등 전체 Node22 결과는 아직 확인 중이다. 이 CI는 후속 측정기 코드 `8569025`의 전체 CI로 전용하지 않는다.
+- 원자료는 별도 Reviewer도 독립 재계산해 통과했다. SHA/boundary snapshot·406파일·11개 raw 필드 whitelist와 문서 수치를 대조했으며 긴 측정을 새로 실행하거나 파일을 수정하지 않았다.
+
+### 같은 날 Linux 통합 검증 완료 — `7df0453`
+
+[CI36732591060](https://github.com/sihoon-0077/MCPShield/actions/runs/36732591060)는 `7df04539a7a1434eeab71fba919ad3bd0662b6e9`에서 **SUCCESS**로 종료됐다. 2026-09-30 15:16:52 UTC = 10월1일 00:16:52 KST 확인. 후속 원자료 측정기 `8569025`나 아직 작업 중인 publisher 연결 코드의 전체 CI로 전용하지 않는다.
+
+| 검증 | 실제 결과 |
+|---|---|
+| Node22 / Node24 | 전체 job SUCCESS, 테스트·production build·built HTTP forms 성공 |
+| PostgreSQL | 48 PASS / 0 FAIL / Docker health 1 SKIP; 실제 SQL retry/DLQ 및 별도 빈 DB로 백업 복원 성공 |
+| builder 보안 | 실제 이미지 재빌드·Trivy HIGH/CRITICAL gate PASS. 예외/차단 기준 완화 없음 |
+| npm 준비 / Gateway·Agent / scoped scanner | 별도 native 단계 모두 PASS; Agent/분석 모델은 로컬 합성 응답 계약 |
+| OCI 독립 스캔 / 전체 폐기 경로 | 실제 native 실행 PASS; 앞선 오류 재현 지점의 signed REVOKED 및 두 Gateway 차단 기대값 유지 |
+| prepared v1 / scoped Node v2 전체 경로 | 각각 실제 Docker→독립 검증자 프로세스→V2→Gateway 단계 PASS |
+| 격리 / Compose / 관측성 | 실제 Linux sandbox, Docker→V2→두 Gateway, 전체 Compose 기동, 인증된 Grafana provisioning·exporter→collector→Prometheus 합성 metric 관측 PASS |
+| production audit / tracked secret 검사 | 기존 기준 PASS. 앞선 MODERATE 전이 의존성 기록은 별도 잔여 위험 |
+
+빠른 suite의 환경별 SKIP은 뒤 명시적 native/PG 단계와 구분했다. OCI 구성 스캔과 scoped Node fullcycle은 앞 단계에서 SKIP 후 각 전용 단계에서 실제 PASS했다. PR에서 실행하지 않는 `repeat-demo`, `signed-image` job과 failure-only 진단 단계의 SKIP은 정상 조건이다. **최종 RC clean10/10·이미지 서명·공개 배포·실제 AI·Base Sepolia 성공을 의미하지 않는다.**
 
 ## 2026-09-30 재개 기록
 
