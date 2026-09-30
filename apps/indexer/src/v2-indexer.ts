@@ -58,7 +58,7 @@ export async function indexV2(store: ControlStore, client: V2Relayer, { deployme
         if (current && current.block_hash !== block.hash) throw new Error("INDEXER_CHECKPOINT_CONFLICT");
         // Only the configured first block has no indexed predecessor. A shorter
         // replacement fork must not accept an old child whose height is still empty.
-        if (number > deploymentBlock) {
+        if (number !== deploymentBlock) {
           const [previous] = await tx.query("SELECT block_hash FROM cp_v2_blocks WHERE chain_id = ? AND registry_address = ? AND block_number = ?", [chainId, registry, number - 1]);
           if (!previous || previous.block_hash !== block.parentHash) throw new Error("INDEXER_CHECKPOINT_CONFLICT");
         }
