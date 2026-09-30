@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { buildApp } from "../../apps/api/src/app.js";
 import { ControlStore } from "../../apps/api/src/control-store.js";
-import { hash, type ControlOptions } from "../../apps/api/src/control-plane.js";
+import { hash, loadEvidence, type ControlOptions } from "../../apps/api/src/control-plane.js";
 import { preparedPolicy, scopedPreparedPolicy, validPolicy, policyVerdict } from "../../apps/api/src/control-policy.js";
-import { checkedProvenanceCatalogue, checkedScopedConfig, loadScopedProvenance } from "../../apps/api/src/scoped-config.js";
+import { checkedProvenanceCatalogue, checkedScopedConfig, loadScopedAuthority, loadScopedProvenance, publisherDocuments, scopedPreparationContext } from "../../apps/api/src/scoped-config.js";
 import { claimPreparation, failPreparation, preparations } from "../../apps/api/src/preparation-store.js";
 import { runPreparationWorkerOnce } from "../../apps/api/src/preparation-worker.js";
 import { runControlWorkerOnce } from "../../apps/api/src/control-worker.js";
@@ -25,19 +25,26 @@ import { toolSurfaceHash } from "../../services/scanner/src/tool-surface.mjs";
 import { hashPreparedRuntimeDescriptor } from "../../services/resolver/src/runtime-descriptor.mjs";
 // @ts-expect-error Real bounded local snapshot; no candidate execution.
 import { resolveArtifact } from "../../services/resolver/src/resolver.mjs";
+// @ts-expect-error Existing demo signature helper; ephemeral regression keys only.
+import { signDemoPublisherManifest } from "../../services/resolver/src/demo-publisher.mjs";
 
 const digest = `sha256:${"a".repeat(64)}`, tenant = "scoped-test", token = "synthetic-scoped-operator-token", foreign = "synthetic-scoped-other-token";
 const declaration = { schemaVersion: "mcpshield.operator-code-artifact.v1", authority: "OPERATOR_LOCAL_CATALOG", contentClass: "CODE_ARTIFACT_NO_CUSTOMER_DATA", sourceArtifactDigest: digest };
 const catalogue = (artifacts: any[] = [declaration]) => ({ schemaVersion: "mcpshield.scoped-provenance-catalogue.v1", artifacts });
 const policy = scopedPreparedPolicy("LOCAL_CONTRACT_TEST"), policyHash = hash(policy);
 const ai = { allowRemoteAi: true, disclosurePolicy: "SCOPED_PROVIDER_REVIEW_V1", evidenceMode: "LOCAL_CONTRACT_TEST", provider: "custom", url: "http://127.0.0.1:9", timeoutMs: 1000 };
-async function fixture() {
+async function fixture(signed = false) {
   const dir = await mkdtemp(join(tmpdir(), "mcpshield-scoped-api-")), filename = join(dir, "private-catalogue.json");
   const resolved = await resolveArtifact({ sourceType: "local", locator: fileURLToPath(new URL("../../demo/fixtures/mail-mcp-1.0.0", import.meta.url)) });
   const source = { ...exactReleaseIdentity(resolved), artifactDigest: resolved.artifactDigest, manifestDigest: resolved.manifestDigest, toolSurfaceHash: resolved.toolSurfaceHash,
     artifactDir: resolved.artifactDir, sourceType: "npm", legacyReleaseId: resolved.releaseId, status: "UNVERIFIED" };
   const localDeclaration = { ...declaration, sourceArtifactDigest: source.artifactDigest };
-  await writeFile(filename, JSON.stringify(catalogue([localDeclaration])));
+  const authority: any = catalogue([localDeclaration]);
+  if (signed) {
+    const sidecar = JSON.parse(await readFile(new URL("../../demo/fixtures/publisher-signatures.json", import.meta.url), "utf8"));
+    authority.publishers = { [source.artifactDigest]: { publisherId: "mcpshield-demo-publisher", pinnedPublicKey: sidecar.pinnedPublicKey, manifest: sidecar.signatures["1.0.0"] } };
+  }
+  await writeFile(filename, JSON.stringify(authority));
   const store = await ControlStore.open();
   const options: ControlOptions = { store, credentials: [{ tenantId: tenant, token, role: "operator" }, { tenantId: "foreign", token: foreign, role: "operator" }],
     artifactPath: join(dir, "artifacts"), evidencePath: join(dir, "evidence"), evidenceKey: "1".repeat(64),
@@ -49,7 +56,7 @@ async function fixture() {
   const app = await buildApp({ adminApiToken: "synthetic-legacy-admin", scannerApiToken: "synthetic-legacy-scanner", controlPlane: options });
   for (const id of [tenant, "foreign"]) await store.put(id, "release", source.releaseId, source);
   const request = (key: string, body: any = { policyHash }, bearer = token) => app.inject({ method: "POST", url: `/v1/releases/${source.releaseId}/prepare`, headers: { authorization: `Bearer ${bearer}`, "idempotency-key": key }, payload: body });
-  return { dir, filename, app, store, options, request, source, declaration: localDeclaration, close: async () => { await app.close(); await resolved.cleanup(); await rm(dir, { recursive: true, force: true }); } };
+  return { dir, filename, app, store, options, request, source, authority, declaration: localDeclaration, close: async () => { await app.close(); await resolved.cleanup(); await rm(dir, { recursive: true, force: true }); } };
 }
 function syntheticOutput(input: any, cleanup: () => Promise<void>) {
   const tools = [{ name: "list_messages", inputSchema: { type: "object", properties: {}, additionalProperties: false } }];
@@ -85,6 +92,116 @@ test("Node v2 policies preserve v1 hashes and require exact semantic mode withou
   assert.notEqual(hash(scopedPreparedPolicy("PROVIDER_EXECUTION")), policyHash);
   for (const edit of [{ version: "1.0.0" }, { profile: "restricted-oci-offline-v2" }, { semantic: undefined }, { semantic: { ...policy.semantic, extra: true } }, { requireCritic: false }]) assert.equal(validPolicy({ ...policy, ...edit }), false);
   assert.equal(policyVerdict({ files: {} }, {}, policy), "ABSTAIN");
+});
+
+test("publisher authority is operator-only, bound to actual bytes, and source authentication never means safe behavior", async () => {
+  const f = await fixture(true), headers = { authorization: `Bearer ${token}` };
+  try {
+    const entry = f.authority.publishers[f.source.artifactDigest];
+    for (const edit of [
+      { ...entry, pinnedPublicKey: generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString() },
+      { ...entry, manifest: { ...entry.manifest, payload: { ...entry.manifest.payload, version: "9.9.9" } } },
+      { ...entry, manifest: { ...entry.manifest, payload: { ...entry.manifest.payload, artifactDigest: digest } } },
+      { ...entry, candidateKey: entry.pinnedPublicKey },
+    ]) assert.throws(() => checkedProvenanceCatalogue({ ...f.authority, publishers: { [f.source.artifactDigest]: edit } }));
+    await writeFile(f.filename, JSON.stringify({ ...f.authority, publishers: {} }));
+    await assert.rejects(loadScopedAuthority(f.filename, f.source.artifactDigest), /PUBLISHER_SIGNATURE_REQUIRED/);
+    await writeFile(f.filename, JSON.stringify(f.authority));
+    const context = await scopedPreparationContext(f.options, tenant, policy, f.source);
+    assert.equal(context.publisher?.verification.behaviorSafety, "NOT_ASSESSED");
+    const forged = createEvidenceBundle({ "prepared/publisher.json": { status: "VALID", privateCandidateText: "must-not-escape" } });
+    assert.throws(() => publisherDocuments(forged), /PUBLISHER_EVIDENCE_MISMATCH/);
+    assert.deepEqual(publisherDocuments(forged, context.publisher), { "prepared/publisher.json": context.publisher });
+    const body = { sourceType: "fixture", locator: "mail-mcp-1.0.0" };
+    for (const field of ["demoPublisher", "publisherVerification", "pinnedPublicKey", "manifest"]) {
+      const response = await f.app.inject({ method: "POST", url: "/v1/releases/resolve", headers, payload: { ...body, [field]: entry } });
+      assert.equal(response.statusCode, 400);
+    }
+    // Re-resolving refreshes only the authentication snapshot, not chain status.
+    await f.store.put(tenant, "release", f.source.releaseId, { ...f.source, status: "REVOKED" }, true);
+    const read = await f.app.inject({ method: "POST", url: "/v1/releases/resolve", headers, payload: body });
+    assert.equal(read.statusCode, 201, read.body); assert.equal(read.json().release.status, "REVOKED");
+    const summary = read.json().release.publisherVerification;
+    assert.deepEqual(Object.keys(summary).sort(), ["status", "purpose", "behaviorSafety", "publisherId", "sourceArtifactDigest", "publicKeyFingerprint"].sort());
+    assert.equal(summary.status, "VERIFIED"); assert.equal(summary.behaviorSafety, "NOT_ASSESSED");
+    assert.equal(summary.sourceArtifactDigest, f.source.artifactDigest);
+    assert.doesNotMatch(read.body, /BEGIN PUBLIC KEY|pinnedPublicKey|"manifest"|"signature"|private-catalogue/);
+    const sidecar = JSON.parse(await readFile(new URL("../../demo/fixtures/publisher-signatures.json", import.meta.url), "utf8")), badManifest = sidecar.signatures["1.0.1"];
+    f.authority.artifacts.push({ ...f.declaration, sourceArtifactDigest: badManifest.payload.artifactDigest });
+    f.authority.publishers[badManifest.payload.artifactDigest] = { ...entry, manifest: badManifest };
+    await writeFile(f.filename, JSON.stringify(f.authority));
+    const bad = await f.app.inject({ method: "POST", url: "/v1/releases/resolve", headers, payload: { ...body, locator: "mail-mcp-1.0.1" } });
+    assert.equal(bad.statusCode, 201, bad.body); assert.equal(bad.json().release.publisherVerification.status, "VERIFIED");
+    assert.equal(bad.json().release.publisherVerification.publicKeyFingerprint, summary.publicKeyFingerprint);
+    assert.equal(bad.json().release.status, "UNVERIFIED", "a valid malicious signature is not an execution verdict");
+    f.options.resolveArtifact = async input => {
+      const acquired = await resolveArtifact(input);
+      await writeFile(join(acquired.artifactDir, "extra.txt"), "synthetic post-acquisition mutation");
+      return { ...acquired, metadata: { ...acquired.metadata, publisherVerification: { status: "VALID", verified: true } } };
+    };
+    const changed = await f.app.inject({ method: "POST", url: "/v1/releases/resolve", headers, payload: body });
+    assert.equal(changed.statusCode, 400, changed.body);
+    assert.equal(changed.json().error.code, "SCOPED_PUBLISHER_SIGNATURE_INVALID", "actual snapshot verification, never injected VALID");
+    await writeFile(join(f.source.artifactDir, "extra.txt"), "synthetic mutation");
+    await assert.rejects(scopedPreparationContext(f.options, tenant, policy, f.source), /PUBLISHER_SIGNATURE_INVALID/);
+  } finally { await f.close(); }
+});
+
+test("queued signed preparation rejects removed/replaced authority before scanner invocation", async () => {
+  const f = await fixture(true); let calls = 0;
+  try {
+    f.options.prepareRuntime = async () => { calls++; throw Error("UNEXPECTED_EXECUTION"); };
+    for (const replacement of [false, true]) {
+      await writeFile(f.filename, JSON.stringify(f.authority));
+      const accepted = await f.request(`signed-queued-${replacement}`); assert.equal(accepted.statusCode, 202, accepted.body);
+      const changed = replacement ? structuredClone(f.authority) : catalogue([f.declaration]);
+      if (replacement) changed.publishers[f.source.artifactDigest].pinnedPublicKey = generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
+      await writeFile(f.filename, JSON.stringify(changed));
+      await runPreparationWorkerOnce(f.store, f.options);
+      const [completed] = await preparations(f.store, tenant, accepted.json().preparation.preparationId);
+      assert.equal(completed.status, "DEAD_LETTER"); assert.equal(calls, 0);
+      assert.match(JSON.stringify(completed.lastError), replacement ? /PUBLISHER_SIGNATURE_INVALID/ : /PREPARATION_CONFIG_CHANGED/);
+    }
+  } finally { await f.close(); }
+});
+
+test("duplicate runtime identity cannot silently upgrade/remove/rotate publisher proof; same authority repeats preserve ownership", async () => {
+  for (const signed of [false, true]) {
+    const f = await fixture(signed), cleaned: string[] = [], created: string[] = [];
+    try {
+      f.options.prepareRuntime = async input => {
+        const output = syntheticOutput(input, async () => { cleaned.push(output.runtimeTag); });
+        created.push(output.runtimeTag); return output;
+      };
+      const first = await f.request("original"); assert.equal(first.statusCode, 202, first.body);
+      await runPreparationWorkerOnce(f.store, f.options);
+      const [original] = await preparations(f.store, tenant, first.json().preparation.preparationId);
+      assert.equal(original.status, "COMPLETED");
+      const releaseId = original.result!.releaseId, release = await f.store.get(tenant, "release", releaseId);
+      const replacementKey = generateKeyPairSync("ed25519"), publisherId = "synthetic-rotated-publisher";
+      const changed: any = { ...catalogue([f.declaration]), publishers: { [f.source.artifactDigest]: { publisherId,
+        pinnedPublicKey: replacementKey.publicKey.export({ type: "spki", format: "pem" }).toString(),
+        manifest: signDemoPublisherManifest({ publisherId, name: "mail-mcp", version: "1.0.0", artifactDigest: f.source.artifactDigest }, replacementKey.privateKey) } } };
+      const alternatives = signed ? [changed, catalogue([f.declaration])] : [changed];
+      for (const [index, authority] of alternatives.entries()) {
+        await writeFile(f.filename, JSON.stringify(authority));
+        const queued = await f.request(`collision-${index}`); assert.equal(queued.statusCode, 202, queued.body);
+        await runPreparationWorkerOnce(f.store, f.options);
+        const [rejected] = await preparations(f.store, tenant, queued.json().preparation.preparationId);
+        assert.equal(rejected.status, "DEAD_LETTER"); assert.match(JSON.stringify(rejected.lastError), /PREPARED_RELEASE_COLLISION/);
+        assert.deepEqual(await f.store.get(tenant, "release", releaseId), release, "old proof, status and ownership remain immutable");
+        assert.equal((await f.store.query("SELECT COUNT(*) AS count FROM cp_scans WHERE tenant_id=?", [tenant]))[0].count, 1);
+        assert.equal(cleaned.at(-1), created.at(-1)); assert.ok(!cleaned.includes(created[0]));
+      }
+      await writeFile(f.filename, JSON.stringify(f.authority));
+      const repeated = await f.request("same-authority"); assert.equal(repeated.statusCode, 202, repeated.body);
+      await runPreparationWorkerOnce(f.store, f.options);
+      assert.equal((await preparations(f.store, tenant, repeated.json().preparation.preparationId))[0].status, "COMPLETED");
+      assert.deepEqual(await f.store.get(tenant, "release", releaseId), release);
+      assert.equal((await f.store.query("SELECT COUNT(*) AS count FROM cp_scans WHERE tenant_id=?", [tenant]))[0].count, 2);
+      assert.equal(cleaned.at(-1), created.at(-1)); assert.ok(!cleaned.includes(created[0]));
+    } finally { await f.close(); }
+  }
 });
 
 test("Node v2 scan/appeal checks exact mode inside the transaction without consuming a rejected appeal slot", async () => {
@@ -150,7 +267,8 @@ test("scoped prepare is server-only, tenant-local, frozen on retry and revoked b
 });
 
 test("Node v2 prepare/rescan dispatch preserve provenance labels, final revocation rolls back, and MOCK can never PASS", async () => {
-  const f = await fixture(); let calls = 0, cleaned = 0;
+  for (const signed of [false, true]) {
+  const f = await fixture(signed); let calls = 0, cleaned = 0;
   try {
     f.options.prepareRuntime = async input => { calls++; assert.equal(input.scopedReview.executionPolicy.profile, policy.profile); assert.deepEqual(input.scopedReview.sourceProvenance, f.declaration);
       assert.equal(input.ai.disclosurePolicy, "SCOPED_PROVIDER_REVIEW_V1"); return syntheticOutput(input, async () => { cleaned++; }); };
@@ -160,6 +278,16 @@ test("Node v2 prepare/rescan dispatch preserve provenance labels, final revocati
     assert.equal(completed.status, "COMPLETED", JSON.stringify(completed.lastError)); assert.equal(completed.result?.verdict, "ABSTAIN");
     assert.equal(completed.result?.semanticEvidenceMode, "LOCAL_CONTRACT_TEST");
     const releaseId = completed.result!.releaseId, release = await f.store.get(tenant, "release", releaseId);
+    assert.equal(release?.publisherVerification.status, signed ? "VERIFIED" : "NOT_CONFIGURED");
+    assert.equal(release?.publisherVerification.behaviorSafety, "NOT_ASSESSED");
+    const proof = await loadEvidence(f.options, tenant, release!.preparedEvidenceKey, release!.preparedReportRoot);
+    const sourceIdentity = JSON.parse(proof.files["prepared/source-identity.json"]);
+    assert.equal(Object.keys(sourceIdentity).length, 5, "publisher stays outside exact source identity");
+    if (signed) {
+      const publisher = JSON.parse(proof.files["prepared/publisher.json"]);
+      assert.equal(publisher.verification.verified, true); assert.equal(publisher.verification.behaviorSafety, "NOT_ASSESSED");
+      assert.deepEqual(Object.keys(publisher).sort(), ["manifest", "verification"]);
+    } else assert.equal(proof.files["prepared/publisher.json"], undefined);
     assert.equal(release?.providerQuality, "PROVIDER_QUALITY_NOT_MEASURED"); assert.equal(calls, 1); assert.equal(cleaned, 0);
     await f.store.put(tenant, "release", releaseId, { ...release, chainUnavailable: true, chain: { blockNumber: 7 } }, true);
     const projected = (await f.app.inject({ url: `/v1/releases/${releaseId}`, headers: { authorization: `Bearer ${token}` } })).json().release;
@@ -168,15 +296,30 @@ test("Node v2 prepare/rescan dispatch preserve provenance labels, final revocati
     const scan = await f.app.inject({ method: "POST", url: "/v1/scans", headers: { authorization: `Bearer ${token}`, "idempotency-key": "rescan" }, payload: { releaseId, policyHash } });
     assert.equal(scan.statusCode, 202); await runControlWorkerOnce(f.store, f.options);
     const stored = await f.store.scan(tenant, scan.json().scan.scanId); assert.equal(stored?.status, "COMPLETED"); assert.equal(stored?.result?.verdict, "ABSTAIN"); assert.equal(calls, 2);
+    assert.deepEqual(stored?.result?.publisherVerification, release?.publisherVerification);
     for (const url of [`/v1/scans/${stored!.scanId}`, `/v1/releases/${releaseId}`, `/v1/preparations/${completed.preparationId}`]) {
       const read = await f.app.inject({ url, headers: { authorization: `Bearer ${token}` } }); assert.equal(read.statusCode, 200);
       assert.doesNotMatch(read.body, /sourceProvenance|scopedConfigHash|preparedRuntimeTrust|provenancePath|private-catalogue|127\.0\.0\.1/);
       assert.match(read.body, /LOCAL_CONTRACT_TEST/);
+      assert.doesNotMatch(read.body, /BEGIN PUBLIC KEY|pinnedPublicKey|"manifest"|"signature"/);
+    }
+    if (signed) {
+      for (const replacement of [false, true]) {
+        const changed = replacement ? structuredClone(f.authority) : catalogue([f.declaration]);
+        if (replacement) changed.publishers[f.source.artifactDigest].pinnedPublicKey = generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
+        f.options.scanPreparedRuntime = async input => { await writeFile(f.filename, JSON.stringify(changed)); return syntheticOutput(input, async () => {}); };
+        const response = await f.app.inject({ method: "POST", url: "/v1/scans", headers: { authorization: `Bearer ${token}`, "idempotency-key": `authority-changed-during-rescan-${replacement}` }, payload: { releaseId, policyHash } });
+        assert.equal(response.statusCode, 202, response.body); await runControlWorkerOnce(f.store, f.options);
+        const rejected = await f.store.scan(tenant, response.json().scan.scanId);
+        assert.equal(rejected?.status, "DEAD_LETTER"); assert.match(JSON.stringify(rejected?.lastError), replacement ? /PUBLISHER_SIGNATURE_INVALID/ : /PREPARATION_CONFIG_CHANGED/);
+        await writeFile(f.filename, JSON.stringify(f.authority));
+      }
     }
     f.options.prepareRuntime = async input => { const output = syntheticOutput(input, async () => { cleaned++; }); await writeFile(f.filename, JSON.stringify(catalogue([]))); return output; };
     const second = await f.request("second"); assert.equal(second.statusCode, 202);
     await runPreparationWorkerOnce(f.store, f.options);
     assert.equal((await preparations(f.store, tenant, second.json().preparation.preparationId))[0].status, "DEAD_LETTER"); assert.equal(cleaned, 1);
-    assert.equal((await f.store.query("SELECT COUNT(*) AS count FROM cp_scans WHERE tenant_id=?", [tenant]))[0].count, 2);
+    assert.equal((await f.store.query("SELECT COUNT(*) AS count FROM cp_scans WHERE tenant_id=?", [tenant]))[0].count, signed ? 4 : 2);
   } finally { await f.close(); }
+  }
 });

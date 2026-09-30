@@ -45,7 +45,7 @@ export async function checkedValidatorPayload(template: any, context: ValidatorC
     if (policy.profile !== preparedPolicy.profile) {
       const current = await checkedScopedSource(policy, binding, source, context.scopedPrepared);
       if (current.configHash !== runtimeTrust?.scopedVerificationConfigHash) fail();
-      runtimeTrust = { ...runtimeTrust, sourceProvenance: current.sourceProvenance, sourceBudget: current.sourceBudget };
+      runtimeTrust = { ...runtimeTrust, sourceProvenance: current.sourceProvenance, sourceBudget: current.sourceBudget, publisher: current.publisher };
     }
     comparePreparedScans({ bundle: evidence.bundle, result: scan.result.scanResult }, context.independentPreparedEvidence, policy, runtimeTrust!);
   } else {

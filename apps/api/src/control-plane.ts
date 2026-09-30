@@ -8,6 +8,7 @@ import { currentTraceId, traceHeaders, withSpan, recordAdmission } from "../../.
 import type { EvidenceObjectStore } from "../../../packages/object-storage/index.mjs";
 import { defaultPolicy, preparedPolicy, ociPolicy, scopedPreparedPolicy, validPolicy } from "./control-policy.js";
 import type { ScopedPreparedConfig } from "./scoped-config.js";
+import { checkedScopedConfig, loadScopedAuthority, publisherEvidence, publicPublisherVerification } from "./scoped-config.js";
 import { registerChainRoutes } from "./chain-control.js";
 import { enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
 import { registerReceiptRoutes } from "./receipt-control.js";
@@ -131,21 +132,42 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       // @ts-expect-error Scanner/resolver runtime is shared ESM JavaScript.
       const resolver = options.resolveArtifact ?? (await import("../../../services/resolver/src/resolver.mjs")).resolveArtifact;
       const resolved = await resolver(input);
+      let authenticated;
       try {
+        const config = options.scopedPrepared ? checkedScopedConfig(options.scopedPrepared) : undefined;
+        const filename = config && Object.hasOwn(config.provenancePaths, user.tenantId) ? config.provenancePaths[user.tenantId] : undefined;
+        const publisher = filename ? (await loadScopedAuthority(filename, resolved.artifactDigest, false)).demoPublisher : undefined;
+        if (publisher) {
+          if (body.sourceType === "oci") throw err("SCOPED_PUBLISHER_SOURCE_UNSUPPORTED");
+          // Recheck actual snapshot bytes with operator authority; never trust injected metadata VALID.
+          // @ts-expect-error Existing resolver's separate operator-only argument.
+          const { resolveArtifact } = await import("../../../services/resolver/src/resolver.mjs");
+          try { authenticated = await resolveArtifact({ sourceType: "local", locator: resolved.artifactDir }, { demoPublisher: publisher }); }
+          catch (error: any) {
+            if (/^DEMO_PUBLISHER_/.test(error?.message ?? "")) throw err("SCOPED_PUBLISHER_SIGNATURE_INVALID");
+            throw error;
+          }
+          if (exactReleaseIdentity(authenticated).releaseId !== exactReleaseIdentity(resolved as any).releaseId) throw err("SCOPED_SOURCE_IDENTITY_MISMATCH");
+        }
+        const publisherVerification = publicPublisherVerification(authenticated ? publisherEvidence(authenticated, publisher) : undefined);
         const exact = exactReleaseIdentity(resolved as any);
         const artifactDir = resolve(options.artifactPath, createHash("sha256").update(user.tenantId).digest("hex"), resolved.artifactDigest.slice(7));
         await mkdir(artifactDir, { recursive: true });
-        await cp(resolved.artifactDir, artifactDir, { recursive: true, force: false, errorOnExist: false });
+        await cp(authenticated?.artifactDir ?? resolved.artifactDir, artifactDir, { recursive: true, force: false, errorOnExist: false });
         const release = { releaseId: exact.releaseId, legacyReleaseId: resolved.releaseId, toolId: exact.toolId,
           version: resolved.version, artifactUri: resolved.artifactUri, artifactDigest: resolved.artifactDigest,
           manifestDigest: resolved.manifestDigest, toolSurfaceHash: resolved.toolSurfaceHash,
           artifactDir, sourceType: body.sourceType, status: "UNVERIFIED", policyHash: null, reportRoot: null, validUntil: null,
-          createdAt: new Date().toISOString(), chain: null, metadata: resolved.metadata };
-        await store.put(user.tenantId, "release", release.releaseId, release);
+          createdAt: new Date().toISOString(), chain: null, metadata: resolved.metadata, publisherVerification };
+        await store.forTenant(user.tenantId, async tx => {
+          const previous = await tx.get(user.tenantId, "release", release.releaseId);
+          // Refresh authentication evidence without overwriting chain/execution state.
+          await tx.put(user.tenantId, "release", release.releaseId, { ...(previous ?? release), publisherVerification }, true);
+        });
         await store.event(user.tenantId, release.releaseId, "release.resolved", { artifactDigest: release.artifactDigest });
         const saved = await get(user.tenantId, "release", release.releaseId);
         return reply.code(201).send({ release: publicRelease(saved) });
-      } finally { await resolved.cleanup?.(); }
+      } finally { await authenticated?.cleanup?.(); await resolved.cleanup?.(); }
     });
     api.get("/releases", async (request) => ({ items: (await store.list(authenticate(request.headers.authorization).tenantId, "release")).map(publicRelease) }));
     api.get("/releases/:releaseId", async (request) => ({ release: publicRelease(await get(authenticate(request.headers.authorization).tenantId, "release", (request.params as any).releaseId)) }));
@@ -303,13 +325,13 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
 const publicFields = (value: Record<string, any>, fields: string[]) => Object.fromEntries(fields.filter(key => value[key] !== undefined).map(key => [key, value[key]]));
 function publicRelease(release: Record<string, any>) {
   return publicFields(release, ["releaseId", "legacyReleaseId", "toolId", "version", "artifactUri", "artifactDigest", "manifestDigest", "toolSurfaceHash", "sourceType",
-    "runtimeProfile", "sourceReleaseId", "runtimeOwnership", "status", "policyHash", "reportRoot", "validUntil", "chain", "chainUnavailable", "createdAt", "semanticEvidenceMode", "providerQuality"]);
+    "runtimeProfile", "sourceReleaseId", "runtimeOwnership", "status", "policyHash", "reportRoot", "validUntil", "chain", "chainUnavailable", "createdAt", "semanticEvidenceMode", "providerQuality", "publisherVerification"]);
 }
 function publicScan({ tenantId: _tenant, leaseOwner: _owner, request, result, ...scan }: ScanJob) {
   const baselineReleaseId = request.baselineReleaseId ?? null;
   const appealId = request.appealId ?? null;
   if (!result) return { ...scan, baselineReleaseId, appealId };
-  const safeResult = publicFields(result, ["scanResult", "reportRoot", "analysis", "policyHash", "validFrom", "validUntil", "verdict", "state", "semanticEvidenceMode", "providerQuality"]);
+  const safeResult = publicFields(result, ["scanResult", "reportRoot", "analysis", "policyHash", "validFrom", "validUntil", "verdict", "state", "semanticEvidenceMode", "providerQuality", "publisherVerification"]);
   if (safeResult.analysis) {
     const analysis = safeResult.analysis;
     safeResult.analysis = { ...(typeof analysis.profile === "string" && [preparedPolicy.profile, ociPolicy.profile, "restricted-node-docker-v2"].includes(analysis.profile) ? { profile: analysis.profile } : {}),

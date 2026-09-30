@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,10 +33,12 @@ import { createEvidenceBundle } from "../../services/scanner/src/evidence.mjs";
 import { toolSurfaceHash } from "../../services/scanner/src/tool-surface.mjs";
 // @ts-expect-error Real collector argument commitment.
 import { probeArgumentsDigest } from "../../services/scanner/src/mcp-probe.cjs";
+// @ts-expect-error Existing synthetic Ed25519 source signature, no persisted private key.
+import { signDemoPublisherManifest } from "../../services/resolver/src/demo-publisher.mjs";
 
 const sha = (value: string | Buffer) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const policy = scopedPreparedPolicy("LOCAL_CONTRACT_TEST"), policyHash = hash(policy), tenant = "scoped-validator-test", token = "synthetic-scoped-validator-operator";
-async function fixture() {
+async function fixture(signed = false) {
   const directory = await mkdtemp(join(tmpdir(), "mcpshield-scoped-validator-")), root = join(directory, "source"); await mkdir(root);
   const provider = await scopedContractServer(), pkg = { name: "scoped-synthetic", version: "1.0.0", bin: "server.js", private: true };
   const files = { "package.json": JSON.stringify(pkg), "package-lock.json": JSON.stringify({ name: pkg.name, version: pkg.version, lockfileVersion: 3, packages: { "": pkg } }), "server.js": scopedMailbox() };
@@ -45,7 +47,12 @@ async function fixture() {
   const source = { ...exactReleaseIdentity(resolved), artifactDigest: resolved.artifactDigest, manifestDigest: resolved.manifestDigest, toolSurfaceHash: resolved.toolSurfaceHash };
   const sourceProvenance = { schemaVersion: "mcpshield.operator-code-artifact.v1", authority: "OPERATOR_LOCAL_CATALOG", contentClass: "CODE_ARTIFACT_NO_CUSTOMER_DATA", sourceArtifactDigest: source.artifactDigest };
   const provenancePath = join(directory, "validator-private.json"), sourcesPath = join(directory, "sources-private.json"), apiProvenancePath = join(directory, "api-private.json");
-  const catalogue = { schemaVersion: "mcpshield.scoped-provenance-catalogue.v1", artifacts: [sourceProvenance] };
+  const catalogue: any = { schemaVersion: "mcpshield.scoped-provenance-catalogue.v1", artifacts: [sourceProvenance] };
+  if (signed) {
+    const key = generateKeyPairSync("ed25519"), publisherId = "synthetic-test-publisher";
+    catalogue.publishers = { [source.artifactDigest]: { publisherId, pinnedPublicKey: key.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      manifest: signDemoPublisherManifest({ publisherId, name: pkg.name, version: pkg.version, artifactDigest: source.artifactDigest }, key.privateKey) } };
+  }
   for (const path of [provenancePath, apiProvenancePath]) await writeFile(path, JSON.stringify(catalogue));
   const sources = { schemaVersion: "mcpshield.validator-sources.v1", sources: [{ releaseId: source.releaseId, sourceType: "local", locator: root }] };
   await writeFile(sourcesPath, JSON.stringify(sources));
@@ -67,7 +74,7 @@ async function fixture() {
   const sourceDescriptorDigest = hashPreparedRuntimeDescriptor({ ...descriptor, stage: "PREFLIGHT", finalImageDigest: null, toolSurfaceHash: null });
   const validatorConfig = { provenancePath, sourcesPath, ai: provider.ai }, acquired = await checkedScopedSource(policy, binding, source, validatorConfig);
   const trusted = { ...anchors, finalImageDigest: image, platform: config.platform, closureDigest: closure.digest, entrypointDigest: descriptor.entrypoint.digest,
-    sourceDescriptorDigest, sourceProvenance, sourceBudget: acquired.sourceBudget, scopedVerificationConfigHash: acquired.configHash };
+    sourceDescriptorDigest, sourceProvenance, sourceBudget: acquired.sourceBudget, scopedVerificationConfigHash: acquired.configHash, publisher: acquired.publisher };
   const step = (kind?: string) => ({ protocolComplete: true, timedOut: false, exitCode: 0, failureCode: null, pages: 1, permissionProfile: "NODE_PERMISSION_READ_ONLY_V1",
     runtimeIdentity: { imageDigest: image, platform: config.platform, argv: descriptor.argv }, toolSurfaceHash: binding.toolSurfaceHash, egressEvents: [], canaryExfiltration: false,
     callResults: semantic.reviews.probe.report.scenarios.filter((scenario: any) => scenario.kind === kind).map(({ toolCall }: any) => ({ name: toolCall.name,
@@ -75,6 +82,7 @@ async function fixture() {
   const result = { schemaVersion: "1.0.0", scanId: randomUUID(), releaseId: resolved.releaseId, artifactDigest: binding.artifactDigest, toolSurfaceHash: binding.toolSurfaceHash,
     scanStatus: "PASSED", findings: [], evidenceHash: `0x${"a".repeat(64)}`, source: "LIVE" };
   const docs: Record<string, any> = { "report.json": { ...result, scope: "RESTRICTED_NODE_DOCKER_V2" }, "prepared/binding.json": binding, "prepared/source-identity.json": source,
+    ...(acquired.publisher ? { "prepared/publisher.json": acquired.publisher } : {}),
     "runtime/descriptor.json": descriptor, "runtime/execution-policy.json": executionPolicy, "runtime/tools.json": scopedTools,
     "prepared/observation.json": { source: "LIVE_DOCKER", identity: { observedDescriptorDigest: binding.descriptorDigest, sourceArtifactDigest: binding.sourceArtifactDigest,
       executionPolicyDigest: binding.executionPolicyDigest, finalImageDigest: image, preparationDescriptorDigest: hashPreparedRuntimeDescriptor({ ...descriptor, toolSurfaceHash: null }) },
@@ -90,7 +98,8 @@ async function fixture() {
 }
 
 test("scoped validator requires its own freshly reacquired source and catalogue before provider or signing (actual local HTTP, synthetic Docker)", async () => {
-  const f = await fixture();
+  for (const signed of [false, true]) {
+  const f = await fixture(signed);
   try {
     assert.equal(policyVerdict(f.bundle, f.result, policy, f.trusted), "PASS"); assert.equal(policyVerdict(f.bundle, f.result, preparedPolicy, f.trusted), "ABSTAIN");
     assert.equal(comparePreparedScans(f, f.independent, policy, f.trusted).semanticEvidenceMode, "LOCAL_CONTRACT_TEST");
@@ -105,6 +114,26 @@ test("scoped validator requires its own freshly reacquired source and catalogue 
     const context = { chainId: 31337, registryAddress: registry, policyHash, policy, scan, evidence: { bundle: f.bundle, reportRoot: f.bundle.manifest.root }, identity,
       validatorSetVersion: 1, nonce: 0, now, preparedRuntime: f.config, preparedRuntimeTrust: f.trusted, independentPreparedEvidence: f.independent, scopedPrepared: f.validatorConfig };
     assert.equal((await checkedValidatorPayload(template, context)).verdict, "PASS");
+    if (signed) {
+      assert.equal(f.acquired.publisher?.verification.behaviorSafety, "NOT_ASSESSED");
+      for (const leaf of [undefined, {}, { ...f.acquired.publisher, verification: { ...f.acquired.publisher!.verification, publicKeyFingerprint: sha("other key") } }]) {
+        const changed = { ...f.docs }; if (leaf === undefined) delete changed["prepared/publisher.json"]; else changed["prepared/publisher.json"] = leaf;
+        const corrupted = { ...f, bundle: createEvidenceBundle(changed) };
+        assert.throws(() => comparePreparedScans(corrupted, f.independent, policy, f.trusted), /PUBLISHER_EVIDENCE_MISMATCH/);
+        const independent = { ...f.independent, bundle: createEvidenceBundle({ ...changed, "report.json": JSON.parse(f.independent.bundle.files["report.json"]) }) };
+        assert.throws(() => comparePreparedScans(f, independent, policy, f.trusted), /PUBLISHER_EVIDENCE_MISMATCH/);
+      }
+      const unsigned = { ...f.catalogue }; delete unsigned.publishers;
+      await writeFile(f.validatorConfig.provenancePath, JSON.stringify(unsigned));
+      await assert.rejects(checkedValidatorPayload(template, context), /BINDING_MISMATCH/);
+      const current = await checkedScopedSource(policy, f.binding, f.source, f.validatorConfig);
+      assert.throws(() => comparePreparedScans(f, f.independent, policy, { ...f.trusted, publisher: current.publisher }), /PUBLISHER_EVIDENCE_MISMATCH/);
+      await writeFile(f.validatorConfig.provenancePath, JSON.stringify(f.catalogue));
+      const wrong = structuredClone(f.catalogue); wrong.publishers[f.source.artifactDigest].pinnedPublicKey = generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
+      await writeFile(f.validatorConfig.provenancePath, JSON.stringify(wrong));
+      await assert.rejects(checkedValidatorPayload(template, context), /PUBLISHER_SIGNATURE_INVALID/);
+      await writeFile(f.validatorConfig.provenancePath, JSON.stringify(f.catalogue));
+    }
     await assert.rejects(checkedValidatorPayload(template, { ...context, scopedPrepared: undefined }), /CONFIG_REQUIRED/);
     await assert.rejects(checkedValidatorPayload(template, { ...context, independentPreparedEvidence: undefined }), /BINDING_MISMATCH/);
     await assert.rejects(checkedScopedSource(policy, { ...f.binding, descriptor: { ...f.binding.descriptor, sourceDigest: sha("different archive") } }, f.source, f.validatorConfig), /SOURCE_MISMATCH/);
@@ -119,13 +148,15 @@ test("scoped validator requires its own freshly reacquired source and catalogue 
     await assert.rejects(checkedValidatorPayload(template, context), /PROVENANCE_REQUIRED/);
     await writeFile(f.validatorConfig.provenancePath, JSON.stringify(f.catalogue));
     await writeFile(join(f.root, "server.js"), `${f.files["server.js"]}\n// changed source`);
-    await assert.rejects(checkedValidatorPayload(template, context), /SOURCE_MISMATCH/);
+    await assert.rejects(checkedValidatorPayload(template, context), signed ? /PUBLISHER_SIGNATURE_INVALID/ : /SOURCE_MISMATCH/);
     assert.deepEqual(f.provider.counts, calls, "failed authority/digest/budget gates never send review requests");
   } finally { await f.close(); }
+  }
 });
 
 test("scoped API template refreshes source budget/authority and cannot leak private context (actual SQL/HTTP evidence, synthetic Docker)", async () => {
-  const f = await fixture(), store = await ControlStore.open(), registry = `0x${"b".repeat(40)}`;
+  for (const signed of [false, true]) {
+  const f = await fixture(signed), store = await ControlStore.open(), registry = `0x${"b".repeat(40)}`;
   const options: any = { store, credentials: [{ tenantId: tenant, token, role: "operator" }], artifactPath: join(f.directory, "artifacts"), evidencePath: join(f.directory, "evidence"), evidenceKey: "1".repeat(64),
     preparedRuntime: f.config, scannerOptions: { sandbox: "docker", allowRemoteAi: false }, scopedPrepared: { provenancePaths: { [tenant]: f.apiProvenancePath }, ai: f.provider.ai },
     v2Relayer: { domain: attestationV2Domain(31337, registry), context: async () => ({ nonce: 0, validatorSetVersion: 1 }), close() {} } };
@@ -144,6 +175,14 @@ test("scoped API template refreshes source budget/authority and cannot leak priv
       analysis: { profile: policy.profile, verdict: "PASS", issues: [], ai: f.provider.ai, provenancePath: f.apiProvenancePath }, scopedPrepared: options.scopedPrepared });
     const read = () => app.inject({ url: `/v1/scans/${queued.scan.scanId}/attestation?validator=0x${"c".repeat(40)}`, headers: { authorization: `Bearer ${token}` } });
     const response = await read(); assert.equal(response.statusCode, 200, response.body); assert.equal(response.json().verdict, "PASS");
+    if (signed) {
+      const previous = (await store.scan(tenant, job.scanId))!.result!, docs = { ...f.docs };
+      delete docs["prepared/publisher.json"];
+      const unsigned = createEvidenceBundle(docs), unsignedKey = await saveEvidence(options, tenant, unsigned);
+      await store.query("UPDATE cp_scans SET result_json=? WHERE scan_id=?", [JSON.stringify({ ...previous, evidenceKey: unsignedKey, reportRoot: unsigned.manifest.root }), job.scanId]);
+      assert.equal((await read()).json().error.code, "SCOPED_PUBLISHER_EVIDENCE_MISMATCH");
+      await store.query("UPDATE cp_scans SET result_json=? WHERE scan_id=?", [JSON.stringify(previous), job.scanId]);
+    }
     const publicScan = await app.inject({ url: `/v1/scans/${queued.scan.scanId}`, headers: { authorization: `Bearer ${token}` } });
     assert.doesNotMatch(publicScan.body, /SYNTHETIC_NOT_A_PROVIDER_KEY|api-private|sourceBudget|sourceProvenance|scopedPrepared|scopedConfigHash|127\.0\.0\.1/);
     const lower = { ...policy, maxArtifactBytes: 1024 }, lowerHash = hash(lower);
@@ -154,4 +193,5 @@ test("scoped API template refreshes source budget/authority and cannot leak priv
     await writeFile(f.apiProvenancePath, JSON.stringify({ ...f.catalogue, artifacts: [] }));
     assert.equal((await read()).json().error.code, "SCOPED_OPERATOR_PROVENANCE_REQUIRED");
   } finally { await app.close(); await f.close(); }
+  }
 });
