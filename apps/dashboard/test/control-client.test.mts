@@ -17,6 +17,7 @@ test("control client explains failures while retaining codes, HTTP status and pr
     [400, "SCOPED_PUBLISHER_SOURCE_UNSUPPORTED", "원본 유형에는 게시자 서명 검증이 지원되지 않습니다"],
     [400, "SCOPED_SOURCE_BUDGET_EXCEEDED", "파일 용량"], [400, "SCOPED_CONFIG_REQUIRED", "관리자 설정"],
     [409, "SCOPED_CONFIG_CHANGED", "검사 설정이 변경"], [409, "PREPARATION_CONFIG_CHANGED", "이미지 준비 설정이 변경"],
+    [409, "PREPARED_RELEASE_COLLISION", "기존 설정 또는 증거와 요청이 일치하지 않습니다"],
     [400, "SCOPED_EVIDENCE_MODE_MISMATCH", "검사 방식과 서버 설정"],
     [429, "SCAN_QUOTA_EXCEEDED", "조직의 사용 한도"], [503, "CONTROL_PLANE_FAILED", "기록을 확인"],
   ] as const) {

@@ -20,6 +20,7 @@ const messages: Record<string, string> = {
   SCOPED_CONFIG_REQUIRED: "검사에 필요한 관리자 설정이 없습니다. 관리자에게 검사 환경 설정을 요청하세요.",
   SCOPED_CONFIG_CHANGED: "검사 설정이 변경되었습니다. 새로고침 후 관리자에게 현재 설정을 확인하세요.",
   PREPARATION_CONFIG_CHANGED: "이미지 준비 설정이 변경되었습니다. 새로고침 후 관리자에게 현재 설정을 확인하세요.",
+  PREPARED_RELEASE_COLLISION: "같은 실행 릴리스의 기존 설정 또는 증거와 요청이 일치하지 않습니다. 관리자에게 기존 기록과 원본 확인을 요청하세요.",
   SCOPED_EVIDENCE_MODE_MISMATCH: "선택한 검사 방식과 서버 설정이 다릅니다. 관리자에게 로컬 합성 검사·외부 모델 설정을 확인하세요.",
   SCAN_QUOTA_EXCEEDED: "검사 한도에 도달했습니다. 대기 중인 검사와 조직의 사용 한도를 확인하세요.",
   IDEMPOTENCY_CONFLICT: "재시도 식별키가 다른 요청에 사용되었습니다. 새로고침해 기존 요청을 확인하세요.",
