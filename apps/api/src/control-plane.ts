@@ -6,9 +6,10 @@ import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2.js"
 import { ControlStore, assertScanProfile, type ScanJob } from "./control-store.js";
 import { currentTraceId, traceHeaders, withSpan, recordAdmission } from "../../../packages/telemetry/index.mjs";
 import type { EvidenceObjectStore } from "../../../packages/object-storage/index.mjs";
-import { defaultPolicy, preparedPolicy, ociPolicy, scopedPreparedPolicy, validPolicy } from "./control-policy.js";
+import { defaultPolicy, preparedPolicy, ociPolicy, scopedPreparedPolicy, validPolicy, isScopedBaselinePolicy } from "./control-policy.js";
 import type { ScopedPreparedConfig } from "./scoped-config.js";
-import { checkedScopedConfig, loadScopedAuthority, publisherEvidence, publicPublisherVerification } from "./scoped-config.js";
+import { checkedScopedConfig, loadScopedAuthority, publisherEvidence, publicPublisherVerification, checkedBaselineRequest, scopedPreparationContext } from "./scoped-config.js";
+import { checkedPreparedEvidence } from "./prepared-evidence.js";
 import { registerChainRoutes } from "./chain-control.js";
 import { enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
 import { registerReceiptRoutes } from "./receipt-control.js";
@@ -186,12 +187,20 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
       const policy = await get(user.tenantId, "policy", body.policyHash);
       if (policy.deprecatedAt) throw err("POLICY_DEPRECATED", 409);
       assertScanProfile(release, policy.document);
-      if (release.runtimeProfile && body.baselineReleaseId) throw err("PREPARED_BASELINE_UNSUPPORTED");
+      checkedBaselineRequest(policy.document, body);
+      if (policy.document.profile === "restricted-node-docker-v2") {
+        if (!release.preparedEvidenceKey || !release.preparedReportRoot) throw err("SCOPED_EXECUTION_POLICY_MISMATCH", 409);
+        const { binding } = checkedPreparedEvidence(await loadEvidence(options, user.tenantId, release.preparedEvidenceKey, release.preparedReportRoot), release);
+        if (hash(binding.executionPolicy.semantic) !== hash(policy.document.semantic)) throw err("SCOPED_EXECUTION_POLICY_MISMATCH", 409);
+      }
+      if (release.runtimeProfile && body.baselineReleaseId && !isScopedBaselinePolicy(policy.document)) throw err("PREPARED_BASELINE_UNSUPPORTED");
       if (body.requestedTiers && (!Array.isArray(body.requestedTiers) || [...body.requestedTiers].sort().join() !== [...policy.document.requiredTiers].sort().join())) throw err("REQUIRED_TIERS_MISSING");
       if (body.baselineReleaseId && (await get(user.tenantId, "release", body.baselineReleaseId)).toolId !== release.toolId) throw err("BASELINE_TOOL_MISMATCH");
       const idempotencyKey = request.headers["idempotency-key"];
       if (typeof idempotencyKey !== "string" || !idempotencyKey.trim() || idempotencyKey.length > 256) throw err("IDEMPOTENCY_KEY_REQUIRED");
-      const input = { ...body, artifactDigest: release.artifactDigest };
+      const input = { ...body, artifactDigest: release.artifactDigest,
+        ...(isScopedBaselinePolicy(policy.document) ? { scopedConfigHash: hash((await scopedPreparationContext(options, user.tenantId, policy.document,
+          await get(user.tenantId, "release", release.sourceReleaseId), store, body.baselineReleaseId)).frozen) } : {}) };
       const result = await withSpan("scan.accept", { "mcpshield.release_id": body.releaseId }, async () =>
         store.enqueueConstrained(user.tenantId, { ...input, traceparent: traceHeaders().traceparent }, idempotencyKey, hash(input), currentTraceId() ?? randomUUID(), release, policy.document),
       { traceparent: typeof request.headers.traceparent === "string" ? request.headers.traceparent : undefined });

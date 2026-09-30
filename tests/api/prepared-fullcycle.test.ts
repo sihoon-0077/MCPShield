@@ -17,8 +17,9 @@ import { deployV2 } from "../../contracts/scripts/deploy-v2.js";
 import { exactReleaseIdentity } from "../../packages/contracts-sdk/src/v2.js";
 import { ControlStore } from "../../apps/api/src/control-store.js";
 import { buildApp } from "../../apps/api/src/app.js";
-import { hash, type ControlOptions } from "../../apps/api/src/control-plane.js";
-import { preparedPolicy, scopedPreparedPolicy } from "../../apps/api/src/control-policy.js";
+import { hash, loadEvidence, type ControlOptions } from "../../apps/api/src/control-plane.js";
+import { preparedPolicy, scopedPreparedPolicy, scopedBaselinePreparedPolicy } from "../../apps/api/src/control-policy.js";
+import { checkedPreparedEvidence } from "../../apps/api/src/prepared-evidence.js";
 import { scopedMailbox, scopedContractServer } from "./scoped-fixture.js";
 import { runPreparationWorkerOnce } from "../../apps/api/src/preparation-worker.js";
 import { preparations } from "../../apps/api/src/preparation-store.js";
@@ -69,8 +70,8 @@ test("prepared fullcycle supplies MCP framing before testing admission denial", 
 // Actual Linux Docker + local EVM + signed admission. AI is a deterministic loopback
 // contract stub, sources are local mail fixtures, validators belong to one institution.
 // No production provider quality, public npm provenance or independent organization claim.
-for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepared v1"} source → actual Docker/AI-stub scans → independent validators → V2 quorum → real Gateway allow/revoke`, {
-  skip: process.env.MCPSHIELD_DOCKER_TESTS !== "1" || scoped && process.env.MCPSHIELD_SCOPED_DOCKER_TESTS !== "1", timeout: 600000,
+for (const scoped of [false, true, "baseline"] as const) test(`${scoped === "baseline" ? "scoped Node v2.1 pinned baseline" : scoped ? "scoped Node v2" : "prepared v1"} source → actual Docker/AI-stub scans → independent validators → V2 quorum → real Gateway allow/revoke`, {
+  skip: process.env.MCPSHIELD_DOCKER_TESTS !== "1" || Boolean(scoped) && process.env.MCPSHIELD_SCOPED_DOCKER_TESTS !== "1" || scoped === "baseline" && process.env.MCPSHIELD_SCOPED_BASELINE_DOCKER_TESTS !== "1", timeout: 600000,
 }, async (t) => {
   assert.equal(process.platform, "linux");
   assert.match(process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE ?? "", /^sha256:[a-f0-9]{64}$/);
@@ -80,6 +81,7 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
   let scopedProvider: Awaited<ReturnType<typeof scopedContractServer>> | undefined;
   const apiCataloguePath = join(dir, "api-provenance.json"), validatorCataloguePath = join(dir, "validator-provenance.json"), validatorSourcesPath = join(dir, "validator-sources.json");
   const declarations: any[] = [], validatorSources: any[] = [];
+  const baselinePins: Record<string, string | null> = {};
   // One ephemeral publisher signs safe and malicious sources; authentication is not safety.
   const publisherKey = generateKeyPairSync("ed25519"), publishers: Record<string, any> = {}, publisherId = "synthetic-fullcycle-publisher";
   const aiCounts = { analyzer: 0, critic: 0, probes: 0 };
@@ -118,7 +120,10 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
       prepareRuntime: async (input) => { const output = await prepareAndScanRuntime(input); if (output.cleanup) cleanups.push(output.cleanup); return output; } };
     app = await buildApp({ adminApiToken: "unused-legacy-admin", scannerApiToken: "unused-legacy-scan", controlPlane: options });
     await app.listen({ host: "127.0.0.1", port: 0 });
-    const apiUrl = `http://127.0.0.1:${(app.server.address() as any).port}`, auth = { authorization: `Bearer ${token}` }, policyHash = hash(scoped ? scopedPreparedPolicy("LOCAL_CONTRACT_TEST") : preparedPolicy);
+    const document = scoped === "baseline" ? scopedBaselinePreparedPolicy("LOCAL_CONTRACT_TEST") : scoped ? scopedPreparedPolicy("LOCAL_CONTRACT_TEST") : preparedPolicy;
+    const apiUrl = `http://127.0.0.1:${(app.server.address() as any).port}`, auth = { authorization: `Bearer ${token}` }, policyHash = hash(document);
+    // Explicit opt-in only; production default policy seeding remains v2.0.
+    if (scoped === "baseline") await store.put(tenantId, "policy", policyHash, { policyHash, document });
     const post = async (url: string, payload: any = {}, extra = {}) => {
       const response = await app!.inject({ method: "POST", url, headers: { ...auth, ...extra }, payload });
       assert.ok(response.statusCode < 300, `${url}: ${response.body}`); return response.json();
@@ -133,7 +138,7 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
       assert.fail("PREPARED_CHAIN_ACTION_TIMEOUT");
     };
     await settle((await post(`/v1/policies/${policyHash}/publish`)).action.actionId);
-    const prepare = async (version: string) => {
+    const prepare = async (version: string, baselineReleaseId: string | null = null) => {
       const root = join(dir, `source-${version}`); await mkdir(root);
       let source: any;
       if (scoped) {
@@ -165,7 +170,7 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
         artifactUri: "synthetic-local-fixture:not-a-public-registry-download", legacyReleaseId: `mail-mcp@${version}`, version, status: "UNVERIFIED", metadata: { archiveDigest: digest } };
       }
       await store!.put(tenantId, "release", source.releaseId, source);
-      const { preparation } = await post(`/v1/releases/${source.releaseId}/prepare`, { policyHash }, { "idempotency-key": version });
+      const { preparation } = await post(`/v1/releases/${source.releaseId}/prepare`, { policyHash, ...(scoped === "baseline" ? { baselineReleaseId } : {}) }, { "idempotency-key": version });
       await runPreparationWorkerOnce(store!, options);
       const [completed] = await preparations(store!, tenantId, preparation.preparationId);
       assert.equal(completed.status, "COMPLETED", JSON.stringify(completed.lastError));
@@ -182,6 +187,16 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
         assert.deepEqual(scan.result?.publisherVerification, release.publisherVerification);
         const publicRelease = (await app!.inject({ url: `/v1/releases/${release.releaseId}`, headers: auth })).json().release;
         assert.deepEqual(publicRelease.publisherVerification, release.publisherVerification);
+        if (scoped === "baseline") {
+          const bundle = await loadEvidence(options, tenantId, scan.result!.evidenceKey, scan.result!.reportRoot), checked = checkedPreparedEvidence(bundle, release);
+          assert.equal(scan.request.baselineReleaseId, baselineReleaseId);
+          assert.equal(JSON.parse(bundle.files["prepared/baseline.json"])?.selection.releaseId ?? null, baselineReleaseId);
+          assert.equal(scan.result?.preparedRuntimeTrust.baseline?.releaseId ?? null, baselineReleaseId);
+          // After checking the derived runtime, each operator pins the choice in its own file.
+          baselinePins[checked.identity.releaseId] = baselineReleaseId;
+          for (const index of [1, 2, 3]) await writeFile(join(dir, `validator-${index}-sources.json`), JSON.stringify({ schemaVersion: "mcpshield.validator-sources.v1",
+            sources: validatorSources, baselines: baselinePins }), { mode: 0o600 });
+        }
       }
       if (version === "1.0.1") assert.ok(scan.result?.scanResult.findings.some((finding: any) => finding.code === "CANARY_EXFILTRATION" && finding.deterministic));
       await settle((await post(`/v1/releases/${release.releaseId}/register`)).action.actionId);
@@ -211,7 +226,7 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
               VALIDATOR_PREPARED_BUILDER_DIGEST: config.builderImageDigest, VALIDATOR_PREPARED_ARCHITECTURE: "amd64",
               VALIDATOR_ALLOW_REMOTE_AI: "true", VALIDATOR_AI_PROVIDER: "custom", VALIDATOR_AI_URL: aiUrl, VALIDATOR_AI_TIMEOUT_MS: "5000",
               MCPSHIELD_AI_DISCLOSURE_POLICY: "LOCAL_CONTRACT_TEST",
-              ...(scoped ? { VALIDATOR_SCOPED_PROVENANCE_PATH: validatorCataloguePath, VALIDATOR_SOURCES_PATH: validatorSourcesPath,
+              ...(scoped ? { VALIDATOR_SCOPED_PROVENANCE_PATH: validatorCataloguePath, VALIDATOR_SOURCES_PATH: scoped === "baseline" ? join(dir, `validator-${index}-sources.json`) : validatorSourcesPath,
                 VALIDATOR_SCOPED_AI_CONFIG: JSON.stringify(scopedProvider!.ai) } : {}),
               VALIDATOR_VERIFICATION_RECEIPTS_PATH: receiptPath } });
           const pid = child.child.pid; assert.ok(pid && pid !== process.pid);
@@ -261,7 +276,7 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
     } finally { await client.close(); }
     const safeEvents = await dockerEvents(safeGatewayEventsSince);
     for (const action of ["create", "start"]) assert.ok(safeEvents.some(event => event.Action === action && event.Actor.Attributes.image === safe.imageDigest), `Safe Gateway must positively demonstrate observable Docker ${action}`);
-    const bad = await prepare("1.0.1"); await vote(bad.scan);
+    const bad = await prepare("1.0.1", scoped === "baseline" ? safe.release.releaseId : null); await vote(bad.scan);
     if (scoped) assert.equal(bad.release.publisherVerification.publicKeyFingerprint, safe.release.publisherVerification.publicKeyFingerprint);
     const finalDenied = await admission(bad.release);
     assert.deepEqual({ decision: finalDenied.decision, status: finalDenied.status, reasonCode: finalDenied.reasonCode, snapshotStatus: finalDenied.snapshot?.status },
@@ -300,6 +315,7 @@ for (const scoped of [false, true]) test(`${scoped ? "scoped Node v2" : "prepare
     } else assert.ok(aiCounts.probes >= 6 && aiCounts.analyzer >= 6 && aiCounts.critic >= 6, "each worker/signer must perform its own paid-provider contract requests");
     t.diagnostic(JSON.stringify({ mode: "ACTUAL_LINUX_DOCKER_LOCAL_EVM_STUB_AI_SINGLE_INSTITUTION", independentScans: receipts.length, independentGatewayProcesses: gateways.length,
       deniedGatewayCreateOrStartEvents: 0, dockerEventEvidence: "BOUNDED_LOCAL_DAEMON_WINDOW_WITH_SAFE_POSITIVE_CONTROL", aiCounts: scopedProvider?.counts ?? aiCounts, scoped,
+      ...(scoped === "baseline" ? { baselinePins, independentBaselineOperatorFiles: 3 } : {}),
       validatorExecutions: validatorExecutions.map(({ receipt, ...execution }) => ({ ...execution, originalReportRoot: receipt.originalReportRoot, independentReportRoot: receipt.independentReportRoot,
         verdict: receipt.verdict, receiptState: receipt.state })) }));
   } finally {

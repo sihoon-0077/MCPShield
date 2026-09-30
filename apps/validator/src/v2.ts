@@ -1,8 +1,8 @@
 import { Contract, JsonRpcProvider, Wallet, id } from "ethers";
 import { pathToFileURL } from "node:url";
 import { setTimeout } from "node:timers/promises";
-import { ociPolicy, preparedPolicy, policyVerdict, validPolicy, isNodePreparedPolicy } from "../../api/src/control-policy.js";
-import { checkedScopedSource, checkedScopedValidatorConfig, type ScopedValidatorConfig } from "./scoped-verification.js";
+import { ociPolicy, preparedPolicy, policyVerdict, validPolicy, isNodePreparedPolicy, isScopedBaselinePolicy } from "../../api/src/control-policy.js";
+import { checkedScopedSource, checkedScopedValidatorConfig, refreshedScopedBaseline, type ScopedValidatorConfig } from "./scoped-verification.js";
 import { hash } from "../../api/src/control-plane.js";
 import { attestationV2Domain, attestationV2Types, bytes32, createReleaseRegistryV2, exactReleaseIdentity, quarantineV2Types } from "../../../packages/contracts-sdk/src/v2.js";
 import { boundedServiceRequest, checkedServiceUrl, v2RpcRequest } from "../../../packages/contracts-sdk/src/transport.js";
@@ -43,8 +43,14 @@ export async function checkedValidatorPayload(template: any, context: ValidatorC
     const { binding, source } = checkedPreparedEvidence(evidence.bundle, identity);
     if (!checkedPreparedTrust(context.preparedRuntimeTrust, context.preparedRuntime) || !context.independentPreparedEvidence) fail();
     if (policy.profile !== preparedPolicy.profile) {
-      const current = await checkedScopedSource(policy, binding, source, context.scopedPrepared);
+      const current = await checkedScopedSource(policy, binding, source, context.scopedPrepared,
+        isScopedBaselinePolicy(policy) ? JSON.parse(evidence.bundle.files["prepared/baseline.json"] ?? '"MISSING"') : undefined);
       if (current.configHash !== runtimeTrust?.scopedVerificationConfigHash) fail();
+      if (isScopedBaselinePolicy(policy)) {
+        if (!Object.hasOwn(scan, "baselineReleaseId") || scan.baselineReleaseId !== (current.scopedReview.baseline === null ? null : current.scopedReview.baseline.releaseId)) fail();
+        const baseline = refreshedScopedBaseline(current, runtimeTrust?.baseline);
+        if (hash(baseline) !== hash(runtimeTrust?.baseline) || hash(current.sourceIdentity) !== hash(runtimeTrust?.sourceIdentity)) fail();
+      }
       runtimeTrust = { ...runtimeTrust, sourceProvenance: current.sourceProvenance, sourceBudget: current.sourceBudget, publisher: current.publisher };
     }
     comparePreparedScans({ bundle: evidence.bundle, result: scan.result.scanResult }, context.independentPreparedEvidence, policy, runtimeTrust!);

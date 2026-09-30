@@ -6,11 +6,13 @@ import { setTimeout as pause } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Pool, PoolClient } from "pg";
 // @ts-expect-error Shared pure scoped commitment validation.
-import { SCOPED_NODE_PROFILE, validateScopedReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
+import { SCOPED_NODE_PROFILE, validateScopedReviewPolicy, validateScopedBaselineReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
+import { isScopedBaselinePolicy } from "./control-policy.js";
+import { checkedBaselineRequest } from "./scoped-config.js";
 
 export function assertScanProfile(release: Record<string, any>, policy: Record<string, any>) {
   if ((release.runtimeProfile ?? null) !== (policy.profile ?? null)) throw Object.assign(new Error("SCAN_PROFILE_MISMATCH"), { statusCode: 409 });
-  if (policy.profile === SCOPED_NODE_PROFILE && (policy.version !== "2.0.0" || !validateScopedReviewPolicy(policy.semantic)
+  if (policy.profile === SCOPED_NODE_PROFILE && (!(policy.version === "2.0.0" && validateScopedReviewPolicy(policy.semantic) || policy.version === "2.1.0" && validateScopedBaselineReviewPolicy(policy.semantic))
     || release.semanticEvidenceMode !== policy.semantic.evidenceMode)) throw Object.assign(new Error("SCAN_SEMANTIC_MODE_MISMATCH"), { statusCode: 409 });
 }
 
@@ -233,11 +235,15 @@ export class ControlStore {
       }
       const field = (column: string, name: string) => this.pool ? `${column}::jsonb->>'${name}'` : `json_extract(${column}, '$.${name}')`;
       const now = new Date().toISOString();
+      const scopedBaseline = isScopedBaselinePolicy(policy);
+      checkedBaselineRequest(policy, request);
+      if (scopedBaseline && !/^0x[a-f0-9]{64}$/.test(request.scopedConfigHash)) throw Object.assign(Error("SCOPED_CONFIG_REQUIRED"), { statusCode: 409 });
       // Only an authenticated, checked OPEN appeal can bypass result reuse; there is no caller-controlled force flag.
       const [cached] = appeal ? [] : await transaction.query(`SELECT * FROM cp_scans WHERE tenant_id = ? AND release_id = ? AND policy_hash = ?
         AND state = 'COMPLETED' AND ${field("result_json", "validUntil")} > ? AND ${field("result_json", "verdict")} IN ('PASS','FAIL')
-        ${request.baselineReleaseId ? `AND ${field("request_json", "baselineReleaseId")} = ?` : ""} ORDER BY updated_at DESC LIMIT 1`,
-        [tenantId, request.releaseId, request.policyHash, now, ...(request.baselineReleaseId ? [request.baselineReleaseId] : [])]);
+        ${request.baselineReleaseId ? `AND ${field("request_json", "baselineReleaseId")} = ?` : scopedBaseline ? `AND ${field("request_json", "baselineReleaseId")} IS NULL` : ""}
+        ${scopedBaseline ? `AND ${field("request_json", "scopedConfigHash")} = ? AND ${this.pool ? "request_json::jsonb->'baselineReleaseId'" : "json_type(request_json, '$.baselineReleaseId')"} IS NOT NULL` : ""} ORDER BY updated_at DESC LIMIT 1`,
+        [tenantId, request.releaseId, request.policyHash, now, ...(request.baselineReleaseId ? [request.baselineReleaseId] : []), ...(scopedBaseline ? [request.scopedConfigHash] : [])]);
       let result;
       if (cached) result = { scan: job(cached), deduplicated: true, reusedResult: true };
       else {

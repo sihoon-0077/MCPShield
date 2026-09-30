@@ -2,8 +2,8 @@ import { mkdir, appendFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { hash } from "../../api/src/control-plane.js";
-import { policyVerdict, preparedPolicy, validPolicy, isNodePreparedPolicy } from "../../api/src/control-policy.js";
-import { checkedScopedSource, type ScopedValidatorConfig } from "./scoped-verification.js";
+import { policyVerdict, preparedPolicy, validPolicy, isNodePreparedPolicy, isScopedBaselinePolicy } from "../../api/src/control-policy.js";
+import { checkedScopedSource, inspectScopedValidatorBaseline, type ScopedValidatorConfig } from "./scoped-verification.js";
 import { scopedMetadata, publisherDocuments, assertPublisherEvidence } from "../../api/src/scoped-config.js";
 import { checkedPreparedEvidence } from "../../api/src/prepared-evidence.js";
 import { checkedAiDisclosurePolicy, inspectPreparedRuntime, type PreparedConfig } from "../../api/src/prepared-config.js";
@@ -46,23 +46,29 @@ export function comparePreparedScans(original: any, independent: any, policy: an
 export async function independentlyScanPrepared(original: any, policy: any, config: PreparedConfig, ai?: PreparedValidatorAi, scopedConfig?: ScopedValidatorConfig) {
   if (!validPolicy(policy) || !isNodePreparedPolicy(policy)) throw Error("PREPARED_POLICY_REQUIRED");
   const { binding, source } = checkedPreparedEvidence(original.bundle);
-  const scoped = policy.profile !== preparedPolicy.profile ? await checkedScopedSource(policy, binding, source, scopedConfig) : undefined;
+  const baseline = isScopedBaselinePolicy(policy) ? JSON.parse(original.bundle.files["prepared/baseline.json"] ?? '"MISSING"') : undefined;
+  const scoped = policy.profile !== preparedPolicy.profile ? await checkedScopedSource(policy, binding, source, scopedConfig, baseline) : undefined;
   const localAi = scoped?.ai ?? checkedPreparedValidatorAi(ai);
-  const trusted = await inspectPreparedRuntime(binding, config);
+  const initialRuntime = await inspectPreparedRuntime(binding, config), trusted = { ...initialRuntime };
   if (scoped) { trusted.sourceProvenance = scoped.sourceProvenance; trusted.sourceBudget = scoped.sourceBudget; trusted.publisher = scoped.publisher; }
+  if (scoped && isScopedBaselinePolicy(policy)) Object.assign(trusted, { sourceIdentity: scoped.sourceIdentity, baseline: await inspectScopedValidatorBaseline(scoped, config) });
   assertPublisherEvidence(original.bundle, scoped?.publisher);
   if (policyVerdict(original.bundle, original.result, policy, trusted) === "ABSTAIN") throw new Error("INDEPENDENT_ORIGINAL_NOT_APPROVABLE");
   // Fresh local AI plan + independent analyzer/critic and actual Docker runs. No API probe/model/url or advertised execution flag is accepted.
   const result = await scanPreparedRuntime({ descriptor: binding.descriptor, expectedDescriptorDigest: binding.descriptorDigest,
     sourceReleaseId: binding.sourceReleaseId, releaseId: original.result.releaseId, scanId: randomUUID(), ai: localAi, trusted,
-    ...(scoped ? { scopedReview: { executionPolicy: binding.executionPolicy, sourceProvenance: scoped.sourceProvenance } } : {}) });
+    ...(scoped ? { scopedReview: scoped.scopedReview ?? { executionPolicy: binding.executionPolicy, sourceProvenance: scoped.sourceProvenance } } : {}) });
   if (!result.binding || !result.result || !result.bundle) throw new Error("INDEPENDENT_SCAN_INCOMPLETE");
   const bundle = createEvidenceBundle({ ...Object.fromEntries(Object.entries(result.bundle.files).map(([path, content]) => [path, JSON.parse(content as string)])),
     "prepared/source-identity.json": source, ...publisherDocuments(result.bundle, scoped?.publisher) });
   const independent = { result: result.result, bundle };
   if (scoped) {
-    const current = await checkedScopedSource(policy, binding, source, scopedConfig);
+    const current = await checkedScopedSource(policy, binding, source, scopedConfig, baseline);
     if (current.configHash !== scoped.configHash) throw Error("SCOPED_VALIDATOR_CONFIG_CHANGED");
+    if (isScopedBaselinePolicy(policy)) {
+      if (hash(await inspectPreparedRuntime(binding, config)) !== hash(initialRuntime) ||
+        hash(await inspectScopedValidatorBaseline(current, config)) !== hash(trusted.baseline)) throw Error("SCOPED_BASELINE_RUNTIME_CHANGED");
+    }
     trusted.scopedVerificationConfigHash = current.configHash;
     trusted.sourceProvenance = current.sourceProvenance;
     trusted.sourceBudget = current.sourceBudget;
