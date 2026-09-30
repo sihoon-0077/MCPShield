@@ -60,6 +60,19 @@ test('independent CI diagnostics never remove upstream success gates from image 
   assert.match(scopedCycle, /^          MCPSHIELD_SCOPED_DOCKER_TESTS: "1"\r?$/m);
   assert.match(scopedCycle, /--test-name-pattern="scoped Node v2 source" tests\/api\/prepared-fullcycle\.test\.ts/);
   assert.doesNotMatch(scopedCycle, /continue-on-error|OPENAI_API_KEY|CONTROL_AI_TOKEN/);
+  const baselineCycle = steps.find(step => step.startsWith('Exercise pinned baseline API and three independent validators through V2 and Gateway'));
+  assert.ok(baselineCycle);
+  assert.match(baselineCycle, /matrix\.node == 22 && steps\.runtime_builder\.outcome == 'success'/);
+  for (const name of ['MCPSHIELD_DOCKER_TESTS', 'MCPSHIELD_SCOPED_DOCKER_TESTS', 'MCPSHIELD_SCOPED_BASELINE_DOCKER_TESTS']) {
+    assert.match(baselineCycle, new RegExp(`^          ${name}: "1"\\r?$`, 'm'));
+  }
+  assert.match(baselineCycle, /--test-name-pattern="\^scoped Node v2\[\.\]1 pinned baseline source" tests\/api\/prepared-fullcycle\.test\.ts/);
+  assert.doesNotMatch(baselineCycle, /continue-on-error|OPENAI_API_KEY|CONTROL_AI_TOKEN/);
+  const baselinePg = steps.find(step => step.startsWith('Exercise PostgreSQL pinned baseline selection and cache isolation'));
+  assert.ok(baselinePg);
+  assert.match(baselinePg, /^          MCPSHIELD_POSTGRES_TEST_URL: postgresql:\/\/.*\$\{\{ job.services.postgres.ports\[5432\] \}\}\/mcpshield_ci\r?$/m);
+  assert.match(baselinePg, /^        run: node --import tsx --test --test-name-pattern="real POSTGRESQL" tests\/api\/scoped-validator\.test\.ts\r?$/m);
+  assert.doesNotMatch(baselinePg, /continue-on-error/);
   for (const name of ['Sign build provenance for the actual image archive', 'Sign image SBOM attestation',
     'Verify build signature against this repository identity', 'Retain bounded downloadable image and evidence']) {
     const matches = steps.filter((step) => step.startsWith(`${name}\n`) || step.startsWith(`${name}\r\n`));
