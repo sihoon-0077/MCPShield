@@ -4,6 +4,20 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-10-01 KST 후속 — CI 호환 수정·세 검증자 연결, 간헐 RPC 실패 추적
+
+통합 `4fb62d7`, 테스트 진단 `2fa3bc2`. 아직 새 Linux native 성공 또는 CAP2 전체 완료가 아니다.
+
+- 선행 publisher head `5bad1e9`의 [CI36741774702](https://github.com/sihoon-0077/MCPShield/actions/runs/36741774702)는 **FAILURE**로 종료됐다. Node22 Backend154 PASS/2 FAIL/12 SKIP, Node24 Backend155 PASS/1 FAIL/12 SKIP. PostgreSQL job과 별도 DB 백업 복원은 SUCCESS. builder/native Docker·production build는 선행 테스트 실패로 미실행이다.
+- `86673f6`은 두 테스트의 플랫폼 차이만 고쳤다. publisher 변조 테스트는 POSIX0500 임시 snapshot에 쓰기를 시도해 인증 검증 전에500이 됐다. 테스트가 소유한 두 root만 기존 mode 저장→owner-write→변조→mode복원하며 실패 시 acquired snapshot을 정리한다. 기대400/서명 거부와 운영 snapshot 권한은 유지한다.
+- Node22는 [공식 CLI의 `--experimental-test-isolation=none`](https://nodejs.org/download/release/v22.23.0/docs/api/cli.html#--experimental-test-isolationmode)을 사용한다. Node24도 같은 alias를 지원한다. 자연 종료·단일 자식·기존 timeout을 유지하고 force-exit/SKIP하지 않았다. 독립 reviewer 포함 집중10 PASS/0 SKIP. Node22.0–22.7까지 검증했다고 주장하지 않는다.
+- `4fb62d7`은 Backend `270b201`을 리뷰 후 통합했다. 단일 키 `--quarantine-only`로 기존 독립 검사→서명→정확한 tx 확인 경로를 재사용한다. API PASS/ABSTAIN 표시로 검사를 건너뛰지 않고, 임계 FAIL 증거가 없으면 거부한다. malformed/conflicting flag·여러 키는 거부한다.
+- scoped native 시나리오를 세 키/프로세스로 확장했다. safe A/B의 정확히2승인 VERIFIED를 먼저 확인한 뒤 C 승인; bad C 격리(FAIL투표0)→A FAIL1→B FAIL2 REVOKED. 각 PID/주소/원본·독립 root/확정 tx를 연결한다. bad의3개 독립 검사 기록은 **격리1+attestation2**, terminal 뒤 세 번째 FAIL투표가 아니다. [validator README](../apps/validator/README.md)의 실행 및 증거 한계를 따른다. 집중11 PASS/2 native SKIP, 독립 리뷰·타입 검사 PASS.
+- `4fb62d7` 첫 전체 실행은 **Backend157 PASS/1 FAIL/12 SKIP, exit1**. OTLP 통합 자식이 두 Gateway의 REVOKED 차단 이후 RPC `SERVICE_TRANSPORT_UNAVAILABLE`로 약40.4초에 실패했다. 뒤 suite/smoke는 미실행. 같은 SHA 단독 OTLP는 약50초에1 PASS/0 SKIP였지만 실패를 지우거나 해결됐다고 하지 않는다.
+- stack은 EVM RPC의 제한시간/소켓 연결 실패 경로로 좁혀졌으며 정확한 후반 작업·근본 원인은 미확정이다. `2fa3bc2`는 테스트에 고정 phase+고정 오류 코드만 추가하고 원래 예외를 재던진다. 운영 retry/timeout/판정은 바꾸지 않았다. 별도 reviewer 확인.
+- `2fa3bc2` 전체 재실행 **`npm test` exit0, 455 PASS/0 FAIL/35 SKIP**: Backend158/12, Security133/19, Gateway120/3, Dashboard44/1(PASS/SKIP). 세 smoke, production build, built-form HTTP3 PASS/0 SKIP. 이는 한 번의 재실행 성공이지 간헐 RPC 안정화나 native SKIP 해소가 아니다.
+- 다음 Security baseline2.1은 별도 worktree에서 작업 중이다. 기존2.0 해시/현재 위험 분석 보존·공개 예산 합산·정확한 이전 실행 비교 계약을 `ecc61f0`에 고정했다. 실제 image 재수집/API/validator 연결 전에는 새 정책으로 승인하지 않는다. V2 indexer의 중복/역순/재시작 및 event+audit 원자성도 후속 작업이다.
+
 ## 2026-10-01 KST — 게시자 증거 연결, 로컬 통합 통과·새 Linux 검증 대기
 
 기능 기준 `b8ec89d` + `4225255`, 화면 `235d52b` + `751cd5f` + `6edbe6a`, 계약 기록 `1e34a82`.

@@ -25,7 +25,7 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-107 | R/F: `tests/security/scoped-prepared.test.mjs`, `tests/api/scoped-validator.test.ts` | safe PASS·bound violation FAIL·AI 장애 ABSTAIN; 기대값 완화 금지 |
 | CAP2-108 | R: `tests/security/scoped-policy.test.mjs`, `apps/dashboard/test/scoped-node-policy.test.tsx` | incomplete·test-only·관찰 범위 한계가 결과/화면에서 유지되는지 |
 | CAP2-201 | R: `tests/contracts/release-registry-v2.test.ts` | EIP-712 recovery·domain/policy/root·expiry/nonce 거부 |
-| CAP2-202 | R: `tests/api/scoped-validator.test.ts`, `prepared-fullcycle.test.ts` | 현재 native fullcycle은 서로 다른 2키/프로세스를 safe/bad에 사용. 4개 receipt를 3개 검증자로 세지 않음. 제3자 독립 검증과 terminal REVOKED 처리 검수 필요 |
+| CAP2-202 | F: `tests/api/scoped-validator.test.ts`, `prepared-fullcycle.test.ts` | `4fb62d7`에 scoped 세 키/프로세스 연결. safe A/B2→C3, bad C격리→A/B2FAIL; PID/주소/root/확정tx 검수 추가. 6개 local receipt는 native 실행 전 완료 증거가 아니며 새 Linux 실행 대기 |
 | CAP2-203 | R: `tests/contracts/release-registry-v2.test.ts` | 고유 2-of-3·중복/비활성·불일치 회귀 |
 | CAP2-204 | R: `tests/contracts/release-registry-v2.test.ts`, `apps/gateway/test/frame-expiry.test.mjs` | 격리 TTL·terminal revoke·승인 만료 우선순위 |
 | CAP2-205 | R: `contracts/scripts/deploy-v2.ts` | Base Sepolia 실제 배포·safe/revoke tx·source/bytecode 확인 필요 |
@@ -52,6 +52,8 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-505 | R/N: 기존 평가·handoff·CI 결과 | RC/model/prompt/policy/image/dataset/chain 묶음·원자료·실패/한계 |
 
 ## 이번 실행 기록의 출처
+
+- 후속 `2fa3bc2`: 전체 로컬455 PASS/0 FAIL/35 SKIP·세 smoke/build/forms PASS. 앞선 `4fb62d7` 전체의 간헐 RPC 실패는 해결 미확정이며 진단만 추가했다. 선행 publisher `5bad1e9` Linux는 Node22/24 실패·PG 성공; `86673f6` 테스트 호환 수정 이후 새 native 결과 대기. [실패 포함 최신 기록](capstone-progress-2026-09-22.md).
 
 - 2026-10-01 최신 기록: [재개·publisher 연결·실패/수정 경계](capstone-progress-2026-09-22.md). 선행 `7df0453` Linux CI는 전체 SUCCESS. 후속 실패의 cleanup을 `cbf7760`, 파일 worker 상한을 `c53e016`에 반영했다. `c53e016` 기본 전체 검사453 PASS/0 FAIL/35 SKIP·세 smoke·production build·built HTTP forms3건 PASS. 새 publisher Linux/Docker 검증 전까지 같은 RC 완료율을 확정하지 않는다.
 

@@ -40,6 +40,8 @@
 
 ## 진행 로그
 
+- 2026-10-01 후속: publisher Linux `5bad1e9`는 Node22/24 두 테스트 호환 문제로 실패, PG는 성공했다. `86673f6` 테스트만 수정하고 세 검증자 `4fb62d7`을 통합했다. 첫 전체는 Backend157/1/12로 OTLP 내부 EVM RPC 실패, 단독 실행은 성공했다. 근본 원인 미확정으로 고정 단계 진단 `2fa3bc2`를 추가했고 전체 재실행455 PASS/0 FAIL/35 SKIP·세 smoke/build/forms 성공. 새 native 결과는 별도 확인하며 CAP2-202 완료로 아직 세지 않는다. scoped baseline2.1·V2 indexer 원자성/재시작 검수는 승인된 후속 병렬 작업이다.
+
 - 재개 준비: 스킬·협업 규칙·v2.0 요구사항을 확인하고 새 파트 브랜치를 준비한다. 기능 완료 선언은 아니다.
 - Main + 3개 새 worktree를 `b11ed63`에서 생성했다. 기존 worktree는 보존하고 설치된 의존성을 재사용한다.
 - [40개 P0 증거 지도](capstone-evidence-map.md)를 만들었다. 작업용 매핑이며 최종 감사/완료율은 아니다.
