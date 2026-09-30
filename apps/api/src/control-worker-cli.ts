@@ -22,7 +22,8 @@ try {
     if (options.v2Relayer && !process.argv.includes("--scan-only")) {
       try {
         await reconcileV2Actions(store, options.v2Relayer);
-        await indexV2(store, options.v2Relayer, { deploymentBlock: Number(process.env.CONTROL_V2_DEPLOYMENT_BLOCK ?? 0), confirmations: Number(process.env.CONTROL_V2_CONFIRMATIONS ?? 2) });
+        const { head, indexedBlock, lag, observedAt } = await indexV2(store, options.v2Relayer, { deploymentBlock: Number(process.env.CONTROL_V2_DEPLOYMENT_BLOCK ?? 0), confirmations: Number(process.env.CONTROL_V2_CONFIRMATIONS ?? 2) });
+        console.log(JSON.stringify({ event: "chain.synchronized", chainId: options.v2Relayer.chainId, head, indexedBlock, lag, observedAt }));
       } catch { console.error(JSON.stringify({ event: "chain.synchronization.failed", code: "RPC_UNAVAILABLE" })); }
     }
     if (options.receiptRelayer && !process.argv.includes("--scan-only")) {
