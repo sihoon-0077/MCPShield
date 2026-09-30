@@ -22,7 +22,7 @@ export async function preparations(store: ControlStore, tenant: string, preparat
 export async function enqueuePreparation(store: ControlStore, tenant: string, input: Record<string, any>, key: string, traceId: string) {
   return store.forTenant(tenant, async (tx) => {
     const requestHash = hash({ sourceReleaseId: input.sourceReleaseId, policyHash: input.policyHash, sourceIdentity: input.sourceIdentity,
-      ...(Object.hasOwn(input, "baselineReleaseId") ? { baselineReleaseId: input.baselineReleaseId } : {}) });
+      ...(Object.hasOwn(input, "baselineReleaseId") ? { baselineReleaseId: input.baselineReleaseId, configHash: hash(input.trustedConfig) } : {}) });
     const [previous] = await tx.query("SELECT * FROM cp_preparations WHERE tenant_id = ? AND idempotency_key = ?", [tenant, key]);
     if (previous) {
       if (previous.request_hash !== requestHash) throw failure("IDEMPOTENCY_CONFLICT");

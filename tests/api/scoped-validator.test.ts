@@ -401,6 +401,18 @@ for (const driver of ["SQLITE", "POSTGRESQL"]) test(`2.1 prepare/rescan freezes 
     const publicScan = await app.inject({ url: `/v1/scans/${selectedScan.scanId}`, headers });
     assert.equal(publicScan.json().scan.baselineReleaseId, before.identity.releaseId);
     assert.doesNotMatch(publicScan.body, /sourceBudget|sourceProvenance|scopedConfigHash|127\.0\.0\.1|private\.json/);
+    const timeoutMs = options.scopedPrepared.ai.timeoutMs;
+    options.scopedPrepared.ai.timeoutMs++;
+    const staleKey = await request("initial", { baselineReleaseId: null });
+    assert.equal(staleKey.statusCode, 409); assert.equal(staleKey.json().error.code, "IDEMPOTENCY_CONFLICT");
+    assert.deepEqual((await preparations(store, tenant, first.preparationId))[0], first, "same-key config change cannot relabel the original completed proof");
+    const freshKey = await request("changed-config-new-key", { baselineReleaseId: null }); assert.equal(freshKey.statusCode, 202, freshKey.body);
+    const freshJob = (await preparations(store, tenant, freshKey.json().preparation.preparationId))[0];
+    assert.notEqual(freshJob.configHash, first.configHash);
+    await runPreparationWorkerOnce(store, options);
+    assert.equal((await preparations(store, tenant, freshJob.preparationId))[0].status, "COMPLETED");
+    assert.deepEqual(await store.get(tenant, "release", current.identity.releaseId), owned);
+    options.scopedPrepared.ai.timeoutMs = timeoutMs;
     // Queue with known authority, then withdraw only the baseline before execution.
     const queued = await request("withdrawn", { baselineReleaseId: before.identity.releaseId }); assert.equal(queued.statusCode, 202, queued.body);
     await writeFile(current.apiProvenancePath, JSON.stringify({ ...current.catalogue, artifacts: [current.sourceProvenance] }));
