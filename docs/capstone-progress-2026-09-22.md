@@ -4,6 +4,86 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-10-01 KST — 게시자 증거 연결, 로컬 통합 통과·새 Linux 검증 대기
+
+기능 기준 `b8ec89d` + `4225255`, 화면 `235d52b` + `751cd5f` + `6edbe6a`, 계약 기록 `1e34a82`.
+기존 resolver의 Ed25519 검사를 API → prepared/scoped scan → 독립 validator → Dashboard에 연결했다. 새 서비스·DB·의존성은 추가하지 않았다.
+
+- 운영자 catalogue의 선택적 `publishers[정확한 source digest]`에서만 신뢰 공개키와 서명 manifest를 읽는다. 요청 body나 scanner의 `VALID` 표시는 신뢰 근거가 아니다. section이 설정되어 있는데 항목이 없거나 서명이 틀리면 거부한다. section이 없는 기존 unsigned 설정은 명시적으로 미검증이다.
+- 실제 source bytes를 다시 확인하고 공개키/proof를 frozen configuration 및 암호화 Merkle bundle의 `prepared/publisher.json`에 결합한다. 독립 validator는 자기 catalogue·source로 다시 검증한다. 기존 source identity의 5필드와 체인 ABI는 그대로다.
+- 등록/준비/재검사/최종 증거 생성에서 key·source 변경을 검사한다. 기존 prepared identity에 다른 publisher proof를 덮어쓰지 않는다. 충돌은 `PREPARED_RELEASE_COLLISION`; 기존 증거·소유권·체인 상태를 보존하고 새 미사용 자료만 정리한다.
+- 화면은 **게시자 서명 확인과 행동 안전성 판정을 분리**한다. 검증된 서명도 FAIL/REVOKED일 수 있다. 키·원문 서명·내부 경로는 공개 projection에 포함하지 않고 한국어 한 줄 오류를 제공한다.
+- 공개 `publisherVerification`은 등록/검사 시의 인증 증거다. 실시간 키 상태 또는 실행 허가가 아니며 catalogue에서 키를 지웠다고 기존 체인 승인이 자동 폐기되는 기능은 아니다. npm 공식 provenance가 아닌 `DEMO_ONLY_NOT_NPM_PROVENANCE`다.
+- 집중 backend 검사 36 PASS / 5 환경별 SKIP, 별도 reviewer 10 PASS / 0 SKIP 및 TypeScript PASS. 후속 collision 재검사 PASS. 화면 workflow/error 집중 9 PASS 및 forms 3 PASS. 이는 아래 전체 검사의 실패를 대체하지 않는다.
+
+### 수정 및 같은 구현의 전체 로컬 재검증
+
+- `cbf7760`: 배포 helper와 CLI의 provider 수명 전체를 `finally`로 감싸고, fullcycle의 초기화 전부터 자원 정리 범위에 포함했다. 앱 생성 전 실패와 일부 cleanup 실패에서도 다른 소유 자원을 닫고 최초 오류는 `cause`에 보존한다. force `process.exit`·RPC timeout 확대·보안 기대값 변경은 없다.
+- 실제 setup 실패 회귀: 수정 전 열린 Ganache 때문에 child가 10초 후 강제 종료되어 실패했다. 수정 후 약 2.5초에 자연 종료했다. 별도 503 RPC helper/CLI 사례는 수정 전에도 자연 종료했으므로 provider retry hang을 직접 재현했다고 주장하지 않는다. 최종 diff의 독립 리뷰 통과.
+- `cbf7760` 기본 병렬 전체 검사에서 초기 RPC 실패는 한 번 더 발생했다(Backend155 PASS/1 FAIL/12 SKIP). 다만 이번에는 프로세스가 정상 종료하여 실패를 즉시 보고했다. 같은 SHA의 `--test-concurrency=4` 비교는 **156 PASS/0 FAIL/12 SKIP**, 약81.9초였다.
+- 이 PC의 Node24.13.0은 availableParallelism20, 기본 파일 worker19개다. Solidity 동기 컴파일과 내부 subprocess를 동시에 실행한다. `c53e016`은 기존 `test:backend`에 `--test-concurrency=4` 한 옵션만 추가했다. 동일38개 파일·파일 내부의 동시성 검사·모든 판정과 timeout을 유지한다. **동시 부하와 관련된 재현 차이이며 최초 transport 장애의 정확한 원인은 미확정**이다. 고정4가 저사양 runner의 기존 기본값보다 클 수 있어 Linux 결과를 별도 확인한다.
+- `c53e016`의 기본 **`npm test` exit0, 453 PASS / 0 FAIL / 35 SKIP**: Backend156/12, Security133/19, Gateway120/3, Dashboard44/1(PASS/SKIP). replay·실제 MCP·live 세 smoke 모두 PASS. 이어 `npm run build`와 built-form HTTP3 PASS/0 SKIP. 원래 실패를 삭제하거나 과거 성공으로 대체하지 않는다.
+- tracked secret 검사는 CI와 같은 Git/GNU grep POSIX ERE allowlist로 PASS했다. 처음 PowerShell 정규식으로 대조한 결과는 POSIX 문자클래스 차이로 synthetic fixture를 오탐하여 폐기했다. 원문 매칭 내용/비밀값은 출력하지 않았다.
+- 이 체크포인트는 아직 최신 Linux/Docker/PG 실행 결과가 아니다. 선행 `7df0453` Linux SUCCESS와 구분하며 **publisher native E2E·최종 RC 전체 완료는 미확정**이다.
+
+### 수정 전 전체 검사 실패 — 이력 보존
+
+`1e34a82`의 `npm test`는 **Backend 152 PASS / 1 FAIL / 12 SKIP, exit1**이다. 뒤 Security/Gateway/Dashboard와 smoke 단계는 실행되지 않았다. 과거의 445 PASS를 이 버전의 결과로 사용하지 않는다.
+
+`tests/api/v2-fullcycle.test.ts`가 초기 로컬 RPC 연결에서 `SERVICE_TRANSPORT_UNAVAILABLE`로 약 6.4초에 실패했지만, 초기화가 cleanup 영역 밖에 있어 Ganache listener가 남아 테스트 부모가 약 848초 종료되지 않았다. 해당 테스트의 PID·부모·파일을 확인한 뒤 그 자식 프로세스 하나만 종료하여 숨겨진 오류 출력을 수집했다. 당시 체인은 block0, API/DB 준비 전이었다. publisher DB 경로의 교착으로 확인된 것은 아니다.
+
+이 실패 이후 수정·회귀 및 현재 결과는 바로 위 절에 기록했다. RPC 보안/시간 제한과 판정 기대값을 완화하지 않았다.
+
+### 다음 안전한 구현과 외부 실증의 경계
+
+- 코드/검수 잔여: scoped/prepared의 정확한 baseline 비교, 세 번째 별도 validator의 독립 검증 기록, V2 indexer 중복/역순/재시작 검수, 실제 Gateway OFF/ON 평가 연결, 새 scoped RC 10회 반복과 브라우저 검수.
+- 실제 AI 제공업체/모델·전송 허용 입력·비용 상한과 Base Sepolia RPC/전용 테스트 키/test ETH·거래 승인은 별도로 필요하다. 아직 외부 유료 호출·테스트넷 전송·main 머지·공개 재배포는 하지 않았다.
+- 독립 holdout 정상20/공격20·두 사람 label 검토, 동일 데이터의 5비교군, hash/warm-cold/Agent 비용과 테스트넷 폐기 지연 원자료도 남았다. 외부 키만 넣으면 전체가 끝나는 상태는 아니다.
+
+## 2026-10-01 KST — admission 원자료 체크포인트 `8569025`
+
+- 기존 측정기에 `--raw-samples`만 추가했다. 기본 출력은 그대로이며 smoke에서만 허용하고 matrix/plan 혼용은 거부한다. 8개 경로 × 최대 1,000회 = 8,000건 상한, 고정 필드와 오류 코드만 출력한다. 원문 오류·키·후보 내용은 기록하지 않는다.
+- 아래 명령을 깨끗한 `8569025185a1565ddadb342d16477bbe18c71cf2`에서 실제 실행했다. 시작/종료 Git SHA·파일 hash·작업 트리 상태가 동일했다. 측정 시각은 `2026-09-30T15:01:34.298Z` = 10월 1일 KST다.
+
+```sh
+node --import tsx scripts/ops/evaluate-admission.ts --requests 100 --identities 4 --concurrency 4 --raw-samples
+```
+
+- [추적 가능한 800건 JSON](../benchmarks/results/admission-smoke-100-8569025-2026-10-01.json): phase당 100건이며 개별 latency는 반올림하지 않았다. 원자료에서 p50/p95/p99/max·ALLOW/BLOCK/예상 fail-closed·cache·원인별 건수를 재계산해 모든 집계와 일치함을 확인했다. 순서는 완료 순서가 아닌 phase와 요청 시작 index다. 요약의 `throughputQps`는 실제 전체 phase 경과 시간으로 계산하며 개별 latency 합계로 재구성하는 값은 아니다.
+
+| 측정 경로 | p50 ms | p95 ms | 결과 |
+|---|---:|---:|---|
+| strict HTTP + local EVM, 동일 identity | 121.291 | 163.023 | ALLOW 100 |
+| strict HTTP + local EVM, 4 identities | 89.685 | 135.115 | ALLOW 100 |
+| 주입한 API 장애, balanced 읽기·유효 signed cache | 0.849 | 0.958 | ALLOW 100 |
+| 주입한 API 장애, strict 읽기 | 0.308 | 0.577 | 예상 fail-closed 100 |
+| 주입한 API 장애, balanced 쓰기 | 0.542 | 1.120 | 예상 fail-closed 100 |
+| 주입한 API 장애, 만료 signed cache | 0.559 | 1.875 | 예상 fail-closed 100 |
+| 실제 HTTP + 주입한 RPC 장애 | 4.456 | 7.365 | 예상 fail-closed 100 |
+| 실제 HTTP + local EVM 폐기 증거 | 80.562 | 101.154 | signed BLOCK 100, unsafe ALLOW 0 |
+
+- 환경: Windows, Node24.13.0, SQLite WAL, loopback HTTP, local Ganache, concurrency4. API 장애는 즉시 실패를 주입했으므로 TCP timeout 지연이 아니다. Ganache의 Node24 µWS fallback 경고가 있었으며 stderr를 JSON 증거에 섞지 않았다.
+- 측정 범위는 admission 호출 시작→결정/예상 fail-closed다. scanner는 합성 report이며 **파일 hash·프로세스 시작·warmup/control 검사·테스트넷·matrix를 포함하지 않는다**. 이전 날짜 smoke와 통제된 성능 비교가 아니며 p99 안정성·production 처리량/SLO·CAP2-504 전체 완료를 주장하지 않는다.
+- 같은 구현의 전체 `npm test` exit0: **445 PASS / 0 FAIL / 35 SKIP** (Backend150/12, Security133/19, Gateway120/3, Dashboard42/1; PASS/SKIP). 세 smoke PASS. Security는 별도 재실행도133/0/19다. 집중 측정기 검사12 PASS/0 SKIP 및 TypeScript PASS, 독립 reviewer 확인. 가장 최근 전체 production build는 선행 `8f06733`에서 성공했으며 이후 변경은 측정기/회귀 검사뿐이다.
+- 원자료는 별도 Reviewer도 독립 재계산해 통과했다. SHA/boundary snapshot·406파일·11개 raw 필드 whitelist와 문서 수치를 대조했으며 긴 측정을 새로 실행하거나 파일을 수정하지 않았다.
+
+### 같은 날 Linux 통합 검증 완료 — `7df0453`
+
+[CI36732591060](https://github.com/sihoon-0077/MCPShield/actions/runs/36732591060)는 `7df04539a7a1434eeab71fba919ad3bd0662b6e9`에서 **SUCCESS**로 종료됐다. 2026-09-30 15:16:52 UTC = 10월1일 00:16:52 KST 확인. 후속 원자료 측정기 `8569025`나 아직 작업 중인 publisher 연결 코드의 전체 CI로 전용하지 않는다.
+
+| 검증 | 실제 결과 |
+|---|---|
+| Node22 / Node24 | 전체 job SUCCESS, 테스트·production build·built HTTP forms 성공 |
+| PostgreSQL | 48 PASS / 0 FAIL / Docker health 1 SKIP; 실제 SQL retry/DLQ 및 별도 빈 DB로 백업 복원 성공 |
+| builder 보안 | 실제 이미지 재빌드·Trivy HIGH/CRITICAL gate PASS. 예외/차단 기준 완화 없음 |
+| npm 준비 / Gateway·Agent / scoped scanner | 별도 native 단계 모두 PASS; Agent/분석 모델은 로컬 합성 응답 계약 |
+| OCI 독립 스캔 / 전체 폐기 경로 | 실제 native 실행 PASS; 앞선 오류 재현 지점의 signed REVOKED 및 두 Gateway 차단 기대값 유지 |
+| prepared v1 / scoped Node v2 전체 경로 | 각각 실제 Docker→독립 검증자 프로세스→V2→Gateway 단계 PASS |
+| 격리 / Compose / 관측성 | 실제 Linux sandbox, Docker→V2→두 Gateway, 전체 Compose 기동, 인증된 Grafana provisioning·exporter→collector→Prometheus 합성 metric 관측 PASS |
+| production audit / tracked secret 검사 | 기존 기준 PASS. 앞선 MODERATE 전이 의존성 기록은 별도 잔여 위험 |
+
+빠른 suite의 환경별 SKIP은 뒤 명시적 native/PG 단계와 구분했다. OCI 구성 스캔과 scoped Node fullcycle은 앞 단계에서 SKIP 후 각 전용 단계에서 실제 PASS했다. PR에서 실행하지 않는 `repeat-demo`, `signed-image` job과 failure-only 진단 단계의 SKIP은 정상 조건이다. **최종 RC clean10/10·이미지 서명·공개 배포·실제 AI·Base Sepolia 성공을 의미하지 않는다.**
+
 ## 2026-09-30 재개 기록
 
 ### 최신 보안 이미지 체크포인트 — `8f06733`

@@ -57,7 +57,13 @@
 - 2026-09-30 재개: 미커밋 상태로 보존된 trace 수정 2파일을 검수하고 `3997871`로 통합했다. 재시도/terminal/DLQ 감사 기록이 원래 action trace에 남는다. 전체 로컬 **442 PASS / 0 FAIL / 35 SKIP**, 세 smoke 및 production build PASS. 종료된 이전 CI의 OCI `STATUS_UNAVAILABLE` 실패는 별도 조사 중이며 전체 Linux 성공·v2 완료를 선언하지 않는다.
 - 2026-09-30 후속: `6f7fe17` CI의 Node24/실제 PG는 성공했지만 builder HIGH 3건으로 Node22가 중단됐다. `8f06733`에서 기존 SRI 검증 절차로 brace-expansion5.0.11/undici6.28.1을 적용하고 label·설치 검사·report를 shared exact patch set으로 일치시켰다. 전체 로컬 **444 PASS / 0 FAIL / 35 SKIP**, 세 smoke/production build 및 별도 reviewer 통과. 새 Linux 이미지 검사 전에는 해결 검증 완료로 세지 않는다. CVE/원본 run/잔여 moderate는 [진행 기록](capstone-progress-2026-09-22.md)에 남겼다.
 
-## 다음 publisher pipeline 연결 시 주의
+- 2026-10-01 KST: `8569025`에 기존 admission smoke의 opt-in 원자료(최대8,000건)를 추가하고 깨끗한 SHA에서 phase당100회·총800회를 실제 측정했다. 추적 JSON·SHA·환경·집계 대조·제외 범위는 [진행 기록](capstone-progress-2026-09-22.md)에 연결했다. 전체 로컬445 PASS/0 FAIL/35 SKIP·세 smoke PASS. `7df0453` Linux의 builder security와 OCI 전체 폐기 경로는 PASS, 전체 run은 진행 중이며 후속 측정기 SHA의 CI와 구분한다.
+
+- 2026-10-01 KST 후속: `7df0453` [CI36732591060](https://github.com/sihoon-0077/MCPShield/actions/runs/36732591060) 전체 SUCCESS. Node22/24·PG·필수 native·Compose·실제 관측 파이프라인 성공을 완료 로그로 확인했다. 빠른 suite의 SKIP과 별도 실제 실행을 구분했고 dispatch 전용10회 반복/이미지 서명은 SKIP이다. 다음 publisher API/validator/UI 연결은 별도 worktree에서 구현·리뷰하며 이 선행 성공으로 대신하지 않는다.
+
+## publisher pipeline 연결 — 설계 당시 경계 및 현재 결과
+
+아래 설계는 `b8ec89d`/`4225255`와 Dashboard `235d52b`/`751cd5f`/`6edbe6a`로 통합했다. additive operator 계약은 `1e34a82`에 기록했다. 독립 source/key 재검증·암호화 publisher leaf·준비 identity 충돌 보존·행동 안전과 분리된 화면을 구현했다. 이후 초기화 실패 cleanup을 `cbf7760`, 테스트 파일 worker 상한을 `c53e016`으로 수정했다. 같은 구현의 기본 전체 검사453 PASS/0 FAIL/35 SKIP·세 smoke·production build·built-form HTTP3건 PASS. 새 Linux/Docker/PG CI는 별도 확인한다. [실패 이력을 포함한 검증 수치와 미완료 경계](capstone-progress-2026-09-22.md)를 먼저 읽는다. 아래 문단은 구현 전 설계 기록이다.
 
 현재 서명 검증은 resolver에 연결되었지만 API/독립 validator의 운영자 설정은 아직 연결되지 않았다.
 API source 등록, scoped 준비/재검증, validator 독립 수집 모두 같은 실측 source identity에 대해 검증해야 한다.
