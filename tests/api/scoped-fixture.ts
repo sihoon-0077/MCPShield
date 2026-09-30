@@ -40,7 +40,7 @@ export async function scopedContractServer() {
     try {
       const chunks: Buffer[] = []; let bytes = 0;
       for await (const chunk of request) { bytes += chunk.length; if (bytes > 256 * 1024) throw Error(); chunks.push(chunk); }
-      const body = JSON.parse(Buffer.concat(chunks).toString()), role = body.text.format.name.replace("mcpshield_scoped_v2_", "");
+      const body = JSON.parse(Buffer.concat(chunks).toString()), role = body.text.format.name.replace(/^mcpshield_scoped_v2(?:_1)?_/, "");
       if (!Object.hasOwn(counts, role) || body.store !== false || body.tools?.length !== 0) throw Error();
       const dto = JSON.parse(body.input[0].content.split("\n").at(-1)); counts[role]++;
       const value = role === "probe" ? { scenarios: ["NORMAL", "ADVERSARIAL"].flatMap(kind => Array.from({ length: dto.minimumScenariosPerKind }, (_, i) => ({

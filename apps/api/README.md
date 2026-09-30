@@ -545,7 +545,8 @@ Both policies are listed under `/v1/policies`; v1 defaults, hashes and requests 
 unchanged. Prepare still accepts only `{policyHash}`. The server generates the
 full `executionPolicy.semantic` commitment. A changed semantic mode produces a
 different manifest/release identity, not a reinterpretation of an old approval.
-OCI v2 and prepared baselines remain unsupported.
+OCI v2 remains unsupported. This 2.0 policy does not accept prepared baselines;
+the separately opted-in 2.1 contract below does, without changing 2.0 hashes.
 
 In addition to the existing pinned `CONTROL_PREPARED_*` and Docker configuration,
 API and worker require:
@@ -671,6 +672,66 @@ The separate real Linux fullcycle is
 with `MCPSHIELD_DOCKER_TESTS=1`, `MCPSHIELD_SCOPED_DOCKER_TESTS=1` and a pinned local
 `MCPSHIELD_RUNTIME_BUILDER_IMAGE`. It uses a naturally sized authored mailbox,
 separate local catalogues with the same ephemeral publisher signing both complete
-safe/malicious sources, two real validator subprocesses, local EVM quorum and
+safe/malicious sources, three real validator subprocesses, local EVM quorum and
 Gateway allow/revoke with Docker create/start evidence. No paid provider, actual
 customer data or public-registry provenance is claimed.
+
+### Opt-in scoped baseline 2.1
+
+Administrators may register the exact `scopedBaselinePreparedPolicy(mode)` document
+(`version: "2.1.0"`, semantic schema `mcpshield.scoped-review-policy.v2.1`) through
+the existing policy API. It is **not seeded by default**; the current public UI
+still selects 2.0. Existing 2.0, legacy automatic source baselines and OCI behavior
+are unchanged. Baselines neither inherit PASS nor remove current risk coverage.
+
+For 2.1 only, preparation bodies are exactly
+`{policyHash, baselineReleaseId: null | preparedReleaseId}`. The existing scans
+request also requires that property. Missing, `undefined` and a source release ID
+are not substitutes for explicit `null` or a validated prepared identity. A selected
+baseline must be a same-tenant, same-tool scoped Node 2.0/2.1 runtime with matching
+evidence mode and a different original source identity. Its original encrypted
+prepared evidence and worker proof must remain available; previous chain approval
+is not required or inherited.
+
+API admission templates have no Docker socket: they validate the stored worker
+proof, Merkle-bound closure and fresh operator source/provenance/publisher. Workers
+and signing validators independently export the selected image and the scanner
+performs isolated baseline `tools/list`; it does not rerun the previous full AI
+review or behavior probes. Both runtime/source bindings, selected prepared ID/null,
+publisher pins and private configuration hash are frozen before execution and
+rechecked after scanning. Missing/changed authority fails closed. Observation time
+is evidence metadata, not an identity/cache key.
+
+Selection is a **scan/report-root context**, not a new execution identity. A new
+comparison may create another child scan for the same prepared release, while the
+original `preparedEvidenceKey`, tag ownership, publisher proof and chain projection
+are preserved. Different baseline/config contexts cannot reuse a completed result;
+explicit null also excludes rows with a missing field. Reusing one idempotency key
+with another baseline returns 409. Retries retain their original selection/config.
+Public scan and preparation records expose the selected ID/null only, not runtime
+trust, local paths, publisher manifest, keys or raw comparison source.
+
+Before running a 2.1 validator, follow `apps/validator/README.md` to pin its
+independent selection in the existing operator-owned sources file. The API's
+baseline field and encrypted leaf are never the validator's selection authority.
+
+Portable boundary checks: `node --import tsx --test --test-concurrency=2
+tests/api/scoped-preparations.test.ts tests/api/scoped-validator.test.ts`.
+These exercise real SQLite, source bytes and loopback AI contracts with explicitly
+synthetic Docker proof. The separate native case is
+`node --import tsx --test --test-name-pattern="scoped Node v2.1 pinned baseline"
+tests/api/prepared-fullcycle.test.ts`, gated by `MCPSHIELD_DOCKER_TESTS=1`,
+`MCPSHIELD_SCOPED_DOCKER_TESTS=1`, `MCPSHIELD_SCOPED_BASELINE_DOCKER_TESTS=1` and a
+pinned `MCPSHIELD_RUNTIME_BUILDER_IMAGE`. It requires Linux Docker and proves its
+own result only when actually executed; adding the case does not establish native
+PASS. Rollback is to deprecate the 2.1 policy or stop selecting it, not to relabel
+2.1 evidence as 2.0.
+
+With the existing `MCPSHIELD_POSTGRES_TEST_URL`, run
+`node --import tsx --test --test-name-pattern="real POSTGRESQL" tests/api/scoped-validator.test.ts`
+to repeat the same API/cache/finalization case against PostgreSQL JSONB. The test
+creates and drops only its own randomly named schema to isolate global queue
+claims. Without that environment setting it is SKIP, not PostgreSQL evidence.
+Current prepared 2.0↔2.1 policy switching is rejected at intake with
+`SCOPED_EXECUTION_POLICY_MISMATCH` (409); selecting a supported 2.0 runtime **as
+the baseline of a newly prepared 2.1 current runtime** is a different, valid flow.

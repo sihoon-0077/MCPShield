@@ -25,7 +25,7 @@ export async function runControlWorkerOnce(store: ControlStore, options: Control
     const sourceRelease = release.sourceReleaseId ? await store.get(scan.tenantId, "release", release.sourceReleaseId) : undefined;
     // @ts-expect-error Scanner runtime is shared ESM JavaScript.
     const execute = options.scanArtifact ?? (await import("../../../services/scanner/src/scanner.mjs")).scanResolvedArtifact;
-    const result = await withSpan("scan.execute", { "mcpshield.scan_id": scan.scanId, "mcpshield.release_id": scan.releaseId }, () => prepared ? scanPreparedRelease(scan, release, options, policy.document, sourceRelease) : execute({ artifactDir: release.artifactDir, baselineDir: baseline?.artifactDir,
+    const result = await withSpan("scan.execute", { "mcpshield.scan_id": scan.scanId, "mcpshield.release_id": scan.releaseId }, () => prepared ? scanPreparedRelease(scan, release, options, policy.document, sourceRelease, store) : execute({ artifactDir: release.artifactDir, baselineDir: baseline?.artifactDir,
       scanId: scan.scanId, policy: policy.document, sourceType: release.sourceType,
       // The dedicated scanner entrypoint never executes arbitrary code on the host.
       ...options.scannerOptions,
@@ -44,7 +44,7 @@ export async function runControlWorkerOnce(store: ControlStore, options: Control
         : prepared ? { preparedRuntimeTrust: result.preparedRuntimeTrust, ...scopedMetadata(policy.document) } : {}), state: verdict === "ABSTAIN" ? "REVIEW_REQUIRED" : "READY_FOR_VALIDATORS" };
     await store.forTenant(scan.tenantId, async tx => {
       if (result.scopedConfigHash) {
-        const current = await scopedPreparationContext(options, scan.tenantId, policy.document, (await tx.get(scan.tenantId, "release", result.scopedSourceReleaseId))!);
+        const current = await scopedPreparationContext(options, scan.tenantId, policy.document, (await tx.get(scan.tenantId, "release", result.scopedSourceReleaseId))!, tx, scan.request.baselineReleaseId);
         if (hash(current.frozen) !== result.scopedConfigHash) throw Error("PREPARATION_CONFIG_CHANGED");
         const currentPolicy = await tx.get(scan.tenantId, "policy", scan.policyHash);
         if (!currentPolicy || currentPolicy.deprecatedAt || hash(currentPolicy.document) !== scan.policyHash) throw Error("INPUT_NO_LONGER_AVAILABLE");

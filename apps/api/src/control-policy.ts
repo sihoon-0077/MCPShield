@@ -5,6 +5,8 @@ export const defaultPolicy = {
 };
 export const preparedPolicy = { ...defaultPolicy, profile: "restricted-node-docker-v1", requireRemoteAi: true, requireCritic: true };
 export const scopedPreparedPolicy = (mode: "LOCAL_CONTRACT_TEST" | "PROVIDER_EXECUTION") => ({ ...preparedPolicy, version: "2.0.0", profile: SCOPED_NODE_PROFILE, semantic: scopedReviewPolicy(mode) });
+export const scopedBaselinePreparedPolicy = (mode: "LOCAL_CONTRACT_TEST" | "PROVIDER_EXECUTION") => ({ ...scopedPreparedPolicy(mode), version: "2.1.0", semantic: scopedBaselineReviewPolicy(mode) });
+export const isScopedBaselinePolicy = (policy: any) => policy?.profile === SCOPED_NODE_PROFILE && policy.version === "2.1.0" && validateScopedBaselineReviewPolicy(policy.semantic);
 export const isNodePreparedPolicy = (policy: any) => policy?.profile === preparedPolicy.profile || policy?.profile === SCOPED_NODE_PROFILE;
 const { maxArtifactBytes: _nodeArtifactLimit, ...commonOciPolicy } = preparedPolicy;
 export const ociPolicy = { ...commonOciPolicy, profile: "restricted-oci-offline-v1", semanticEvidenceMode: "LOCAL_CONTRACT_TEST",
@@ -13,7 +15,7 @@ export function validPolicy(document: any): boolean {
   if (document?.profile === SCOPED_NODE_PROFILE) {
     const { semantic, ...base } = document;
     return Object.keys(document).sort().join() === Object.keys(scopedPreparedPolicy("LOCAL_CONTRACT_TEST")).sort().join()
-      && document.version === "2.0.0" && validateScopedReviewPolicy(semantic)
+      && (document.version === "2.0.0" && validateScopedReviewPolicy(semantic) || isScopedBaselinePolicy(document))
       && validPolicy({ ...base, version: "1.0.0", profile: preparedPolicy.profile });
   }
   const oci = document?.profile === ociPolicy.profile, prepared = document?.profile === preparedPolicy.profile || oci;
@@ -36,7 +38,7 @@ export function policyVerdict(bundle: any, scanResult: any, policy: any = defaul
     const budget = runtimeTrust.sourceBudget;
     if (!budget || budget.sourceArtifactDigest !== binding.sourceArtifactDigest || !Number.isSafeInteger(budget.sourceBytes)
       || budget.sourceBytes < 0 || budget.sourceBytes > policy.maxArtifactBytes) return "ABSTAIN";
-    return scopedAssessment.assessScopedPreparedPolicy(bundle, scanResult, binding, runtimeTrust).verdict as "PASS" | "FAIL" | "ABSTAIN";
+    return (isScopedBaselinePolicy(policy) ? scopedAssessment.assessScopedPreparedPolicyV21 : scopedAssessment.assessScopedPreparedPolicy)(bundle, scanResult, binding, runtimeTrust).verdict as "PASS" | "FAIL" | "ABSTAIN";
   }
   if (policy.profile === ociPolicy.profile) {
     if (!validPolicy(policy) || !runtimeTrust) return "ABSTAIN";
@@ -82,6 +84,6 @@ import { assessPreparedPolicy } from "../../../services/scanner/src/prepared-pol
 // @ts-expect-error Separate scoped v2 assessor never reuses v1 authorization.
 import * as scopedAssessment from "../../../services/scanner/src/prepared-policy.mjs";
 // @ts-expect-error Shared frozen scoped commitment.
-import { SCOPED_NODE_PROFILE, scopedReviewPolicy, validateScopedReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
+import { SCOPED_NODE_PROFILE, scopedReviewPolicy, validateScopedReviewPolicy, scopedBaselineReviewPolicy, validateScopedBaselineReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
 // @ts-expect-error Shared strict OCI policy is separate from Node and legacy approval.
 import { assessOciPolicy } from "../../../services/scanner/src/oci-policy.mjs";

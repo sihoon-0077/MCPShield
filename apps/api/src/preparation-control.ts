@@ -3,7 +3,8 @@ import type { FastifyInstance } from "fastify";
 import { loadEvidence, type ControlOptions, type Credential } from "./control-plane.js";
 import type { ControlStore } from "./control-store.js";
 import { preparedPolicy, ociPolicy, validPolicy, isNodePreparedPolicy } from "./control-policy.js";
-import { scopedPreparationContext } from "./scoped-config.js";
+import { scopedPreparationContext, checkedBaselineRequest } from "./scoped-config.js";
+import { isScopedBaselinePolicy } from "./control-policy.js";
 import { preparedTrust } from "./prepared-config.js";
 import { ociTrust } from "./oci-config.js";
 import { enqueuePreparation, preparations, publicPreparation, retryPreparation } from "./preparation-store.js";
@@ -19,7 +20,7 @@ export function sourceIdentity(source: Record<string, any>) {
 }
 export function registerPreparationRoutes(api: FastifyInstance, store: ControlStore, options: ControlOptions,
   authenticate: (header: string | undefined) => Credential, authorize: (identity: Credential, role: "operator" | "admin") => void) {
-  const enabled = async (policy: any, tenant: string, source: Record<string, any>) => {
+  const enabled = async (policy: any, tenant: string, source: Record<string, any>, baselineReleaseId?: string | null) => {
     const profile = policy.profile;
     if (profile === ociPolicy.profile) {
       if (!options.ociRuntime || options.scannerOptions?.sandbox !== "docker") throw failure("PREPARATION_NOT_CONFIGURED", 503);
@@ -27,13 +28,13 @@ export function registerPreparationRoutes(api: FastifyInstance, store: ControlSt
     }
     if (!isNodePreparedPolicy(policy)) throw failure("PREPARATION_POLICY_REQUIRED");
     if (!options.preparedRuntime || options.scannerOptions?.sandbox !== "docker") throw failure("PREPARATION_NOT_CONFIGURED", 503);
-    if (profile !== preparedPolicy.profile) return (await scopedPreparationContext(options, tenant, policy, source)).frozen;
+    if (profile !== preparedPolicy.profile) return (await scopedPreparationContext(options, tenant, policy, source, store, baselineReleaseId)).frozen;
     return preparedTrust(options.preparedRuntime);
   };
   api.post("/releases/:sourceReleaseId/prepare", async (request, reply) => {
     const user = authenticate(request.headers.authorization); authorize(user, "operator");
     const body = request.body as any, sourceReleaseId = (request.params as any).sourceReleaseId;
-    if (!body || Object.keys(body).join() !== "policyHash" || !/^0x[a-f0-9]{64}$/.test(body.policyHash) || !/^0x[a-f0-9]{64}$/.test(sourceReleaseId)) throw failure("INVALID_PREPARATION_REQUEST");
+    if (!body || Array.isArray(body) || Object.keys(body).some(key => !["policyHash", "baselineReleaseId"].includes(key)) || !/^0x[a-f0-9]{64}$/.test(body.policyHash) || !/^0x[a-f0-9]{64}$/.test(sourceReleaseId)) throw failure("INVALID_PREPARATION_REQUEST");
     const key = request.headers["idempotency-key"];
     if (typeof key !== "string" || !key.trim() || key.length > 256) throw failure("IDEMPOTENCY_KEY_REQUIRED");
     const source = await store.get(user.tenantId, "release", sourceReleaseId);
@@ -42,7 +43,11 @@ export function registerPreparationRoutes(api: FastifyInstance, store: ControlSt
     const policy = await store.get(user.tenantId, "policy", body.policyHash);
     if (!policy || !validPolicy(policy.document) || !(source.sourceType === "oci" ? policy.document.profile === ociPolicy.profile : isNodePreparedPolicy(policy.document))) throw failure("PREPARATION_POLICY_REQUIRED");
     if (policy.deprecatedAt) throw failure("POLICY_DEPRECATED", 409);
-    const input = { sourceReleaseId, policyHash: body.policyHash, sourceIdentity: sourceIdentity(source), trustedConfig: await enabled(policy.document, user.tenantId, source) };
+    checkedBaselineRequest(policy.document, body);
+    if (!isScopedBaselinePolicy(policy.document) && Object.hasOwn(body, "baselineReleaseId")) throw failure("INVALID_PREPARATION_REQUEST");
+    const input = { sourceReleaseId, policyHash: body.policyHash, sourceIdentity: sourceIdentity(source),
+      ...(isScopedBaselinePolicy(policy.document) ? { baselineReleaseId: body.baselineReleaseId } : {}),
+      trustedConfig: await enabled(policy.document, user.tenantId, source, body.baselineReleaseId) };
     const result = await withSpan("preparation.accept", {}, () => enqueuePreparation(store, user.tenantId,
       { ...input, traceparent: traceHeaders().traceparent }, key, currentTraceId() ?? randomUUID()),
       { traceparent: typeof request.headers.traceparent === "string" ? request.headers.traceparent : undefined });
@@ -62,7 +67,7 @@ export function registerPreparationRoutes(api: FastifyInstance, store: ControlSt
     if (!policy || !validPolicy(policy.document)) throw failure("PREPARATION_POLICY_REQUIRED");
     const source = await store.get(user.tenantId, "release", job.sourceReleaseId);
     if (!source) throw failure("RELEASE_NOT_FOUND", 404);
-    return { preparation: publicPreparation(await retryPreparation(store, user.tenantId, id, await enabled(policy.document, user.tenantId, source))) };
+    return { preparation: publicPreparation(await retryPreparation(store, user.tenantId, id, await enabled(policy.document, user.tenantId, source, job.request.baselineReleaseId))) };
   });
   api.get("/preparations/:preparationId/evidence", async (request) => {
     const user = authenticate(request.headers.authorization); authorize(user, "operator");

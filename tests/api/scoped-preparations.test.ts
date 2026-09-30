@@ -7,7 +7,7 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { buildApp } from "../../apps/api/src/app.js";
 import { ControlStore } from "../../apps/api/src/control-store.js";
-import { hash, loadEvidence, type ControlOptions } from "../../apps/api/src/control-plane.js";
+import { hash, loadEvidence, saveEvidence, type ControlOptions } from "../../apps/api/src/control-plane.js";
 import { preparedPolicy, scopedPreparedPolicy, validPolicy, policyVerdict } from "../../apps/api/src/control-policy.js";
 import { checkedProvenanceCatalogue, checkedScopedConfig, loadScopedAuthority, loadScopedProvenance, publisherDocuments, scopedPreparationContext } from "../../apps/api/src/scoped-config.js";
 import { claimPreparation, failPreparation, preparations } from "../../apps/api/src/preparation-store.js";
@@ -216,9 +216,15 @@ test("duplicate runtime identity cannot silently upgrade/remove/rotate publisher
 
 test("Node v2 scan/appeal checks exact mode inside the transaction without consuming a rejected appeal slot", async () => {
   const f = await fixture();
-  const payload = { releaseId: f.source.releaseId, policyHash }, headers = { authorization: `Bearer ${token}`, "idempotency-key": "mode-check" };
-  const target = { ...f.source, runtimeProfile: policy.profile, semanticEvidenceMode: "LOCAL_CONTRACT_TEST", status: "REVOKED", policyHash: hash(preparedPolicy) };
   try {
+    const scoped = await scopedPreparationContext(f.options, tenant, policy, f.source);
+    const output = syntheticOutput({ sourceReleaseId: f.source.releaseId, releaseId: f.source.legacyReleaseId, scanId: randomUUID(), preparation: { sourceTreeDigest: f.source.artifactDigest, platform: f.options.preparedRuntime!.platform }, scopedReview: scoped.scopedReview }, async () => {});
+    const bundle = createEvidenceBundle({ ...Object.fromEntries(Object.entries(output.bundle.files).map(([key, value]) => [key, JSON.parse(value as string)])),
+      "prepared/source-identity.json": Object.fromEntries(["releaseId", "toolId", "artifactDigest", "manifestDigest", "toolSurfaceHash"].map(key => [key, (f.source as any)[key]])) });
+    const target = { ...exactReleaseIdentity({ toolId: f.source.toolId, ...output.binding }), artifactDigest: output.binding.artifactDigest, manifestDigest: output.binding.manifestDigest,
+      toolSurfaceHash: output.binding.toolSurfaceHash, runtimeProfile: policy.profile, semanticEvidenceMode: "LOCAL_CONTRACT_TEST", status: "REVOKED", policyHash: hash(preparedPolicy),
+      preparedEvidenceKey: await saveEvidence(f.options, tenant, bundle), preparedReportRoot: bundle.manifest.root };
+    const payload = { releaseId: target.releaseId, policyHash }, headers = { authorization: `Bearer ${token}`, "idempotency-key": "mode-check" };
     await f.store.put(tenant, "release", target.releaseId, target, true);
     const opened = await f.app.inject({ method: "POST", url: `/v1/releases/${target.releaseId}/appeals`, headers, payload: { reason: "Synthetic scoped mode regression" } });
     assert.equal(opened.statusCode, 201, opened.body);
