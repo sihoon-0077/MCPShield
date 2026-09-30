@@ -14,22 +14,22 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-002 | R: `tests/security/npm-closure.test.mjs`, `prepared-binding.test.mjs` | 실제 builder·source/closure/image 교체 거부; Linux 실행 |
 | CAP2-003 | R: `tests/security/prepared-observation.test.mjs`, `apps/gateway/test/protocol-guard.test.mjs` | 전체 pagination·정규화·description/schema/annotation 변경 |
 | CAP2-004 | N: resolver의 작은 demo publisher 서명 검사 | 같은 키 safe/bad 실제 서명, 누락·다른 키·bytes 변조 거부; sidecar는 source 밖 |
-| CAP2-005 | R/F: `services/resolver/`, `tests/api/scoped-preparations.test.ts` | 기존 provenance·baseline에 demo publisher 검증 수준 연결 |
+| CAP2-005 | R/F: `services/resolver/`, `tests/api/scoped-preparations.test.ts` | resolver `retrievedAt`와 출처 존재. publisher 수준은 `b8ec89d`/`4225255`로 연결; scoped/prepared pinned baseline은 아직 미지원 |
 | CAP2-006 | R: `tests/api/prepared-fullcycle.test.ts` | 같은 source/runtime/policy·독립 validator·Gateway 실제 통합 |
-| CAP2-101 | R: `tests/security/scanner.test.mjs`, `master-scanner.test.mjs` | 신호별 양성/음성·정상 허용 접근의 오탐 검사 |
+| CAP2-101 | R: `tests/security/scanner.test.mjs`, `master-scanner.test.mjs` | 신호별 양성/음성·정상 허용 접근 검사 존재; prepared/scoped baseline dependency diff 연결 남음 |
 | CAP2-102 | R: `tests/security/scoped-semantic.test.mjs`, `ai-provider.test.mjs` | 로컬 응답 계약과 실제 모델 호출 증거 분리; 모델·예산 필요 |
-| CAP2-103 | R: `tests/security/semantic-review.test.mjs` | 동일 baseline의 정상/권한 확대 사례·evidence span |
+| CAP2-103 | R: `tests/security/semantic-review.test.mjs` | legacy baseline 비교 존재. prepared/scoped는 명시적으로 baseline 거부; 현재 위험 분석을 생략하지 않는 버전 고정 비교 경로 필요 |
 | CAP2-104 | R: `tests/security/docker-sandbox.test.mjs` | Linux Docker 격리 필수; Windows SKIP은 완료 아님 |
 | CAP2-105 | F: `tests/security/scoped-prepared.test.mjs`, `tests/api/prepared-fullcycle.test.ts` | JSON sink 계약 수정 후 실제 canary hash·identity 결합 재실행 |
 | CAP2-106 | R: `tests/security/ai-probes.test.mjs`, `scoped-prepared.test.mjs` | 생성한 probe와 실제 실행 digest·인자·관찰 결합 |
 | CAP2-107 | R/F: `tests/security/scoped-prepared.test.mjs`, `tests/api/scoped-validator.test.ts` | safe PASS·bound violation FAIL·AI 장애 ABSTAIN; 기대값 완화 금지 |
 | CAP2-108 | R: `tests/security/scoped-policy.test.mjs`, `apps/dashboard/test/scoped-node-policy.test.tsx` | incomplete·test-only·관찰 범위 한계가 결과/화면에서 유지되는지 |
 | CAP2-201 | R: `tests/contracts/release-registry-v2.test.ts` | EIP-712 recovery·domain/policy/root·expiry/nonce 거부 |
-| CAP2-202 | R: `tests/api/scoped-validator.test.ts`, `prepared-fullcycle.test.ts` | 실제 별도 프로세스/키·독립 재검사; API verdict 복사 금지 |
+| CAP2-202 | R: `tests/api/scoped-validator.test.ts`, `prepared-fullcycle.test.ts` | 현재 native fullcycle은 서로 다른 2키/프로세스를 safe/bad에 사용. 4개 receipt를 3개 검증자로 세지 않음. 제3자 독립 검증과 terminal REVOKED 처리 검수 필요 |
 | CAP2-203 | R: `tests/contracts/release-registry-v2.test.ts` | 고유 2-of-3·중복/비활성·불일치 회귀 |
 | CAP2-204 | R: `tests/contracts/release-registry-v2.test.ts`, `apps/gateway/test/frame-expiry.test.mjs` | 격리 TTL·terminal revoke·승인 만료 우선순위 |
 | CAP2-205 | R: `contracts/scripts/deploy-v2.ts` | Base Sepolia 실제 배포·safe/revoke tx·source/bytecode 확인 필요 |
-| CAP2-206 | R: `tests/contracts/indexer.test.ts`, `tests/api/v2-fullcycle.test.ts` | 실제 전파·block/hash·중복/역순/재시작/stale, A/B 기록 |
+| CAP2-206 | R: `apps/indexer/src/v2-indexer.ts`, `tests/api/v2-fullcycle.test.ts` | 실제 전파·block/hash/reorg 경로 존재. `tests/contracts/indexer.test.ts`는 v1이므로 V2 중복/역순/재시작·관측시각/lag를 추가 검수해야 함 |
 | CAP2-207 | R: `tests/api/control-plane.test.ts`, `prepared-validator.test.ts` | off-chain 암호화/무결성·on-chain 필드·최종 공개 secret 검사 |
 | CAP2-301 | R: `scripts/demo/mcp-client.mjs`, `apps/gateway/test/gateway.test.mjs` | 실제 SDK stdio 통신·framing·stderr |
 | CAP2-302 | R: `apps/gateway/test/prepared-docker.test.mjs` | exact identity 거부 시 후보 start 0건 및 safe 양성 대조군 |
@@ -41,9 +41,9 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-401 | F: `apps/api/src/chain-outbox.ts`, 기존 SQL queue | durable attempt·backoff·DLQ·receipt 불명 때 nonce 보호·PG 회귀 |
 | CAP2-402 | R: `tests/api/control-plane.test.ts`, `preparations.test.ts` | 400/401/403/409·역할·임의 명령/키/경로 입력 거부 |
 | CAP2-403 | R: `apps/dashboard/test/control-integration.test.mts`, `workflow.test.tsx` | 판정/tx/admission 상호 로그·한국어 사용자 오류 실제 조회 |
-| CAP2-404 | R: `apps/dashboard/test/preparation-integration.test.mts` | 새 publisher/Agent 증거를 포함한 실제 브라우저 검수 필요 |
+| CAP2-404 | R: `apps/dashboard/test/preparation-integration.test.mts` | publisher/행동 안전 분리·고정 한국어 오류 UI 통합. SSR/forms 성공과 실제 브라우저 전체 조작은 구분; 후자 남음 |
 | CAP2-405 | R/F: `.github/workflows/frontend-gateway-devops.yml` | 같은 RC의 필수 native gate PASS·0 SKIP·독립 리뷰 |
-| CAP2-406 | R: 기존 `repeat-demo` workflow job·Compose | 새 RC clean Linux 10/10; 과거 결과로 대체 금지 |
+| CAP2-406 | R: 기존 `repeat-demo` workflow job·Compose | 기존 반복 job은 legacy V2 Docker fullcycle. 새 scoped publisher RC의 clean Linux 10/10으로 확장·실행해야 하며 과거 성공으로 대체 금지 |
 | CAP2-407 | R: `docs/pitch/MCPShield_사업계획서_10p.html` | RC에 맞는 실제 PPTX/PDF·3분 영상·검수된 링크 필요 |
 | CAP2-501 | R/N: `demo/fixtures/`, 기존 평가 harness | 개발셋 분리 정상20/공격20·family·두 사람 label 검토 필요 |
 | CAP2-502 | R/F: `benchmarks/` | 동일 holdout의 5개 비교군 원자료·ABSTAIN/N/A 분모 |
@@ -52,6 +52,8 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-505 | R/N: 기존 평가·handoff·CI 결과 | RC/model/prompt/policy/image/dataset/chain 묶음·원자료·실패/한계 |
 
 ## 이번 실행 기록의 출처
+
+- 2026-10-01 최신 기록: [재개·publisher 연결·실패 경계](capstone-progress-2026-09-22.md). 선행 `7df0453` Linux CI는 전체 SUCCESS. 후속 `1e34a82` 로컬 전체 검사는 초기 RPC 연결 실패/cleanup 누락으로 Backend152 PASS/1 FAIL/12 SKIP이며 나머지 suite 미실행. 같은 새 RC 검수 전까지 전체 완료율을 확정하지 않는다.
 
 - 수정 전: [PR CI 35696784563](https://github.com/sihoon-0077/MCPShield/actions/runs/35696784563), head `9a251ae`. Node 22 scoped scanner 및 scoped API 두 FAIL. Node 24와 PostgreSQL job 성공은 별도 경로의 증거다.
 - 최초 수정: `35019f6`의 두 authored fixture가 sink의 기존 JSON 계약을 사용하도록 수정. scanner/validator guard는 변경하지 않았다.

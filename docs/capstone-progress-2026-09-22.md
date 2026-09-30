@@ -4,6 +4,32 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-10-01 KST — 게시자 증거 연결, 통합 검증 진행 중
+
+기능 기준 `b8ec89d` + `4225255`, 화면 `235d52b` + `751cd5f` + `6edbe6a`, 계약 기록 `1e34a82`.
+기존 resolver의 Ed25519 검사를 API → prepared/scoped scan → 독립 validator → Dashboard에 연결했다. 새 서비스·DB·의존성은 추가하지 않았다.
+
+- 운영자 catalogue의 선택적 `publishers[정확한 source digest]`에서만 신뢰 공개키와 서명 manifest를 읽는다. 요청 body나 scanner의 `VALID` 표시는 신뢰 근거가 아니다. section이 설정되어 있는데 항목이 없거나 서명이 틀리면 거부한다. section이 없는 기존 unsigned 설정은 명시적으로 미검증이다.
+- 실제 source bytes를 다시 확인하고 공개키/proof를 frozen configuration 및 암호화 Merkle bundle의 `prepared/publisher.json`에 결합한다. 독립 validator는 자기 catalogue·source로 다시 검증한다. 기존 source identity의 5필드와 체인 ABI는 그대로다.
+- 등록/준비/재검사/최종 증거 생성에서 key·source 변경을 검사한다. 기존 prepared identity에 다른 publisher proof를 덮어쓰지 않는다. 충돌은 `PREPARED_RELEASE_COLLISION`; 기존 증거·소유권·체인 상태를 보존하고 새 미사용 자료만 정리한다.
+- 화면은 **게시자 서명 확인과 행동 안전성 판정을 분리**한다. 검증된 서명도 FAIL/REVOKED일 수 있다. 키·원문 서명·내부 경로는 공개 projection에 포함하지 않고 한국어 한 줄 오류를 제공한다.
+- 공개 `publisherVerification`은 등록/검사 시의 인증 증거다. 실시간 키 상태 또는 실행 허가가 아니며 catalogue에서 키를 지웠다고 기존 체인 승인이 자동 폐기되는 기능은 아니다. npm 공식 provenance가 아닌 `DEMO_ONLY_NOT_NPM_PROVENANCE`다.
+- 집중 backend 검사 36 PASS / 5 환경별 SKIP, 별도 reviewer 10 PASS / 0 SKIP 및 TypeScript PASS. 후속 collision 재검사 PASS. 화면 workflow/error 집중 9 PASS 및 forms 3 PASS. 이는 아래 전체 검사의 실패를 대체하지 않는다.
+
+### 최신 전체 검사에서 발견한 실패 — 해결 전 기록
+
+`1e34a82`의 `npm test`는 **Backend 152 PASS / 1 FAIL / 12 SKIP, exit1**이다. 뒤 Security/Gateway/Dashboard와 smoke 단계는 실행되지 않았다. 과거의 445 PASS를 이 버전의 결과로 사용하지 않는다.
+
+`tests/api/v2-fullcycle.test.ts`가 초기 로컬 RPC 연결에서 `SERVICE_TRANSPORT_UNAVAILABLE`로 약 6.4초에 실패했지만, 초기화가 cleanup 영역 밖에 있어 Ganache/provider가 남아 테스트 부모가 약 848초 종료되지 않았다. 해당 테스트의 PID·부모·파일을 확인한 뒤 그 자식 프로세스 하나만 종료하여 숨겨진 오류 출력을 수집했다. 당시 체인은 block0, API/DB 준비 전이었다. publisher DB 경로의 교착으로 확인된 것은 아니다.
+
+담당 backend가 초기화 실패 시 자원 정리와 제한 시간 내 subprocess 종료 회귀를 수정한다. RPC 보안/시간 제한이나 판정 기대값은 완화하지 않는다. 수정 후 전체 로컬 검사와 같은 새 SHA의 Linux/Docker 검증이 필요하다. **publisher native E2E·최종 RC 완료를 아직 주장하지 않는다.**
+
+### 다음 안전한 구현과 외부 실증의 경계
+
+- 코드/검수 잔여: scoped/prepared의 정확한 baseline 비교, 세 번째 별도 validator의 독립 검증 기록, V2 indexer 중복/역순/재시작 검수, 실제 Gateway OFF/ON 평가 연결, 새 scoped RC 10회 반복과 브라우저 검수.
+- 실제 AI 제공업체/모델·전송 허용 입력·비용 상한과 Base Sepolia RPC/전용 테스트 키/test ETH·거래 승인은 별도로 필요하다. 아직 외부 유료 호출·테스트넷 전송·main 머지·공개 재배포는 하지 않았다.
+- 독립 holdout 정상20/공격20·두 사람 label 검토, 동일 데이터의 5비교군, hash/warm-cold/Agent 비용과 테스트넷 폐기 지연 원자료도 남았다. 외부 키만 넣으면 전체가 끝나는 상태는 아니다.
+
 ## 2026-10-01 KST — admission 원자료 체크포인트 `8569025`
 
 - 기존 측정기에 `--raw-samples`만 추가했다. 기본 출력은 그대로이며 smoke에서만 허용하고 matrix/plan 혼용은 거부한다. 8개 경로 × 최대 1,000회 = 8,000건 상한, 고정 필드와 오류 코드만 출력한다. 원문 오류·키·후보 내용은 기록하지 않는다.

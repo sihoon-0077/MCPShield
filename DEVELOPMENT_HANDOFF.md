@@ -1,5 +1,7 @@
 # MCPShield 개발 인수인계 — 여기서 시작하세요
 
+> **가장 최근 상태 — 2026-10-01 KST:** publisher 실제 서명 증거의 API→prepared/scoped→독립 validator→화면 연결을 `b8ec89d`/`4225255` 및 `235d52b`/`751cd5f`/`6edbe6a`에 통합했다. [operator 계약](docs/interface-contract.md)과 [구현·검증 기록](docs/capstone-progress-2026-09-22.md)을 확인한다. 집중 검사는 성공했지만 `1e34a82` 전체 검사는 **Backend152 PASS/1 FAIL/12 SKIP**: 로컬 RPC 초기 연결 실패 후 테스트/provider 정리가 빠져 종료가 지연됐다. 뒤 suite는 실행되지 않았다. cleanup 수정 및 전체 재검증 진행 중이며 과거445 PASS/선행 Linux 성공을 최신 publisher 성공으로 사용하지 않는다. scoped baseline·3검증자·실제 AI·Base Sepolia·새 RC10회 반복/평가/산출물은 남아 있다. 아래는 날짜/SHA가 다른 체크포인트 기록이다.
+
 > **2026-09-22 캡스톤 범위 기준:** [캡스톤 최종 마스터 문서 v2.0](docs/MCPShield_캡스톤_최종_마스터문서_v2.0.md)을 먼저 읽는다. 기존 구현 최대 재사용, P0 40개 검수 단위와 원본 범위 매핑을 정의한다. 아래 구현률·CI·브랜치 상태는 기존 체크포인트 기록이며 새 CAP2 완료율이 아니다. 문서 작성은 구현·배포의 자동 재개를 뜻하지 않는다.
 
 > **후속 사용자 승인: 구현 재개.** 2026-09-22 사용자가 v2.0 구현과 기존 50% 중단 조건 해제를 요청했다. 현재 작업은 [캡스톤 실행 계획](docs/capstone-implementation-plan.md)을 따른다. 아래 9월 19일 중단/미푸시 표시는 당시 이력이며 현재 재개 지시를 취소하지 않는다. 모델·체인·배포의 외부 권한 경계는 유지한다.

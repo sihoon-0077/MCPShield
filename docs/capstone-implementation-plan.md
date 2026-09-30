@@ -61,7 +61,9 @@
 
 - 2026-10-01 KST 후속: `7df0453` [CI36732591060](https://github.com/sihoon-0077/MCPShield/actions/runs/36732591060) 전체 SUCCESS. Node22/24·PG·필수 native·Compose·실제 관측 파이프라인 성공을 완료 로그로 확인했다. 빠른 suite의 SKIP과 별도 실제 실행을 구분했고 dispatch 전용10회 반복/이미지 서명은 SKIP이다. 다음 publisher API/validator/UI 연결은 별도 worktree에서 구현·리뷰하며 이 선행 성공으로 대신하지 않는다.
 
-## 다음 publisher pipeline 연결 시 주의
+## publisher pipeline 연결 — 설계 당시 경계 및 현재 결과
+
+아래 설계는 `b8ec89d`/`4225255`와 Dashboard `235d52b`/`751cd5f`/`6edbe6a`로 통합했다. additive operator 계약은 `1e34a82`에 기록했다. 독립 source/key 재검증·암호화 publisher leaf·준비 identity 충돌 보존·행동 안전과 분리된 화면을 구현했다. 집중 검사/리뷰는 성공했지만 최신 전체 검사는 초기 RPC 실패 후 cleanup 누락으로 종료 지연/실패했다. Backend가 cleanup 회귀를 수정하고 Main이 전체 검사·같은 SHA Linux CI를 재실행한다. [검증 수치와 미완료 경계](capstone-progress-2026-09-22.md)를 먼저 읽는다. 아래 문단은 구현 전 설계 기록이다.
 
 현재 서명 검증은 resolver에 연결되었지만 API/독립 validator의 운영자 설정은 아직 연결되지 않았다.
 API source 등록, scoped 준비/재검증, validator 독립 수집 모두 같은 실측 source identity에 대해 검증해야 한다.
