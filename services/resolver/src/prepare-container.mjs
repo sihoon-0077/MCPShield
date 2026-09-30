@@ -1,6 +1,6 @@
 import { chmod, cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { inspectClosure } from './closure-files.mjs';
+import { inspectClosure, TOOLCHAIN_PATCHES, TOOLCHAIN_PATCH_SET } from './closure-files.mjs';
 
 // This program belongs to the pinned builder image. Candidate packages cannot replace it.
 const deadline = Date.now() + 100_000;
@@ -20,7 +20,7 @@ function npm(args, cwd = '/work') {
 
 try {
   if (process.getuid() === 0 || process.getgid() === 0) throw Error('NON_ROOT_REQUIRED');
-  for (const [name, version] of [['brace-expansion', '5.0.9'], ['ip-address', '10.3.1'], ['tar', '7.5.22']]) {
+  for (const [name, version] of Object.entries(TOOLCHAIN_PATCHES)) {
     if (JSON.parse(await readFile(`/usr/local/lib/node_modules/npm/node_modules/${name}/package.json`)).version !== version) throw Error('TOOLCHAIN_PATCH_REQUIRED');
   }
   stage = 'INPUT';
@@ -57,7 +57,7 @@ try {
   stage = 'MANIFEST';
   const manifest = await inspectClosure('/work/app', true);
   await writeFile('/work/closure-report.json', JSON.stringify({ ...manifest, installScripts: false, installNetwork: 'NONE',
-    nodeVersion: process.version, npmVersion: '12.0.2', toolchainPatches: 'brace-expansion@5.0.9,ip-address@10.3.1,tar@7.5.22',
+    nodeVersion: process.version, npmVersion: '12.0.2', toolchainPatches: TOOLCHAIN_PATCH_SET,
     sourceDescriptorDigest: supplied.sourceDescriptorDigest }));
   process.stdout.write('MCPSHIELD_CLOSURE_PREPARED\n');
 } catch (error) {

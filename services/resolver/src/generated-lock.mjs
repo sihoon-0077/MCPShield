@@ -6,7 +6,7 @@ import { isIP } from 'node:net';
 import * as tar from 'tar';
 import { preflightNpmRuntime } from './runtime-preflight.mjs';
 import { runRuntimeDocker } from './npm-closure.mjs';
-import { sha256 } from './closure-files.mjs';
+import { TOOLCHAIN_PATCH_SET, sha256 } from './closure-files.mjs';
 import { artifactDigest } from '../../scanner/src/scanner.mjs';
 import { copyFixtureSnapshot, removeFixtureSnapshot } from '../../scanner/src/snapshot.mjs';
 
@@ -57,7 +57,7 @@ export async function generateNpmLock(options, { metadataFixture } = {}) {
     const image = JSON.parse(await run(['image', 'inspect', options.builderImageDigest, '--format', '{{json .}}']));
     if (image.Id !== options.builderImageDigest || image.Os !== options.platform.os || image.Architecture !== options.platform.architecture ||
       image.Config?.Labels?.['io.mcpshield.runtime-builder'] !== 'node-closure-v1' || image.Config?.Labels?.['io.mcpshield.npm-version'] !== '12.0.2' ||
-      image.Config?.Labels?.['io.mcpshield.npm-patches'] !== 'brace-expansion@5.0.9,ip-address@10.3.1,tar@7.5.22' ||
+      image.Config?.Labels?.['io.mcpshield.npm-patches'] !== TOOLCHAIN_PATCH_SET ||
       image.Config?.Labels?.['io.mcpshield.lock-generator'] !== 'npm-package-lock-only-v1') throw Error('RUNTIME_LOCK_BUILDER_PROFILE_REQUIRED');
     stage = 'BROKER';
     await run(['network', 'create', '--internal', network]);

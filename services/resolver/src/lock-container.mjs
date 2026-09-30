@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, lstat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { TOOLCHAIN_PATCHES } from './closure-files.mjs';
 
 // Trusted program in the approved builder. Only package.json is mounted; no
 // candidate .npmrc, extension, source code, scripts, executable or host home.
@@ -8,7 +9,7 @@ let stage = 'TOOLCHAIN';
 let failureCode = 'FAILED';
 try {
   if (process.getuid() === 0 || process.getgid() === 0) throw Error();
-  for (const [name, version] of [['brace-expansion', '5.0.9'], ['ip-address', '10.3.1'], ['tar', '7.5.22']]) {
+  for (const [name, version] of Object.entries(TOOLCHAIN_PATCHES)) {
     if (JSON.parse(await readFile(`/usr/local/lib/node_modules/npm/node_modules/${name}/package.json`)).version !== version) throw Error();
   }
   if (JSON.parse(await readFile('/usr/local/lib/node_modules/npm/package.json')).version !== '12.0.2') throw Error();
