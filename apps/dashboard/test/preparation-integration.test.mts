@@ -174,15 +174,28 @@ test("BFF forwards exact optional baseline selection without converting omission
   } finally { previous === undefined ? delete process.env.MCPSHIELD_PUBLIC_ORIGIN : process.env.MCPSHIELD_PUBLIC_ORIGIN = previous; }
 });
 
-test("2.1 UI payloads reach real tenant API/worker through BFF with scan-specific null/ID and immutable runtime evidence", { timeout: 20000 }, async () => {
+test("2.1 UI payloads reach real tenant API/worker through BFF with scan-specific null/ID and immutable runtime evidence", { timeout: 20000 }, async t => {
+  const resources: (() => Promise<void>)[] = [];
+  t.after(async () => {
+    const errors = []; for (const close of resources.reverse()) try { await close(); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, "BASELINE_CONSOLE_TEST_CLEANUP_FAILED");
+  });
   const fixture = await syntheticPreparedFixture(), directory = await mkdtemp(join(tmpdir(), "mcpshield-console-baseline-"));
-  const snapshots = await Promise.all(["1.0.0", "1.0.1"].map(version => resolveArtifact({ sourceType: "local", locator: fileURLToPath(new URL(`../../../demo/fixtures/mail-mcp-${version}`, import.meta.url)) })));
+  resources.push(() => rm(directory, { recursive: true, force: true }));
+  const snapshots = [];
+  for (const version of ["1.0.0", "1.0.1"]) {
+    const snapshot = await resolveArtifact({ sourceType: "local", locator: fileURLToPath(new URL(`../../../demo/fixtures/mail-mcp-${version}`, import.meta.url)) });
+    resources.push(() => snapshot.cleanup()); snapshots.push(snapshot);
+  }
   const sources = snapshots.map(snapshot => ({ ...exactReleaseIdentity(snapshot), artifactDigest: snapshot.artifactDigest, manifestDigest: snapshot.manifestDigest, toolSurfaceHash: snapshot.toolSurfaceHash,
     artifactDir: snapshot.artifactDir, sourceType: "npm", legacyReleaseId: snapshot.releaseId, version: snapshot.metadata.version, status: "UNVERIFIED", policyHash: null, reportRoot: null, validUntil: null, chain: null }));
   const tenant = "console-baseline", token = "synthetic-baseline-operator-token", filename = join(directory, "private-catalogue.json");
   await writeFile(filename, JSON.stringify({ schemaVersion: "mcpshield.scoped-provenance-catalogue.v1", artifacts: sources.map(source => ({
     schemaVersion: "mcpshield.operator-code-artifact.v1", authority: "OPERATOR_LOCAL_CATALOG", contentClass: "CODE_ARTIFACT_NO_CUSTOMER_DATA", sourceArtifactDigest: source.artifactDigest })) }));
-  const store = await ControlStore.open(), currentPolicy = scopedBaselinePreparedPolicy("LOCAL_CONTRACT_TEST"), currentHash = hash(currentPolicy), previousHash = hash(scopedPreparedPolicy("LOCAL_CONTRACT_TEST"));
+  const store = await ControlStore.open();
+  let app: Awaited<ReturnType<typeof buildApp>> | undefined;
+  resources.push(async () => { if (app) await app.close(); else await store.close(); });
+  const currentPolicy = scopedBaselinePreparedPolicy("LOCAL_CONTRACT_TEST"), currentHash = hash(currentPolicy), previousHash = hash(scopedPreparedPolicy("LOCAL_CONTRACT_TEST"));
   const options: ControlOptions = { store, credentials: [{ tenantId: tenant, token, role: "operator" }, { tenantId: "foreign", token: "synthetic-baseline-foreign-token", role: "operator" }], artifactPath: "unused", evidencePath: join(directory, "evidence"), evidenceKey: "1".repeat(64),
     scannerOptions: { sandbox: "docker", allowRemoteAi: false }, preparedRuntime: fixture.config,
     scopedPrepared: { provenancePaths: { [tenant]: filename }, ai: { allowRemoteAi: true, disclosurePolicy: "SCOPED_PROVIDER_REVIEW_V1", evidenceMode: "LOCAL_CONTRACT_TEST", provider: "custom", url: "http://127.0.0.1:9", timeoutMs: 1000 } },
@@ -197,7 +210,7 @@ test("2.1 UI payloads reach real tenant API/worker through BFF with scan-specifi
         "static/closure-report.json": { ...fixture.documents["static/closure-report.json"], sourceDescriptorDigest: hashPreparedRuntimeDescriptor({ ...descriptor, stage: "PREFLIGHT", finalImageDigest: null, toolSurfaceHash: null }) } }) };
   };
   options.prepareRuntime = output; options.scanPreparedRuntime = output;
-  const app = await buildApp({ adminApiToken: "synthetic-admin-token", scannerApiToken: "synthetic-scanner-token", controlPlane: options });
+  app = await buildApp({ adminApiToken: "synthetic-admin-token", scannerApiToken: "synthetic-scanner-token", controlPlane: options });
   await app.listen({ host: "127.0.0.1", port: 0 });
   for (const source of sources) await store.put(tenant, "release", source.releaseId, source);
   await store.put(tenant, "policy", currentHash, { policyHash: currentHash, alias: "baseline-local", version: currentPolicy.version, document: currentPolicy, deprecatedAt: null });
@@ -247,6 +260,5 @@ test("2.1 UI payloads reach real tenant API/worker through BFF with scan-specifi
     assert.equal((await request("scans", body)).status, 404); assert.equal((await request(path, { policyHash: currentHash, ...pinned })).status, 404);
   } finally {
     names.forEach((name, index) => previous[index] === undefined ? delete process.env[name] : process.env[name] = previous[index]);
-    await app.close(); for (const snapshot of snapshots) await snapshot.cleanup(); await rm(directory, { recursive: true, force: true });
   }
 });
