@@ -8,8 +8,9 @@ import { inspectPreparedSources, preparedSemanticPrompt, LOCAL_CONTRACT_DISCLOSU
 import { citationCatalogue, promptSources, validateSemanticReport } from './semantic.mjs';
 import { assertScanResult } from './schema.mjs';
 import { redactEvidenceDocument, redactPromptText } from './redaction.mjs';
-import { SCOPED_NODE_PROFILE, SCOPED_REVIEW_SCHEMA, SCOPED_DISCLOSURE_POLICY, checkedScopedProvenance, validateScopedReviewPolicy } from './scoped-policy.mjs';
-import { verifyScopedSemanticInputV2, scopedSemanticPrompt, validateScopedProbeV2 } from './scoped-semantic.mjs';
+import { SCOPED_NODE_PROFILE, SCOPED_REVIEW_SCHEMA, SCOPED_BASELINE_REVIEW_SCHEMA, SCOPED_DISCLOSURE_POLICY, checkedScopedProvenance, validateScopedReviewPolicy, validateScopedBaselineReviewPolicy } from './scoped-policy.mjs';
+import { verifyScopedSemanticInputV2, verifyScopedSemanticInputV21, scopedSemanticPrompt, validateScopedProbeV2 } from './scoped-semantic.mjs';
+import { checkedScopedSourceIdentity, checkedPreparedBaselineEvidence, comparePreparedClosures } from './scoped-baseline.mjs';
 import { probeArgumentsDigest } from './mcp-probe.cjs';
 
 const sha = (value) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
@@ -28,7 +29,12 @@ export function assessScopedPreparedPolicy(bundle, result, binding, trusted) {
   return assessPolicy(bundle, result, binding, trusted, true);
 }
 
+export function assessScopedPreparedPolicyV21(bundle, result, binding, trusted) {
+  return assessPolicy(bundle, result, binding, trusted, 'baseline');
+}
+
 function assessPolicy(bundle, result, binding, trusted, scoped) {
+  const baselineMode = scoped === 'baseline';
   const profile = scoped ? SCOPED_NODE_PROFILE : 'restricted-node-docker-v1';
   const checks = Object.fromEntries(PREPARED_POLICY_CHECKS.map((name) => [name, false]));
   const abstain = (code) => ({ profile, verdict: 'ABSTAIN', checks, issues: [code] });
@@ -36,9 +42,9 @@ function assessPolicy(bundle, result, binding, trusted, scoped) {
     assertScanResult(result);
     if (!verifyEvidenceBundle(bundle, bundle.manifest.root) || !validatePreparedReleaseBinding(binding) ||
       binding.executionPolicy.profile !== (scoped ? SCOPED_NODE_PROFILE : 'prepared-node-observation-v1')) return abstain('PREPARED_EVIDENCE_OR_BINDING_INVALID');
-    // The additive 2.1 commitment/DTO is not a runtime approval integration yet.
+    // Each entry point authorizes only its exact semantic domain.
     // Even recomputed v2.0 reports cannot authorize a different semantic policy.
-    if (scoped && !validateScopedReviewPolicy(binding.executionPolicy.semantic)) return abstain('SCOPED_BASELINE_RUNTIME_NOT_INTEGRATED');
+    if (scoped && !(baselineMode ? validateScopedBaselineReviewPolicy : validateScopedReviewPolicy)(binding.executionPolicy.semantic)) return abstain('SCOPED_BASELINE_RUNTIME_NOT_INTEGRATED');
     if (scoped) checkedScopedProvenance(trusted?.sourceProvenance, binding.sourceArtifactDigest);
     if (!trusted || trusted.builderImageDigest !== binding.descriptor.builderImageDigest ||
       trusted.collectorDigest !== binding.executionPolicy.collectorDigest || trusted.observerDigest !== binding.executionPolicy.observerDigest ||
@@ -46,11 +52,19 @@ function assessPolicy(bundle, result, binding, trusted, scoped) {
       trusted.entrypointDigest !== binding.descriptor.entrypoint.digest || !/^sha256:[a-f0-9]{64}$/.test(trusted.closureDigest) ||
       trusted.sourceDescriptorDigest !== hashPreparedRuntimeDescriptor({ ...binding.descriptor, stage: 'PREFLIGHT', finalImageDigest: null, toolSurfaceHash: null })) return abstain('PREPARED_TRUST_ANCHOR_MISMATCH');
     const read = (path) => JSON.parse(bundle.files[path]);
+    let baseline = null, sourceIdentity;
+    if (baselineMode) {
+      sourceIdentity = checkedScopedSourceIdentity(trusted.sourceIdentity, binding.sourceArtifactDigest);
+      if (sourceIdentity.releaseId !== binding.sourceReleaseId || !equal(read('prepared/source-identity.json'), sourceIdentity)) return abstain('SCOPED_SOURCE_IDENTITY_INVALID');
+      const evidence = read('prepared/baseline.json');
+      baseline = checkedPreparedBaselineEvidence(evidence, { sourceIdentity, executionPolicy: binding.executionPolicy,
+        baseline: evidence === null ? null : evidence.selection }, trusted.baseline);
+    }
     const report = read('report.json');
     const observation = read('prepared/observation.json');
     if (!equal(read('prepared/binding.json'), binding) || !equal(read('runtime/descriptor.json'), binding.descriptor) ||
       !equal(read('runtime/execution-policy.json'), binding.executionPolicy) || result.artifactDigest !== binding.artifactDigest ||
-      result.toolSurfaceHash !== binding.toolSurfaceHash || report.scope !== (scoped ? 'RESTRICTED_NODE_DOCKER_V2' : 'RESTRICTED_NODE_DOCKER_V1') ||
+      result.toolSurfaceHash !== binding.toolSurfaceHash || report.scope !== (baselineMode ? 'RESTRICTED_NODE_DOCKER_V2_1' : scoped ? 'RESTRICTED_NODE_DOCKER_V2' : 'RESTRICTED_NODE_DOCKER_V1') ||
       Object.keys(result).some((field) => !equal(result[field], report[field])) || result.source !== 'LIVE' ||
       toolSurfaceHash(read('runtime/tools.json')) !== binding.toolSurfaceHash) return abstain('PREPARED_REPORT_IDENTITY_MISMATCH');
     if (observation.source !== 'LIVE_DOCKER' || observation.identity.observedDescriptorDigest !== binding.descriptorDigest ||
@@ -110,10 +124,17 @@ function assessPolicy(bundle, result, binding, trusted, scoped) {
         component.properties?.some((p) => p.name === 'mcpshield:package-json-digest' && p.value === digest)));
     const semantic = read('semantic/reviews.json');
     if (scoped) {
-      if (semantic.schemaVersion !== SCOPED_REVIEW_SCHEMA || semantic.approvalVerdict !== 'ABSTAIN' ||
+      let comparison;
+      if (baselineMode) {
+        comparison = comparePreparedClosures({ current: { ...inventory, contents }, tools: read('runtime/tools.json'), executionPolicy: binding.executionPolicy,
+          baseline: baseline === null ? null : { closure: baseline.closure, tools: baseline.semanticInput.tools, executionPolicy: baseline.semanticInput.binding.executionPolicy } });
+        if (!equal(comparison, read('static/package-diff.json'))) return abstain('SCOPED_PACKAGE_DIFF_MISMATCH');
+      }
+      if (semantic.schemaVersion !== (baselineMode ? SCOPED_BASELINE_REVIEW_SCHEMA : SCOPED_REVIEW_SCHEMA) || semantic.approvalVerdict !== 'ABSTAIN' ||
         semantic.fullSourceCoverage !== false || semantic.fullBehaviorCoverage !== false ||
         semantic.evidenceMode !== binding.executionPolicy.semantic.evidenceMode || semantic.issues.length ||
-        !verifyScopedSemanticInputV2({ input: semantic.input, proof: semantic.proof,
+        !(baselineMode ? verifyScopedSemanticInputV21 : verifyScopedSemanticInputV2)({ input: semantic.input, proof: semantic.proof,
+          ...(baselineMode ? { sourceIdentity, baseline: baseline?.semanticInput ?? null, comparison } : {}),
           files: independentlyReviewed.files, tools: read('runtime/tools.json'), executionPolicy: binding.executionPolicy,
           sourceProvenance: trusted.sourceProvenance, sourceArtifactDigest: binding.sourceArtifactDigest,
           runtime: { profile, runtimeDigest: binding.finalImageDigest, environmentDigest: inventory.digest } }) ||
@@ -124,7 +145,7 @@ function assessPolicy(bundle, result, binding, trusted, scoped) {
       for (const role of roles) {
         const item = semantic.reviews[role], execution = item.execution, prompt = scopedSemanticPrompt(semantic.input, role);
         if (execution.promptHash !== sha(prompt) || execution.inputDigest !== semantic.proof.inputDigest || execution.tools !== 'NONE' ||
-          execution.schemaName !== `mcpshield_scoped_v2_${role}` || execution.purpose !== 'security' ||
+          execution.schemaName !== `mcpshield_scoped_${baselineMode ? 'v2_1' : 'v2'}_${role}` || execution.purpose !== 'security' ||
           !['openai', 'custom'].includes(execution.provider) || execution.disclosurePolicy !== SCOPED_DISCLOSURE_POLICY ||
           execution.evidenceMode !== binding.executionPolicy.semantic.evidenceMode ||
           execution.provider === 'openai' && (execution.store !== false || !execution.model || execution.model !== execution.configuredModel)) {

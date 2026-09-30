@@ -3,14 +3,15 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hashPreparedRuntimeDescriptor } from '../../resolver/src/runtime-descriptor.mjs';
-import { preparedExecutionPolicy, scopedPreparedExecutionPolicy, validatePreparedExecutionPolicy } from './prepared-binding.mjs';
+import { preparedExecutionPolicy, scopedPreparedExecutionPolicy, validatePreparedExecutionPolicy, validatePreparedReleaseBinding } from './prepared-binding.mjs';
 import { canonicalJson, createEvidenceBundle } from './evidence.mjs';
 import { toolSurfaceHash } from './tool-surface.mjs';
 import { runSandbox } from './sandbox.mjs';
 import { validateProbePlan, generateSyntheticProbes } from './probes.mjs';
 import { redactEvidenceDocument } from './redaction.mjs';
-import { reviewScopedSemanticsV2 } from './scoped-semantic.mjs';
-import { SCOPED_NODE_PROFILE, checkedScopedProvenance } from './scoped-policy.mjs';
+import { reviewScopedSemanticsV2, reviewScopedSemanticsV21 } from './scoped-semantic.mjs';
+import { SCOPED_NODE_PROFILE, checkedScopedProvenance, validateScopedBaselineReviewPolicy } from './scoped-policy.mjs';
+import { comparePreparedClosures } from './scoped-baseline.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const digest = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -80,6 +81,21 @@ function stepEvidence(result) {
     failureCode: result.error || result.mcpReport?.error ? 'PREPARED_SANDBOX_OR_PROTOCOL_INCOMPLETE' : null };
 }
 
+// Only discovery is repeated for an old version: no old probe plan or AI verdict
+// is inherited. The caller separately exports bytes and verifies source authority.
+export async function discoverPreparedBaseline({ binding, timeoutMs = 15_000 }) {
+  if (!validatePreparedReleaseBinding(binding) || binding.executionPolicy.profile !== SCOPED_NODE_PROFILE) throw Error('SCOPED_BASELINE_BINDING_INVALID');
+  const policy = binding.executionPolicy, runtime = runtimeOf(binding.descriptor);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 30_000 ||
+    policy.collectorDigest !== digest(await readFile(join(HERE, 'mcp-probe.cjs'))) ||
+    policy.observerDigest !== digest(await readFile(join(HERE, 'observer-preload.cjs')))) throw Error('SCOPED_BASELINE_COLLECTOR_MISMATCH');
+  const result = await runSandbox({ mode: 'docker', preparedRuntime: runtime, timeoutMs, scanId: randomUUID(),
+    mcpProbe: true, probeCalls: [], egressAllowHosts: policy.egressAllowHosts });
+  if (!protocolComplete(result, runtime) || surfaceOf(result) !== binding.toolSurfaceHash || result.canaryObserved ||
+    result.egressEvents?.some(event => event.type === 'EGRESS_BLOCKED')) throw Error('SCOPED_BASELINE_DISCOVERY_INCOMPLETE');
+  return { tools: result.mcpReport.tools, discovery: stepEvidence(result), observedAt: new Date().toISOString() };
+}
+
 export async function observePreparedRuntime({ descriptor, expectedDescriptorDigest, probePlan, ai, scopedReview,
   timeoutMs = 15_000, egressAllowHosts = ['mail-api.local', 'exfil-sink.local'] }) {
   if (hashPreparedRuntimeDescriptor(descriptor) !== expectedDescriptorDigest || descriptor.stage !== 'CLOSURE_PREPARED' ||
@@ -96,6 +112,7 @@ export async function observePreparedRuntime({ descriptor, expectedDescriptorDig
   let plan = { scenarios: [] };
   let issue = null;
   let semantic = null;
+  let comparison = null;
   let executionPolicy = preparedExecutionPolicy({
     collectorDigest: digest(await readFile(join(HERE, 'mcp-probe.cjs'))), observerDigest: digest(await readFile(join(HERE, 'observer-preload.cjs'))),
     egressAllowHosts });
@@ -112,7 +129,12 @@ export async function observePreparedRuntime({ descriptor, expectedDescriptorDig
     if (!protocolComplete(steps.discovery, runtime)) throw Error('PREPARED_DISCOVERY_INCOMPLETE');
     const tools = steps.discovery.mcpReport.tools;
     if (scopedReview) {
-      semantic = await reviewScopedSemanticsV2({ ai, files: scopedReview.files, tools, executionPolicy,
+      const baselineMode = validateScopedBaselineReviewPolicy(executionPolicy.semantic);
+      if (baselineMode) comparison = comparePreparedClosures({ current: scopedReview.currentClosure, tools, executionPolicy,
+        baseline: scopedReview.baselineAcquired === null ? null : { closure: scopedReview.baselineAcquired.closure,
+          tools: scopedReview.baselineAcquired.semanticInput.tools, executionPolicy: scopedReview.baselineAcquired.semanticInput.binding.executionPolicy } });
+      semantic = await (baselineMode ? reviewScopedSemanticsV21 : reviewScopedSemanticsV2)({ ai, files: scopedReview.files, tools, executionPolicy,
+        ...(baselineMode ? { sourceIdentity: scopedReview.sourceIdentity, baseline: scopedReview.baselineAcquired?.semanticInput ?? null, comparison } : {}),
         sourceProvenance: scopedReview.sourceProvenance, sourceArtifactDigest: descriptor.sourceTreeDigest,
         runtime: { profile: SCOPED_NODE_PROFILE, runtimeDigest: descriptor.finalImageDigest, environmentDigest: scopedReview.closureDigest } });
       if (!semantic.scopeComplete) throw Error('PREPARED_SCOPED_REVIEW_INCOMPLETE');
@@ -140,5 +162,5 @@ export async function observePreparedRuntime({ descriptor, expectedDescriptorDig
     // Raw metadata is an encrypted, operator-only evidence object, never a public view/log.
     'runtime/tools.json': steps.discovery?.mcpReport?.tools ?? [],
     'runtime/tools.redacted.json': redactEvidenceDocument(steps.discovery?.mcpReport?.tools ?? []) });
-  return { report, observedDescriptor, bundle, ...(scopedReview ? { semantic } : {}) };
+  return { report, observedDescriptor, bundle, ...(scopedReview ? { semantic, comparison } : {}) };
 }
