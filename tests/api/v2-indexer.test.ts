@@ -151,7 +151,9 @@ test("V2 indexer: atomic audits, canonical order, duplicate/restart/reorg recove
         return captured;
       };
       let rejected: unknown;
-      try { await indexV2(store, relayer, options); } catch (error) { rejected = error; }
+      // A changed deployment setting cannot exempt resumed blocks below the new boundary.
+      try { await indexV2(store, relayer, shorterFork ? { ...options, deploymentBlock: staleRegistration.blockNumber + 10 } : options); }
+      catch (error) { rejected = error; }
       relayer.provider.getBlock = getBlock;
       assert.equal(replacement.blockNumber, staleRegistration.blockNumber - Number(shorterFork));
       assert.notEqual(replacement.blockHash, (oldParent ?? staleRegistration).blockHash);
