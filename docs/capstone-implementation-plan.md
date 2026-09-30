@@ -40,6 +40,12 @@
 
 ## 진행 로그
 
+- 2026-10-01 후속: indexer의 감사 저장·checkpoint 실패 및 동시 reorg/shorter-fork 저장 경합을 재현하고 기존 `forTenant` 블록 원자화·checkpoint/parent fence로 보완했다. 독립 최종 리뷰 후 `d423102`/`edb3843`/`6bfb51c`에 통합. 담당자 실제 Ganache/SQLite+기존 두 Gateway OTLP2 PASS, Reviewer 실제EVM1 PASS 및 별도 SQL interleaving 재현. 최종 Main6bfb51c 전체466 PASS/0 FAIL/35 SKIP·세 smoke/build/forms3 PASS. 새 Linux 성공은 별도 확인한다. API/validator baseline2.1 연결은 Security stable runtime 계약 확인 뒤 이어간다.
+
+- 2026-10-01 후속: `f1d2929` CI36744373202는 Node24/PG 성공, Node22 기본 검사·빌드 후 Docker readiness 시간 초과로 실패했다. `cee4f04`는 제한시간을 유지하고 서버 OS만 조회하도록 수정했다(집중10 PASS/2 SKIP·독립 리뷰). `6fc9dcf`에 baseline2.1 기반 계약을 통합했다(Main 집중27 PASS/1 SKIP·Reviewer 신규9 PASS). runtime 재취득/API/validator 연결과 실제 모델 증거는 별도 잔여다. indexer block 원자화 draft는 짧은 fork 동시성 경합을 추가 재현하여 보완·리뷰 중이며 완료로 세지 않는다.
+
+- 2026-10-01 후속: publisher Linux `5bad1e9`는 Node22/24 두 테스트 호환 문제로 실패, PG는 성공했다. `86673f6` 테스트만 수정하고 세 검증자 `4fb62d7`을 통합했다. 첫 전체는 Backend157/1/12로 OTLP 내부 EVM RPC 실패, 단독 실행은 성공했다. 근본 원인 미확정으로 고정 단계 진단 `2fa3bc2`를 추가했고 전체 재실행455 PASS/0 FAIL/35 SKIP·세 smoke/build/forms 성공. 새 native 결과는 별도 확인하며 CAP2-202 완료로 아직 세지 않는다. scoped baseline2.1·V2 indexer 원자성/재시작 검수는 승인된 후속 병렬 작업이다.
+
 - 재개 준비: 스킬·협업 규칙·v2.0 요구사항을 확인하고 새 파트 브랜치를 준비한다. 기능 완료 선언은 아니다.
 - Main + 3개 새 worktree를 `b11ed63`에서 생성했다. 기존 worktree는 보존하고 설치된 의존성을 재사용한다.
 - [40개 P0 증거 지도](capstone-evidence-map.md)를 만들었다. 작업용 매핑이며 최종 감사/완료율은 아니다.

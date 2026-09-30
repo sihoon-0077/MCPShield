@@ -8,7 +8,7 @@ import { inspectPreparedSources, preparedSemanticPrompt, LOCAL_CONTRACT_DISCLOSU
 import { citationCatalogue, promptSources, validateSemanticReport } from './semantic.mjs';
 import { assertScanResult } from './schema.mjs';
 import { redactEvidenceDocument, redactPromptText } from './redaction.mjs';
-import { SCOPED_NODE_PROFILE, SCOPED_REVIEW_SCHEMA, SCOPED_DISCLOSURE_POLICY, checkedScopedProvenance } from './scoped-policy.mjs';
+import { SCOPED_NODE_PROFILE, SCOPED_REVIEW_SCHEMA, SCOPED_DISCLOSURE_POLICY, checkedScopedProvenance, validateScopedReviewPolicy } from './scoped-policy.mjs';
 import { verifyScopedSemanticInputV2, scopedSemanticPrompt, validateScopedProbeV2 } from './scoped-semantic.mjs';
 import { probeArgumentsDigest } from './mcp-probe.cjs';
 
@@ -36,6 +36,9 @@ function assessPolicy(bundle, result, binding, trusted, scoped) {
     assertScanResult(result);
     if (!verifyEvidenceBundle(bundle, bundle.manifest.root) || !validatePreparedReleaseBinding(binding) ||
       binding.executionPolicy.profile !== (scoped ? SCOPED_NODE_PROFILE : 'prepared-node-observation-v1')) return abstain('PREPARED_EVIDENCE_OR_BINDING_INVALID');
+    // The additive 2.1 commitment/DTO is not a runtime approval integration yet.
+    // Even recomputed v2.0 reports cannot authorize a different semantic policy.
+    if (scoped && !validateScopedReviewPolicy(binding.executionPolicy.semantic)) return abstain('SCOPED_BASELINE_RUNTIME_NOT_INTEGRATED');
     if (scoped) checkedScopedProvenance(trusted?.sourceProvenance, binding.sourceArtifactDigest);
     if (!trusted || trusted.builderImageDigest !== binding.descriptor.builderImageDigest ||
       trusted.collectorDigest !== binding.executionPolicy.collectorDigest || trusted.observerDigest !== binding.executionPolicy.observerDigest ||

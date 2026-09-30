@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import type { ControlOptions } from "./control-plane.js";
@@ -10,10 +10,12 @@ const run = promisify(execFile), schemaVersion = "mcpshield.scanner-heartbeat.v1
 type Probe = { status: "UP" | "DOWN"; code: "DOCKER_AVAILABLE" | "DOCKER_UNAVAILABLE" | "DOCKER_TIMEOUT" };
 const isoTime = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 
-export async function probeScannerDocker(): Promise<Probe> {
+// Trusted in-process test seam only; never an environment/API command override.
+export async function probeScannerDocker(execute: (file: string, args: string[], options: ExecFileOptions) => Promise<{ stdout: string | Buffer }> = run): Promise<Probe> {
   try {
-    const { stdout } = await run("docker", ["info", "--format", "{{json .OSType}}"], { timeout: 1500, killSignal: "SIGKILL", maxBuffer: 1024, windowsHide: true });
-    return JSON.parse(stdout) === "linux" ? { status: "UP", code: "DOCKER_AVAILABLE" } : { status: "DOWN", code: "DOCKER_UNAVAILABLE" };
+    // Query the server OS without `info`'s unrelated CLI-plugin discovery.
+    const { stdout } = await execute("docker", ["version", "--format", "{{json .Server.Os}}"], { timeout: 1500, killSignal: "SIGKILL", maxBuffer: 1024, windowsHide: true });
+    return JSON.parse(String(stdout)) === "linux" ? { status: "UP", code: "DOCKER_AVAILABLE" } : { status: "DOWN", code: "DOCKER_UNAVAILABLE" };
   } catch (error: any) { return { status: "DOWN", code: error?.signal === "SIGKILL" ? "DOCKER_TIMEOUT" : "DOCKER_UNAVAILABLE" }; }
 }
 

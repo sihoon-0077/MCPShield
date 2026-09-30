@@ -46,7 +46,7 @@ test("deployment helper and preflight naturally exit after early RPC failures wi
 test("fullcycle early setup rejection leaves no handles in its own process", async () => {
   const environment = { ...process.env }; delete environment.NODE_TEST_CONTEXT;
   const result = await new Promise<{ error: any; stdout: string; stderr: string }>(done => execFile(process.execPath,
-    ["--import", "tsx", "--test", "--test-isolation=none", "--test-name-pattern=V2 early setup failure", fileURLToPath(new URL("../api/v2-fullcycle.test.ts", import.meta.url))],
+    ["--import", "tsx", "--test", "--experimental-test-isolation=none", "--test-name-pattern=V2 early setup failure", fileURLToPath(new URL("../api/v2-fullcycle.test.ts", import.meta.url))],
     { timeout: 10000, maxBuffer: 64 * 1024, windowsHide: true, env: environment }, (error, stdout, stderr) => done({ error, stdout, stderr })));
   assert.equal(result.error, null, `child must exit naturally; a passing subtest alone does not prove cleanup: ${result.error?.message}`);
   assert.match(result.stdout, /pass 1/); assert.match(result.stdout, /fail 0/);

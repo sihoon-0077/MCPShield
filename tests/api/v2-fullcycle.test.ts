@@ -33,6 +33,7 @@ async function fullCycle(realDocker: boolean, expectedChainId = 1337) {
   const owned: { app?: Awaited<ReturnType<typeof buildApp>>; relayer?: V2Relayer; store?: ControlStore; reader?: ReturnType<typeof v2ChainReader>; dir?: string } = {};
   const originalMode = process.env.CONTROL_SANDBOX_MODE;
   let primaryFailure: unknown;
+  let phase = "SETUP";
   try {
   await chain.listen(0, "127.0.0.1");
   const rpc = `http://127.0.0.1:${chain.address().port}`;
@@ -84,6 +85,7 @@ async function fullCycle(realDocker: boolean, expectedChainId = 1337) {
     assert.equal((await post(`/v1/validator/${quarantine ? "quarantines" : "attestations"}`, { scanId, payload: template.payload, signature })).action.actionId, response.action.actionId);
     return { template, signature };
   };
+    phase = "SAFE_FLOW";
     await settle((await post(`/v1/policies/${hash(defaultPolicy)}/publish`)).action.actionId);
     const prepareRelease = async (version: string) => {
       const release = (await post("/v1/releases/resolve", { sourceType: "fixture", locator: `mail-mcp-${version}` })).release;
@@ -159,6 +161,7 @@ async function fullCycle(realDocker: boolean, expectedChainId = 1337) {
     { traceparent: `00-${"f".repeat(32)}-${"e".repeat(16)}-01`, baggage: "private=synthetic-trace-poison" });
     assert.equal(tracedAdmission.decision, "ALLOW"); assert.equal(tracedAdmission.traceId, scanTrace);
     const snapshot = await chain.provider.request({ method: "evm_snapshot", params: [] });
+    phase = "BAD_FLOW";
     const bad = await prepareRelease("1.0.1");
     if (realDocker) {
       let pumping = true;
@@ -189,20 +192,25 @@ async function fullCycle(realDocker: boolean, expectedChainId = 1337) {
       const denied = await gateway(bad.release, agent); assert.equal(denied.decision, "BLOCK"); assert.equal(denied.releaseStatus, "REVOKED");
       await assert.rejects(runArtifact({ ...gatewayOptions(bad.release, agent), artifactDir: (await store.get("test-team", "release", bad.release.releaseId))!.artifactDir, capture: true }), (error: any) => error instanceof AdmissionBlockedError && error.decision.releaseStatus === "REVOKED");
     }
+    phase = "AFTER_GATEWAY_INDEX";
     await indexV2(store, relayer, { deploymentBlock: deployment.releaseRegistry.blockNumber, confirmations: 1 });
     assert.equal((await store.get("test-team", "release", bad.release.releaseId))?.status, "REVOKED");
+    phase = "POST_REVOKE_RECONCILE";
     assert.equal(await reconcileV2Actions(store, relayer), 0);
     const actions = await store.query("SELECT raw_tx,tx_hash,nonce FROM cp_chain_actions WHERE state = 'COMPLETED'");
     assert.ok(actions.every((action) => action.raw_tx && action.tx_hash && Number.isInteger(action.nonce)));
     assert.equal(new Set(actions.map((action) => action.nonce)).size, actions.length);
     // Crash after broadcast before receipt persistence: replay identical bytes, never a second transaction.
+    phase = "CRASH_RECOVERY";
     const [last] = await store.query("SELECT * FROM cp_chain_actions WHERE state = 'COMPLETED' ORDER BY nonce DESC LIMIT 1");
     await store.query("UPDATE cp_chain_actions SET state = 'PREPARED' WHERE action_id = ?", [last.action_id]);
     const parallel = await Promise.all([runChainActionOnce(store, relayer), runChainActionOnce(store, relayer)]);
     assert.equal(parallel.filter(Boolean).length, 1);
     const [recovered] = await store.query("SELECT * FROM cp_chain_actions WHERE action_id = ?", [last.action_id]);
     assert.equal(recovered.state, "COMPLETED"); assert.equal(recovered.raw_tx, last.raw_tx); assert.equal(recovered.tx_hash, last.tx_hash);
+    phase = "SECOND_DEPLOYMENT";
     const secondDeployment = await deployV2(rpc, accounts[0].secretKey, validators.map((v) => v.address), 1337);
+    phase = "SECOND_REGISTRY";
     const otherRegistry = new V2Relayer(rpc, secondDeployment.releaseRegistry.address, 1337, accounts[0].secretKey);
     try {
       const [registration] = await store.query("SELECT * FROM cp_chain_actions WHERE kind = 'REGISTER_RELEASE' AND release_id = ?", [safe.release.releaseId]);
@@ -219,13 +227,20 @@ async function fullCycle(realDocker: boolean, expectedChainId = 1337) {
       const [scoped] = await store.query("SELECT state FROM cp_chain_actions WHERE action_id = ?", [anotherAction.actionId]);
       assert.equal(scoped.state, "COMPLETED");
     } finally { otherRegistry.close(); }
+    phase = "REORG_RECONCILE";
     await chain.provider.request({ method: "evm_revert", params: [snapshot] });
     await pause(300); // ethers' bounded request cache must expire before observing the changed canonical head.
     assert.ok(await reconcileV2Actions(store, relayer) > 0);
+    phase = "REORG_INDEX";
     await indexV2(store, relayer, { deploymentBlock: deployment.releaseRegistry.blockNumber, confirmations: 1 });
     assert.equal((await store.get("test-team", "release", bad.release.releaseId))?.status, "UNVERIFIED");
     assert.ok((await store.events("test-team", bad.release.releaseId)).some((event) => event.eventName === "chain.event.orphaned"));
-  } catch (error) { primaryFailure = error; throw error; }
+  } catch (error) {
+    // Test-only fixed labels: never add RPC endpoints, arguments or raw errors.
+    console.error(JSON.stringify({ event: "v2_fullcycle_failure", phase,
+      code: error instanceof Error && error.message === "SERVICE_TRANSPORT_UNAVAILABLE" ? "SERVICE_TRANSPORT_UNAVAILABLE" : "OTHER_FAILURE" }));
+    primaryFailure = error; throw error;
+  }
   finally {
     if (originalMode === undefined) delete process.env.CONTROL_SANDBOX_MODE; else process.env.CONTROL_SANDBOX_MODE = originalMode;
     // buildApp owns these hooks only after it returns. A failed setup/close must

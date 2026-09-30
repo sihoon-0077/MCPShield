@@ -4,6 +4,40 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-10-01 KST 후속 — Docker 준비 검사 수정·baseline 2.1 기반 통합
+
+- `f1d2929`의 [CI36744373202](https://github.com/sihoon-0077/MCPShield/actions/runs/36744373202)는 **FAILURE**로 종료했다. Node24와 실제 PostgreSQL·별도 DB 복원은 SUCCESS. Node22도 기본 전체 검사·production build·built forms·admission 측정·Compose 설정 검사는 성공했으나 native Docker readiness에서 `DOCKER_TIMEOUT`으로 실패했다. 후속 builder/native 스캔·Compose E2E는 미실행이다. 이전 POSIX/Node22 테스트 호환 문제는 이 실행에서 해소됐지만 전체 Linux 성공은 아니다.
+- 준비 검사 로그는 약1511ms에 실패했으며 runner 정리 단계에는 `docker-buildx` orphan이 있었다. Docker 공식 [info 구현](https://github.com/docker/cli/blob/master/cli/command/system/info.go)은 서버 조회 전 CLI plugin 목록을 조사한다. [version 구현](https://github.com/docker/cli/blob/master/cli/command/system/version.go)은 실제 서버의 OS를 조회한다. 플러그인 조사가 지연 원인이라는 판단은 이 증거에 기반한 추론이며 동일 runner에서의 분리 성능 측정은 아니다.
+- `cee4f04`: 기존 heartbeat probe만 `docker version --format '{{json .Server.Os}}'`로 교체했다. 1500ms·SIGKILL·1024 bytes·외부2000ms 제한, Linux daemon 확인 및 오류 시 DOWN은 그대로다. 실제 후보는 실행하지 않는다. 집중 검사10 PASS/2 환경 SKIP, 타입 검사·독립 리뷰 PASS. 새 native CI 성공 전에는 시간 초과 해결을 확정하지 않는다.
+- `6fc9dcf`는 Security `b9f31b4`의 baseline 2.1 기반 코드를 독립 리뷰 후 통합했다. 현재 위험은 이전 버전과 같아도 검사하고, 두 버전의 원문·metadata를 합산해 전송 한도를 적용한다. 같은 dependency 버전에서 설치 bytes만 바뀐 경우도 구분한다. 기존2.0 정책 hash는 유지하고 새 정책의 runtime 승인은 명시 거부한다.
+- Main 집중 검사27 PASS/1 native SKIP, Reviewer 신규9 PASS/0 SKIP. synthetic inventory와 실제 loopback HTTP 계약 검사이며 Docker baseline 재취득·실제 AI·API/validator 연결 완료가 아니다. 후속 runtime 연결과 indexer 원자화는 별도 worktree 작업 중이다.
+- `6fc9dcf` 전체 **`npm test` 465 PASS/0 FAIL/35 SKIP**: Backend159/12, Security142/19, Gateway120/3, Dashboard44/1(PASS/SKIP). 세 smoke·production build PASS. 후속 forms 명령의 파일명을 잘못 지정해 묶음 명령은 exit1이었으나, 실제 `forms.test.mts`와 `MCPSHIELD_FORM_HTTP_TESTS=1`로 실행한 built HTTP 검사3 PASS/0 SKIP를 별도 확인했다. tracked secret 검사도 PASS. 앞선 간헐 RPC 실패의 근본 원인을 해결했다는 증거는 아니며 최신 native 결과와도 구분한다.
+
+### V2 indexer 블록 저장·동시 복구 보강
+
+Backend `98fdc53` → `e832f1c` → `e5896ec`를 독립 리뷰 후 Main `d423102` → `edb3843` → `6bfb51c`로 통합했다.
+
+- 실제 SQL trigger로 tenant 감사 저장 실패를 주입하면 기존 코드에 event1행이 남는 것을 재현했다. event별 트랜잭션만 추가한 중간안도 checkpoint 저장 실패 때 event1행이 남았다. 최종 코드는 **블록의 event·모든 관련 tenant 감사·checkpoint를 같은 기존 SQL 트랜잭션**으로 저장하며 모두0행으로 rollback한다. RPC 호출은 트랜잭션 밖에 두고 새 DB나 서비스를 추가하지 않았다.
+- 블록/transaction/log 순서 정렬, 범위 및 block hash 불일치 거부, 같은 canonical block의 중복 허용을 확인했다. 재조직된 이벤트의 orphan 감사와 event/checkpoint 삭제도 한 트랜잭션이다.
+- Reviewer가 먼저 같은 높이의 새 checkpoint 아래 옛 event가 남는 경합을 독립 재현했다. 이어 Main이 짧아진 fork의 parent가 바뀐 경우를 지적하고 양쪽이 재현했다. 후자는 다음 poll에 복구되더라도 일시적 혼합 체인을 저장하므로 승인하지 않았다. 최종 코드가 저장 직전 same-height hash·predecessor 존재/parentHash를 확인하고 rewind 전 latest number/hash도 비교한다. 정확히 `deploymentBlock` 한 블록만 predecessor 예외이며 설정 변경으로 아래 블록 전체를 면제하지 않는다.
+- 새 `release.chain.observedAt`은 성공한 fresh read 관측 시간이다. 실패 시 이전 chain/시간을 유지하며 UNVERIFIED/chainUnavailable을 표시한다. `chain.synchronized`의 pass 종료 시각과 block 단위 lag는 개별 릴리스 성공이나 Gateway 허가가 아니다. `/v1/releases/:releaseId`와 `/v1/releases/:releaseId/history`의 기존 인증 경로 및 Worker JSON 로그에서 관측·감사를 확인한다. Gateway의 별도 fresh authority는 유지한다.
+- Backend 최종 `e5896ec` 실제 Ganache/SQLite 신규 검사1 PASS(약30.5초), 기존 실제 두 Gateway·OTLP fullcycle1 PASS(약46.5초, 87spans/connected25), 타입 검사 PASS. Reviewer는 `98fdc53` 신규 실제EVM1 PASS 및 shorter-fork 수정 전/후 synthetic RPC+실제SQL 재현을 별도로 수행하고 최종 diff를 승인했다. native PG 경합·OS 프로세스 강제 종료·Base Sepolia 성공을 주장하지 않는다. DB/provider close→reopen 검증과 OS 재시작은 다르다.
+- 최종 Main `6bfb51c` **전체 `npm test` 466 PASS/0 FAIL/35 SKIP**, 세 smoke·production build·built forms3 PASS/0 SKIP. Backend160/12, Security142/19, Gateway120/3, Dashboard44/1(PASS/SKIP). 같은 전체 실행에서 신규 indexer32.6초와 OTLP47.3초가 모두 성공했다. 단일 configured-chain/registry projection 범위를 유지하며 Linux native 결과는 별도 확인한다. 간헐 RPC 근본 원인 해결·CAP2-206 전체 완료·CAP2 전체 완료율을 이 재실행 성공만으로 확정하지 않는다.
+
+## 2026-10-01 KST 후속 — CI 호환 수정·세 검증자 연결, 간헐 RPC 실패 추적
+
+통합 `4fb62d7`, 테스트 진단 `2fa3bc2`. 아직 새 Linux native 성공 또는 CAP2 전체 완료가 아니다.
+
+- 선행 publisher head `5bad1e9`의 [CI36741774702](https://github.com/sihoon-0077/MCPShield/actions/runs/36741774702)는 **FAILURE**로 종료됐다. Node22 Backend154 PASS/2 FAIL/12 SKIP, Node24 Backend155 PASS/1 FAIL/12 SKIP. PostgreSQL job과 별도 DB 백업 복원은 SUCCESS. builder/native Docker·production build는 선행 테스트 실패로 미실행이다.
+- `86673f6`은 두 테스트의 플랫폼 차이만 고쳤다. publisher 변조 테스트는 POSIX0500 임시 snapshot에 쓰기를 시도해 인증 검증 전에500이 됐다. 테스트가 소유한 두 root만 기존 mode 저장→owner-write→변조→mode복원하며 실패 시 acquired snapshot을 정리한다. 기대400/서명 거부와 운영 snapshot 권한은 유지한다.
+- Node22는 [공식 CLI의 `--experimental-test-isolation=none`](https://nodejs.org/download/release/v22.23.0/docs/api/cli.html#--experimental-test-isolationmode)을 사용한다. Node24도 같은 alias를 지원한다. 자연 종료·단일 자식·기존 timeout을 유지하고 force-exit/SKIP하지 않았다. 독립 reviewer 포함 집중10 PASS/0 SKIP. Node22.0–22.7까지 검증했다고 주장하지 않는다.
+- `4fb62d7`은 Backend `270b201`을 리뷰 후 통합했다. 단일 키 `--quarantine-only`로 기존 독립 검사→서명→정확한 tx 확인 경로를 재사용한다. API PASS/ABSTAIN 표시로 검사를 건너뛰지 않고, 임계 FAIL 증거가 없으면 거부한다. malformed/conflicting flag·여러 키는 거부한다.
+- scoped native 시나리오를 세 키/프로세스로 확장했다. safe A/B의 정확히2승인 VERIFIED를 먼저 확인한 뒤 C 승인; bad C 격리(FAIL투표0)→A FAIL1→B FAIL2 REVOKED. 각 PID/주소/원본·독립 root/확정 tx를 연결한다. bad의3개 독립 검사 기록은 **격리1+attestation2**, terminal 뒤 세 번째 FAIL투표가 아니다. [validator README](../apps/validator/README.md)의 실행 및 증거 한계를 따른다. 집중11 PASS/2 native SKIP, 독립 리뷰·타입 검사 PASS.
+- `4fb62d7` 첫 전체 실행은 **Backend157 PASS/1 FAIL/12 SKIP, exit1**. OTLP 통합 자식이 두 Gateway의 REVOKED 차단 이후 RPC `SERVICE_TRANSPORT_UNAVAILABLE`로 약40.4초에 실패했다. 뒤 suite/smoke는 미실행. 같은 SHA 단독 OTLP는 약50초에1 PASS/0 SKIP였지만 실패를 지우거나 해결됐다고 하지 않는다.
+- stack은 EVM RPC의 제한시간/소켓 연결 실패 경로로 좁혀졌으며 정확한 후반 작업·근본 원인은 미확정이다. `2fa3bc2`는 테스트에 고정 phase+고정 오류 코드만 추가하고 원래 예외를 재던진다. 운영 retry/timeout/판정은 바꾸지 않았다. 별도 reviewer 확인.
+- `2fa3bc2` 전체 재실행 **`npm test` exit0, 455 PASS/0 FAIL/35 SKIP**: Backend158/12, Security133/19, Gateway120/3, Dashboard44/1(PASS/SKIP). 세 smoke, production build, built-form HTTP3 PASS/0 SKIP. 이는 한 번의 재실행 성공이지 간헐 RPC 안정화나 native SKIP 해소가 아니다.
+- 다음 Security baseline2.1은 별도 worktree에서 작업 중이다. 기존2.0 해시/현재 위험 분석 보존·공개 예산 합산·정확한 이전 실행 비교 계약을 `ecc61f0`에 고정했다. 실제 image 재수집/API/validator 연결 전에는 새 정책으로 승인하지 않는다. V2 indexer의 중복/역순/재시작 및 event+audit 원자성도 후속 작업이다.
+
 ## 2026-10-01 KST — 게시자 증거 연결, 로컬 통합 통과·새 Linux 검증 대기
 
 기능 기준 `b8ec89d` + `4225255`, 화면 `235d52b` + `751cd5f` + `6edbe6a`, 계약 기록 `1e34a82`.

@@ -211,6 +211,144 @@ model identities in the responses; different aliases alone are insufficient. The
 transport has no such selector and cannot satisfy that requirement. Local Responses
 contract tests do not become real-model quality evidence.
 
+### Approved Node scoped baseline v2.1 contract (implementation in progress)
+
+This is an additive contract, not an enabled API policy or completed comparison.
+Keep `restricted-node-docker-v2`, the release-ID algorithm and Registry ABI.
+Control policy `version: "2.1.0"` must bind a separate exact
+`scopedBaselineReviewPolicy(mode)` object (`mcpshield.scoped-review-policy.v2.1`).
+Preserve the existing `scopedReviewPolicy(mode)` bytes, defaults and 2.0 hashes.
+The new tier is `LOCAL_RISK_TIERED_BASELINE_V1`, disclosure selection is
+`ALL_CURRENT_RISK_PLUS_PINNED_BASELINE_DIFF`, and its exact baseline declaration is:
+
+```json
+{
+  "selection": "EXPLICIT_PREPARED_RELEASE_OR_NULL",
+  "authority": "SAME_TOOL_OPERATOR_REACQUIRED_SOURCE_AND_RUNTIME",
+  "currentCoverage": "NO_BASELINE_EXEMPTION",
+  "acquisition": "IMAGE_EXPORT_AND_ISOLATED_TOOLS_LIST",
+  "approvalInheritance": "NONE",
+  "unverifiable": "ABSTAIN"
+}
+```
+
+Only the new policy accepts scanner options
+`scopedReview: {executionPolicy, sourceProvenance, sourceIdentity, baseline}`.
+`sourceIdentity` reuses the existing exact five fields. `baseline` is explicitly
+`null` for a first release or `{releaseId, sourceIdentity, binding, sourceProvenance}`;
+the binding and four-field provenance schemas are reused, not redefined.
+Require the same tool, exact source/binding identity, supported Node v2.0/v2.1
+baseline and independently reacquired operator authority/runtime pins. Do not
+accept API report flags or inherit its old approval. Missing is not implicit null.
+The assessor also requires independently supplied `trusted.baseline` authority.
+
+The aggregate requires current `trusted.sourceIdentity` as well. Compare the
+existing five-field identity to the private scanner selection and Merkle source
+identity leaf; a report-provided matching identity is not independent authority.
+`trusted.baseline` is explicit null or exactly 13 fields: the existing eight runtime
+trust pins plus `releaseId`, `sourceIdentity`, `sourceProvenance`, `sourceBudget`
+and `publisher`. Its `releaseId` is the independently selected **prepared** release
+ID, not `sourceIdentity.releaseId`. Require equality with the baseline commitment;
+source/image pins alone cannot prevent substitution of another execution policy
+and its newly derived prepared ID over those same source/image bytes.
+`sourceBudget` reuses `{sourceArtifactDigest, sourceBytes}`; publisher is independently
+verified proof or explicit null. API and each validator reacquire the source and
+publisher context. The scanner's comparison cannot substitute for that acquisition.
+
+Re-export the unstarted baseline image closure and collect isolated `tools/list`;
+do not replay its entire AI/probe pipeline or trust its stored tool array as a new
+measurement. Old runtime risks are not current candidate observations. Diff evidence
+reuses `static/package-diff.json` under `mcpshield.prepared-package-diff.v1`, binding
+current and baseline prepared/source IDs, descriptor/closure/surface digests, tool,
+declared and installed dependency, install-script and egress-policy changes.
+Installed package bytes changing at the same version must remain visible.
+Keep raw baseline inventory/discovery in separate encrypted Merkle evidence leaves.
+
+The approved private semantic input adds exact `comparison` from the reconstructed
+closure diff. The provider DTO preserves its `comparison` mode string and puts the
+bounded projection in `packageDiff`. Installed paths become hashed package IDs;
+install scripts expose only before/after hashes. Names, versions, digests and
+change kinds still count toward the same metadata redaction/disclosure union and
+citations. Unknown fields or exceeded budgets must fail before any HTTP request.
+The aggregate reconstructs this diff from independently acquired inventories and
+checks the same DTO; merely accepting a caller's `packageDiff` is insufficient.
+This extension is still gated: the portable `6fc9dcf` checkpoint does not yet
+implement comparison transmission, runtime acquisition or aggregate approval.
+
+Unchanged current files still undergo full current risk selection. Before/after
+spans, tools and metadata share one combined disclosure/work budget, not one limit
+per version. Unknown classification or over-budget input sends zero provider
+requests. All AI roles receive one frozen bounded DTO. Use new `.v2.1`
+input/proof/review domains and `mcpshield_scoped_v2_1_<role>` provider schema names;
+old assessors must reject new evidence, and OCI v2 must not become implicitly enabled.
+Actual acquisition timestamps are observations, not stable identity/config hashes
+or validator equality keys. Reuse resolver `metadata.retrievedAt`, not registration
+`createdAt`. API/validator baseline selection, tenant/tool checks, exact null/ID
+idempotency/cache keys and UI projection require a subsequent integration review.
+
+Approved Control integration uses the existing `baselineReleaseId` name. Only an
+explicit 2.1 policy accepts prepare `{policyHash, baselineReleaseId}` with required
+null or exact prepared ID; 2.1 scan requests also require that property. Omission
+is not null. Preserve legacy/2.0 defaults and OCI behavior. Resolve the selection
+within the authenticated tenant and verify same tool/different source, supported
+Node 2.0/2.1 policy and matching evidence mode, saved evidence and independently
+reacquired source/publisher/runtime pins. An old VERIFIED state is not inherited.
+
+Freeze the exact selection and operator-derived scoped configuration hash in the
+job and preparation/child-scan request. Cache and idempotency must compare both
+null versus ID and that hash; a truthy-only baseline SQL filter is insufficient.
+Recheck source/configuration before and after execution and before validator
+signing, then assess original and independently generated evidence with the new
+explicit 2.1 assessor. Baseline comparison is scan/report-root context, not a new
+execution-release ID. Never overwrite immutable runtime ownership/prepared
+evidence/publisher records merely to change a scan's baseline. Public comparison
+is scan-specific; private keys, manifests and internal locators remain private.
+
+### Single-key quarantine and three-process acceptance contract
+
+`runValidatorFanout` may take `quarantineOnly: true`; the CLI equivalent is
+`--quarantine-only`. Require exactly one key and reject conflicting/malformed flags.
+Use the same independent source/publisher/runtime/semantic verification, fresh
+validator nonce/domain, strict reconstructed payload, signature and exact confirmed
+transaction checks as normal submission. Never skip verification based on an API
+PASS/ABSTAIN/FAIL flag. Only independently established critical FAIL may quarantine.
+No attestation follows this mode. The existing default and `--quarantine` flow stay
+compatible; quorum, ABI and terminal revocation rules are unchanged.
+
+The native scoped acceptance test uses three distinct key-owning OS processes for
+each release: safe A/B reach VERIFIED with exactly two approvals, then C attests;
+bad C quarantines with zero rejections, A attests FAIL once, B's second FAIL revokes.
+Do not submit a third FAIL after terminal revocation. Six independent verification
+receipts mean three safe attestations, one bad quarantine and two bad attestations.
+`LOCAL_VERIFICATION_ONLY` receipts alone prove neither signing nor inclusion: bind
+each address/root to the actual child PID, successful exit and confirmed exact
+chain operation. Local EVM/Docker and loopback AI are not independent institutions,
+Base Sepolia or actual AI quality evidence.
+
+### V2 indexer persistence and observation metadata
+
+Reuse `ControlStore.forTenant` with a chain/registry-scoped transaction key.
+For each canonical block, its events, matching tenant audit entries and checkpoint
+must commit together. Fetch RPC logs/blocks outside SQL transactions; keep the
+existing 500-block window and sort by block/transaction/log position. Reject
+out-of-range logs, mismatched block hashes and stale concurrent checkpoints with
+fixed error codes. Except for the configured first block, require the stored
+predecessor hash to equal the incoming block's parent hash inside the transaction.
+Rewind also rechecks the observed checkpoint inside its transaction before recording
+orphan audits and deleting events/checkpoints. Do not silently overwrite a competing
+canonical branch. Existing event uniqueness prevents duplicate audit insertion.
+
+Authenticated release projection adds `chain.observedAt`: the successful fresh
+reader's observation time (or immediately after that read), not block time. A failed
+read sets `chainUnavailable`/UNVERIFIED while preserving the old chain observation.
+The index result additionally returns `observedAt` for the completed indexing pass.
+Worker `chain.synchronized` JSON contains only chainId, head, indexedBlock, lag and
+that pass timestamp. Lag is blocks, not seconds; a completed pass does not mean
+every release read succeeded. Neither timestamp nor the DB projection grants
+Gateway ALLOW: the existing fresh signed-reader authority remains unchanged.
+SQL event/checkpoint rows are scoped by chain and registry. Release projection
+continues to assume one configured chain/registry; this is not multi-chain support.
+
 ### Explicit local emergency execution
 
 `mcpshield.break-glass-grant.v1` is separate from normal admission and FR407 receipts.
