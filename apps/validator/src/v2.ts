@@ -1,8 +1,8 @@
 import { Contract, JsonRpcProvider, Wallet, id } from "ethers";
 import { pathToFileURL } from "node:url";
 import { setTimeout } from "node:timers/promises";
-import { ociPolicy, preparedPolicy, policyVerdict, validPolicy, isNodePreparedPolicy } from "../../api/src/control-policy.js";
-import { checkedScopedSource, checkedScopedValidatorConfig, type ScopedValidatorConfig } from "./scoped-verification.js";
+import { ociPolicy, preparedPolicy, policyVerdict, validPolicy, isNodePreparedPolicy, isScopedBaselinePolicy } from "../../api/src/control-policy.js";
+import { checkedScopedSource, checkedScopedValidatorConfig, refreshedScopedBaseline, type ScopedValidatorConfig } from "./scoped-verification.js";
 import { hash } from "../../api/src/control-plane.js";
 import { attestationV2Domain, attestationV2Types, bytes32, createReleaseRegistryV2, exactReleaseIdentity, quarantineV2Types } from "../../../packages/contracts-sdk/src/v2.js";
 import { boundedServiceRequest, checkedServiceUrl, v2RpcRequest } from "../../../packages/contracts-sdk/src/transport.js";
@@ -43,8 +43,14 @@ export async function checkedValidatorPayload(template: any, context: ValidatorC
     const { binding, source } = checkedPreparedEvidence(evidence.bundle, identity);
     if (!checkedPreparedTrust(context.preparedRuntimeTrust, context.preparedRuntime) || !context.independentPreparedEvidence) fail();
     if (policy.profile !== preparedPolicy.profile) {
-      const current = await checkedScopedSource(policy, binding, source, context.scopedPrepared);
+      const current = await checkedScopedSource(policy, binding, source, context.scopedPrepared,
+        isScopedBaselinePolicy(policy) ? JSON.parse(evidence.bundle.files["prepared/baseline.json"] ?? '"MISSING"') : undefined);
       if (current.configHash !== runtimeTrust?.scopedVerificationConfigHash) fail();
+      if (isScopedBaselinePolicy(policy)) {
+        if (!Object.hasOwn(scan, "baselineReleaseId") || scan.baselineReleaseId !== (current.scopedReview.baseline === null ? null : current.scopedReview.baseline.releaseId)) fail();
+        const baseline = refreshedScopedBaseline(current, runtimeTrust?.baseline);
+        if (hash(baseline) !== hash(runtimeTrust?.baseline) || hash(current.sourceIdentity) !== hash(runtimeTrust?.sourceIdentity)) fail();
+      }
       runtimeTrust = { ...runtimeTrust, sourceProvenance: current.sourceProvenance, sourceBudget: current.sourceBudget, publisher: current.publisher };
     }
     comparePreparedScans({ bundle: evidence.bundle, result: scan.result.scanResult }, context.independentPreparedEvidence, policy, runtimeTrust!);
@@ -82,12 +88,14 @@ export async function checkedValidatorPayload(template: any, context: ValidatorC
   return { domain, types, payload, verdict };
 }
 
-export async function runValidatorFanout(options: { apiUrl: string; token: string; scanId: string; privateKeys: string[]; quarantineFirst?: boolean;
+export async function runValidatorFanout(options: { apiUrl: string; token: string; scanId: string; privateKeys: string[]; quarantineFirst?: boolean; quarantineOnly?: boolean;
   chainId: number; registryAddress: string; policyHash: string; rpcUrl: string; preparedRuntime?: PreparedConfig; preparedAi?: PreparedValidatorAi;
   ociRuntime?: OciConfig; scopedPrepared?: ScopedValidatorConfig;
   legacySources?: ValidatorSources; verificationReceiptsPath?: string }) {
   if (!Number.isSafeInteger(options.chainId) || options.chainId <= 0 || !/^0x[0-9a-fA-F]{40}$/.test(options.registryAddress)
     || !/^0x[0-9a-f]{64}$/.test(options.policyHash) || !/^[0-9a-f-]{36}$/.test(options.scanId)) throw new Error("VALIDATOR_TRUST_CONFIG_REQUIRED");
+  if ([options.quarantineOnly, options.quarantineFirst].some(value => value !== undefined && typeof value !== "boolean")
+    || options.quarantineOnly && (options.privateKeys.length !== 1 || options.quarantineFirst)) throw new Error("VALIDATOR_QUARANTINE_MODE_INVALID");
   const wallets = options.privateKeys.map((key) => new Wallet(key));
   if (wallets.length < 1 || wallets.length > 3 || new Set(wallets.map((wallet) => wallet.address)).size !== wallets.length) throw new Error("ONE_TO_THREE_UNIQUE_VALIDATORS_REQUIRED");
   const base = checkedServiceUrl(options.apiUrl), provider = new JsonRpcProvider(v2RpcRequest(options.rpcUrl), undefined, { batchMaxCount: 1 });
@@ -172,8 +180,13 @@ export async function runValidatorFanout(options: { apiUrl: string; token: strin
         const { action } = await request(`/v1/validator/${quarantine ? "quarantines" : "attestations"}`, { scanId: options.scanId, payload: checked.payload, signature });
         operations.push(await settle(action.actionId, registry.interface.encodeFunctionData(quarantine ? "quarantineBySignature" : "submitAttestation", [checked.payload, signature])));
       });
-      if (index === 0 && options.quarantineFirst && scan.result?.verdict === "FAIL") await submit(true);
-      await submit();
+      // Quarantine-only never trusts an API verdict to skip verification. PASS,
+      // ABSTAIN or missing critical evidence must reject in the existing verifier.
+      if (options.quarantineOnly) await submit(true);
+      else {
+        if (index === 0 && options.quarantineFirst && scan.result?.verdict === "FAIL") await submit(true);
+        await submit();
+      }
     }
     return { mode: wallets.length === 1 ? "SINGLE_VALIDATOR" : "SINGLE_INSTITUTION_DEMO", validators: wallets.slice(0, 2).map((wallet) => wallet.address), operations };
     }, { traceparent: scanTraceparent });
@@ -187,13 +200,17 @@ export function configuredValidatorKeys(env: Record<string, string | undefined>)
   if (!Array.isArray(keys) || keys.length < 1 || keys.length > 3 || keys.some((key) => typeof key !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(key))) throw new Error("VALIDATOR_KEY_CONFIG_INVALID");
   return keys as string[];
 }
+export function configuredValidatorMode(args: string[]) {
+  if (args.some(arg => !["--quarantine", "--quarantine-only"].includes(arg)) || new Set(args).size !== args.length || args.length > 1) throw new Error("VALIDATOR_QUARANTINE_MODE_INVALID");
+  return { quarantineFirst: args.includes("--quarantine"), quarantineOnly: args.includes("--quarantine-only") };
+}
 async function main() {
   const privateKeys = configuredValidatorKeys(process.env);
   const { CONTROL_API_URL, CONTROL_API_TOKEN, CONTROL_SCAN_ID, CONTROL_V2_RPC_URLS, CONTROL_V2_CHAIN_ID, CONTROL_V2_REGISTRY_ADDRESS, CONTROL_VALIDATOR_POLICY_HASH } = process.env;
   if (!CONTROL_API_URL || !CONTROL_API_TOKEN || !CONTROL_SCAN_ID || !CONTROL_V2_RPC_URLS || !CONTROL_V2_CHAIN_ID || !CONTROL_V2_REGISTRY_ADDRESS || !CONTROL_VALIDATOR_POLICY_HASH) throw new Error("VALIDATOR_TRUST_CONFIG_REQUIRED");
   console.log(JSON.stringify(await runValidatorFanout({ apiUrl: CONTROL_API_URL, token: CONTROL_API_TOKEN, scanId: CONTROL_SCAN_ID, privateKeys,
     chainId: Number(CONTROL_V2_CHAIN_ID), registryAddress: CONTROL_V2_REGISTRY_ADDRESS, policyHash: CONTROL_VALIDATOR_POLICY_HASH,
-    rpcUrl: CONTROL_V2_RPC_URLS.split(",")[0], quarantineFirst: process.argv.includes("--quarantine"),
+    rpcUrl: CONTROL_V2_RPC_URLS.split(",")[0], ...configuredValidatorMode(process.argv.slice(2)),
     preparedRuntime: process.env.VALIDATOR_PREPARED_BUILDER_DIGEST ? checkedPreparedConfig({ builderImageDigest: process.env.VALIDATOR_PREPARED_BUILDER_DIGEST,
       platform: { os: "linux", architecture: process.env.VALIDATOR_PREPARED_ARCHITECTURE as "amd64" | "arm64" } }) : undefined,
     ociRuntime: process.env.VALIDATOR_OCI_ENABLED === "true" ? checkedOciConfig({ baseImageDigest: process.env.VALIDATOR_OCI_BASE_DIGEST ?? "",

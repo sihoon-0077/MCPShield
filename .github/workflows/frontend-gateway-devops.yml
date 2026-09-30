@@ -101,6 +101,13 @@ jobs:
           MCPSHIELD_DOCKER_TESTS: "1"
         # Native runtime evidence plus local Responses contract only; no external AI keys.
         run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/security/scoped-prepared.test.mjs
+      - name: Exercise pinned Node baseline against safe and malicious updates
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
+        timeout-minutes: 6
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+        # Separate sequential step: actual old/current Docker evidence, local model contract only.
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test tests/security/scoped-baseline.test.mjs
       - name: Exercise native OCI import and external non-Node MCP observation
         if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
         timeout-minutes: 7
@@ -176,6 +183,15 @@ jobs:
           MCPSHIELD_SCOPED_DOCKER_TESTS: "1"
         # Real local Docker/EVM/HTTP; Responses replies are a synthetic contract, not provider-quality evidence.
         run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test --test-name-pattern="scoped Node v2 source" tests/api/prepared-fullcycle.test.ts
+      - name: Exercise pinned baseline API and three independent validators through V2 and Gateway
+        if: ${{ !cancelled() && matrix.node == 22 && steps.runtime_builder.outcome == 'success' }}
+        timeout-minutes: 11
+        env:
+          MCPSHIELD_DOCKER_TESTS: "1"
+          MCPSHIELD_SCOPED_DOCKER_TESTS: "1"
+          MCPSHIELD_SCOPED_BASELINE_DOCKER_TESTS: "1"
+        # Independent operator selections and native evidence, with local model responses only.
+        run: MCPSHIELD_RUNTIME_BUILDER_IMAGE="$(cat runtime-builder-artifact/image-id.txt)" node --import tsx --test --test-name-pattern="^scoped Node v2[.]1 pinned baseline source" tests/api/prepared-fullcycle.test.ts
       - name: Retain failed builder security evidence without publishing its image
         if: failure() && matrix.node == 22
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -266,6 +282,11 @@ jobs:
         env:
           MCPSHIELD_POSTGRES_TEST_URL: postgresql://mcpshield:mcpshield_ci_only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/mcpshield_ci
         run: node --import tsx --test tests/api/control-plane.test.ts tests/api/preparations.test.ts tests/api/appeals.test.ts tests/api/health.test.ts tests/api/chain-outbox.test.ts
+      - name: Exercise PostgreSQL pinned baseline selection and cache isolation
+        env:
+          MCPSHIELD_POSTGRES_TEST_URL: postgresql://mcpshield:mcpshield_ci_only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/mcpshield_ci
+        # Separate step and owned schema keep global queue claims independent.
+        run: node --import tsx --test --test-name-pattern="real POSTGRESQL" tests/api/scoped-validator.test.ts
       - name: Back up and restore into a separate empty database
         env:
           PG_CONTAINER: ${{ job.services.postgres.id }}

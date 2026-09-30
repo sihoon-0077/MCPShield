@@ -21,7 +21,8 @@ export async function preparations(store: ControlStore, tenant: string, preparat
 }
 export async function enqueuePreparation(store: ControlStore, tenant: string, input: Record<string, any>, key: string, traceId: string) {
   return store.forTenant(tenant, async (tx) => {
-    const requestHash = hash({ sourceReleaseId: input.sourceReleaseId, policyHash: input.policyHash, sourceIdentity: input.sourceIdentity });
+    const requestHash = hash({ sourceReleaseId: input.sourceReleaseId, policyHash: input.policyHash, sourceIdentity: input.sourceIdentity,
+      ...(Object.hasOwn(input, "baselineReleaseId") ? { baselineReleaseId: input.baselineReleaseId, configHash: hash(input.trustedConfig) } : {}) });
     const [previous] = await tx.query("SELECT * FROM cp_preparations WHERE tenant_id = ? AND idempotency_key = ?", [tenant, key]);
     if (previous) {
       if (previous.request_hash !== requestHash) throw failure("IDEMPOTENCY_CONFLICT");
@@ -85,8 +86,9 @@ export async function retryPreparation(store: ControlStore, tenant: string, prep
   });
 }
 export function publicPreparation({ tenantId: _tenant, request: _request, leaseOwner: _owner, leaseExpiresAt: _lease, configHash: _config, result, ...job }: PreparationJob) {
-  if (!result) return job;
+  const selection = Object.hasOwn(_request, "baselineReleaseId") ? { baselineReleaseId: _request.baselineReleaseId } : {};
+  if (!result) return { ...job, ...selection };
   const safeResult = Object.fromEntries(["outcome", "releaseId", "scanId", "verdict", "reportRoot", "issues", "semanticEvidenceMode", "providerQuality"]
     .filter(key => result[key] !== undefined).map(key => [key, result[key]]));
-  return { ...job, result: safeResult };
+  return { ...job, ...selection, result: safeResult };
 }

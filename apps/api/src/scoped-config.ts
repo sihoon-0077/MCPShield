@@ -1,13 +1,19 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { hash, type ControlOptions } from "./control-plane.js";
-import { preparedTrust } from "./prepared-config.js";
+import { hash, loadEvidence, type ControlOptions } from "./control-plane.js";
+import { preparedTrust, checkedPreparedTrust, inspectPreparedRuntime } from "./prepared-config.js";
+import type { ControlStore } from "./control-store.js";
+import { isScopedBaselinePolicy } from "./control-policy.js";
+import { sourceIdentity } from "./preparation-control.js";
+import { checkedPreparedEvidence } from "./prepared-evidence.js";
 import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2.js";
 // @ts-expect-error Local immutable acquisition reuses the bounded stable snapshot.
 import { resolveArtifact } from "../../../services/resolver/src/resolver.mjs";
 // @ts-expect-error Shared exact provenance/policy contracts.
-import { checkedScopedProvenance, SCOPED_NODE_PROFILE, validateScopedReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
+import { checkedScopedProvenance, SCOPED_NODE_PROFILE, validateScopedReviewPolicy, validateScopedBaselineReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
+// @ts-expect-error Pure baseline evidence/authority checks, no Docker or provider access.
+import { checkedScopedBaselineAuthority, readPreparedClosureEvidence, SCOPED_BASELINE_TRUST_FIELDS } from "../../../services/scanner/src/scoped-baseline.mjs";
 // @ts-expect-error Shared immutable execution commitment.
 import { scopedPreparedExecutionPolicy } from "../../../services/scanner/src/prepared-binding.mjs";
 // @ts-expect-error Shared transport/privacy validator; no provider request is made here.
@@ -42,7 +48,7 @@ export function publisherDocuments(bundle: any, evidence?: ReturnType<typeof pub
 
 export type ScopedAi = Record<string, any>;
 export function checkedScopedAi(ai: ScopedAi, semantic: any) {
-  scopedSemantic.validateScopedAiV2(ai, semantic);
+  (validateScopedBaselineReviewPolicy(semantic) ? scopedSemantic.validateScopedAiV21 : scopedSemantic.validateScopedAiV2)(ai, semantic);
   return structuredClone(ai);
 }
 export interface ScopedPreparedConfig { provenancePaths: Record<string, string>; ai: ScopedAi }
@@ -89,11 +95,10 @@ export async function loadScopedProvenance(filename: string | undefined, sourceA
   return (await loadScopedAuthority(filename, sourceArtifactDigest)).sourceProvenance;
 }
 export function scopedMetadata(policy: any) {
-  if (policy?.profile !== SCOPED_NODE_PROFILE || !validateScopedReviewPolicy(policy.semantic)) return {};
+  if (policy?.profile !== SCOPED_NODE_PROFILE || !(validateScopedReviewPolicy(policy.semantic) || isScopedBaselinePolicy(policy))) return {};
   return { semanticEvidenceMode: policy.semantic.evidenceMode, providerQuality: "PROVIDER_QUALITY_NOT_MEASURED" };
 }
-export async function scopedPreparationContext(options: ControlOptions, tenant: string, policy: any, source: Record<string, any>) {
-  if (policy?.profile !== SCOPED_NODE_PROFILE || !validateScopedReviewPolicy(policy.semantic) || !options.preparedRuntime || !options.scopedPrepared) throw Error("SCOPED_CONFIG_REQUIRED");
+async function scopedSource(options: ControlOptions, tenant: string, policy: any, source: Record<string, any>) {
   const config = checkedScopedConfig(options.scopedPrepared);
   const { sourceProvenance, demoPublisher } = await loadScopedAuthority(Object.hasOwn(config.provenancePaths, tenant) ? config.provenancePaths[tenant] : undefined, source?.artifactDigest);
   let resolved, sourceBudget, publisher;
@@ -108,14 +113,61 @@ export async function scopedPreparationContext(options: ControlOptions, tenant: 
   } catch (error: any) {
     throw Error(/^DEMO_PUBLISHER_/.test(error?.message ?? "") ? "SCOPED_PUBLISHER_SIGNATURE_INVALID" : /^SCOPED_[A-Z0-9_]+$/.test(error?.message ?? "") ? error.message : "SCOPED_SOURCE_UNAVAILABLE");
   } finally { await resolved?.cleanup?.(); }
-  const trusted = preparedTrust(options.preparedRuntime);
+  return { sourceProvenance, sourceBudget, publisher, ...(publisher ? { publisherTrustHash: hash(demoPublisher) } : {}) };
+}
+export function checkedBaselineRequest(policy: any, request: any) {
+  if (isScopedBaselinePolicy(policy) && (!Object.hasOwn(request, "baselineReleaseId") ||
+    request.baselineReleaseId !== null && (typeof request.baselineReleaseId !== "string" || !/^0x[a-f0-9]{64}$/.test(request.baselineReleaseId)))) {
+    throw Object.assign(Error("SCOPED_BASELINE_SELECTION_REQUIRED"), { statusCode: 400 });
+  }
+}
+export async function scopedPreparationContext(options: ControlOptions, tenant: string, policy: any, source: Record<string, any>, store?: ControlStore, baselineReleaseId?: string | null) {
+  if (policy?.profile !== SCOPED_NODE_PROFILE || !(validateScopedReviewPolicy(policy.semantic) || isScopedBaselinePolicy(policy)) || !options.preparedRuntime || !options.scopedPrepared) throw Error("SCOPED_CONFIG_REQUIRED");
+  const config = checkedScopedConfig(options.scopedPrepared), current = await scopedSource(options, tenant, policy, source);
+  const { sourceProvenance, sourceBudget, publisher } = current;
+  const trusted: Record<string, any> = preparedTrust(options.preparedRuntime);
   const executionPolicy = scopedPreparedExecutionPolicy({ collectorDigest: trusted.collectorDigest, observerDigest: trusted.observerDigest,
     egressAllowHosts: ["mail-api.local", "exfil-sink.local"] }, policy.semantic);
   if (config.ai.evidenceMode !== policy.semantic.evidenceMode) throw Error("SCOPED_EVIDENCE_MODE_MISMATCH");
   const ai = checkedScopedAi(config.ai, policy.semantic);
+  const scopedReview: Record<string, any> = { executionPolicy, sourceProvenance };
+  let baselineAuthority;
+  if (isScopedBaselinePolicy(policy)) {
+    checkedBaselineRequest(policy, { baselineReleaseId });
+    scopedReview.sourceIdentity = sourceIdentity(source); scopedReview.baseline = null;
+    trusted.sourceIdentity = scopedReview.sourceIdentity; trusted.baseline = null;
+    if (baselineReleaseId !== null) {
+      const previous = await store?.get(tenant, "release", baselineReleaseId!);
+      if (!previous || previous.runtimeProfile !== SCOPED_NODE_PROFILE || !previous.preparedEvidenceKey) throw Error("SCOPED_BASELINE_UNAVAILABLE");
+      const bundle = await loadEvidence(options, tenant, previous.preparedEvidenceKey, previous.preparedReportRoot);
+      const before = checkedPreparedEvidence(bundle, previous), original = await store!.get(tenant, "release", before.binding.sourceReleaseId);
+      if (!original || hash(sourceIdentity(original)) !== hash(before.source)) throw Error("SCOPED_BASELINE_SOURCE_MISMATCH");
+      baselineAuthority = await scopedSource(options, tenant, policy, original);
+      assertPublisherEvidence(bundle, baselineAuthority.publisher);
+      const scan = await store!.scan(tenant, JSON.parse(bundle.files["report.json"]).scanId);
+      const proof = checkedPreparedTrust(scan?.result?.preparedRuntimeTrust, options.preparedRuntime);
+      if (!scan || scan.status !== "COMPLETED" || scan.releaseId !== baselineReleaseId || scan.result?.evidenceKey !== previous.preparedEvidenceKey ||
+        scan.result?.reportRoot !== previous.preparedReportRoot || !proof) throw Error("SCOPED_BASELINE_RUNTIME_UNAVAILABLE");
+      scopedReview.baseline = { releaseId: baselineReleaseId, sourceIdentity: before.source, binding: before.binding, sourceProvenance: baselineAuthority.sourceProvenance };
+      trusted.baseline = { ...Object.fromEntries(SCOPED_BASELINE_TRUST_FIELDS.slice(0, 8).map((key: string) => [key, proof[key]])),
+        releaseId: baselineReleaseId, sourceIdentity: before.source, sourceProvenance: baselineAuthority.sourceProvenance,
+        sourceBudget: baselineAuthority.sourceBudget, publisher: baselineAuthority.publisher ?? null };
+      // Reuse stored worker proof only at the API boundary; workers/validators separately export the image.
+      checkedScopedBaselineAuthority(scopedReview, trusted.baseline);
+      readPreparedClosureEvidence({ inventory: JSON.parse(bundle.files["static/closure-inventory.json"]), report: JSON.parse(bundle.files["static/closure-report.json"]),
+        source: JSON.parse(bundle.files["static/closure-source.json"]), sbom: JSON.parse(bundle.files["static/sbom.json"]), findings: JSON.parse(bundle.files["static/findings.json"]) }, before.binding, trusted.baseline);
+    }
+  }
   // A private commitment detects worker-local changes without persisting endpoints,
   // credentials or local paths. The scanner repeats validation at the actual tier.
-  return { trusted, scopedReview: { executionPolicy, sourceProvenance }, ai, sourceBudget, publisher,
-    frozen: { ...trusted, scopedReview: { executionPolicy, sourceProvenance }, sourceBudget, aiConfigHash: hash(config.ai),
-      ...(publisher ? { publisher, publisherTrustHash: hash(demoPublisher) } : {}) } };
+  return { trusted, scopedReview, ai, sourceBudget, publisher,
+    frozen: { ...trusted, scopedReview, sourceBudget, aiConfigHash: hash(config.ai),
+      ...(publisher ? { publisher, publisherTrustHash: current.publisherTrustHash } : {}),
+      ...(isScopedBaselinePolicy(policy) ? { baselineAuthority: baselineAuthority ? { sourceProvenance: baselineAuthority.sourceProvenance,
+        sourceBudget: baselineAuthority.sourceBudget, publisher: baselineAuthority.publisher ?? null, publisherTrustHash: baselineAuthority.publisherTrustHash ?? null } : null } : {}) } };
+}
+export async function inspectScopedBaseline(scoped: Awaited<ReturnType<typeof scopedPreparationContext>>, options: ControlOptions) {
+  if (!scoped.scopedReview.baseline) return;
+  const expected = scoped.trusted.baseline, actual = await inspectPreparedRuntime(scoped.scopedReview.baseline.binding, options.preparedRuntime!, options.inspectPreparedRuntime);
+  if (SCOPED_BASELINE_TRUST_FIELDS.slice(0, 8).some((key: string) => hash(actual[key]) !== hash(expected[key]))) throw Error("SCOPED_BASELINE_RUNTIME_CHANGED");
 }

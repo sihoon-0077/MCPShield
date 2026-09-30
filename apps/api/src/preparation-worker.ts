@@ -4,7 +4,7 @@ import { hash, loadEvidence, saveEvidence, type ControlOptions } from "./control
 import { claimPreparation, failPreparation, preparations, type PreparationJob } from "./preparation-store.js";
 import { inspectPreparedRuntime, preparedAi, preparedTrust } from "./prepared-config.js";
 import { preparedPolicy, ociPolicy, assertRuntimeBudget, policyVerdict, validPolicy, isNodePreparedPolicy } from "./control-policy.js";
-import { scopedPreparationContext, scopedMetadata, publisherDocuments, publicPublisherVerification, assertPublisherEvidence } from "./scoped-config.js";
+import { scopedPreparationContext, scopedMetadata, publisherDocuments, publicPublisherVerification, assertPublisherEvidence, inspectScopedBaseline } from "./scoped-config.js";
 import { checkedOciConfig, inspectOciRuntime, ociTrust } from "./oci-config.js";
 import { sourceIdentity } from "./preparation-control.js";
 import { checkedPreparedEvidence, checkedOciEvidence } from "./prepared-evidence.js";
@@ -14,10 +14,10 @@ import { createEvidenceBundle, verifyEvidenceBundle } from "../../../services/sc
 // @ts-expect-error Shared canonical protocol schema is ESM JavaScript.
 import { assertCanonicalScanResult } from "../../../services/scanner/src/protocol-schema.mjs";
 
-async function checkedConfig(options: ControlOptions, job: PreparationJob, oci: boolean, policy?: any, source?: Record<string, any>): Promise<Record<string, any>> {
+async function checkedConfig(store: ControlStore, options: ControlOptions, job: PreparationJob, oci: boolean, policy?: any, source?: Record<string, any>): Promise<Record<string, any>> {
   if (options.scannerOptions?.sandbox !== "docker" || !(oci ? options.ociRuntime : options.preparedRuntime)) throw new Error("PREPARATION_NOT_CONFIGURED");
   const scoped = policy && isNodePreparedPolicy(policy) && policy.profile !== preparedPolicy.profile;
-  const trusted = scoped ? (await scopedPreparationContext(options, job.tenantId, policy, source!)).frozen
+  const trusted = scoped ? (await scopedPreparationContext(options, job.tenantId, policy, source!, store, job.request.baselineReleaseId)).frozen
     : oci ? await ociTrust(options.ociRuntime!) : preparedTrust(options.preparedRuntime!);
   if (hash(trusted) !== job.configHash || hash(job.request.trustedConfig) !== job.configHash) throw new Error("PREPARATION_CONFIG_CHANGED");
   return trusted;
@@ -34,9 +34,10 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
   let output: any, transferred = false, finalizationStarted = false, cleanupSafe = true;
   try {
     const { source, policy } = await checkedInput(store, job), oci = policy.document.profile === ociPolicy.profile;
-    const trusted = await checkedConfig(options, job, oci, policy.document, source), check = oci ? checkedOciEvidence : checkedPreparedEvidence;
-    const scoped = trusted.scopedReview ? await scopedPreparationContext(options, job.tenantId, policy.document, source) : undefined;
+    const trusted = await checkedConfig(store, options, job, oci, policy.document, source), check = oci ? checkedOciEvidence : checkedPreparedEvidence;
+    const scoped = trusted.scopedReview ? await scopedPreparationContext(options, job.tenantId, policy.document, source, store, job.request.baselineReleaseId) : undefined;
     if (scoped && hash(scoped.frozen) !== job.configHash) throw Error("PREPARATION_CONFIG_CHANGED");
+    if (scoped) await inspectScopedBaseline(scoped, options);
     const localOci = oci ? checkedOciConfig(options.ociRuntime!) : undefined;
     // @ts-expect-error Shared prepared scanner is ESM JavaScript.
     const execute = oci ? options.prepareOciRuntime ?? (await import("../../../services/scanner/src/oci-scan.mjs")).prepareAndScanOciRuntime
@@ -48,7 +49,8 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
       sourceReleaseId: job.sourceReleaseId, releaseId: source.legacyReleaseId, scanId: job.preparationId, ai: scoped?.ai ?? preparedAi(options),
       ...(scoped ? { scopedReview: scoped.scopedReview } : {}),
       ...(oci ? { trust: localOci } : { trusted: scoped ? { ...trusted, sourceProvenance: scoped.scopedReview.sourceProvenance } : trusted }) }), { traceparent: job.request.traceparent });
-    await checkedConfig(options, job, oci, policy.document, source);
+    await checkedConfig(store, options, job, oci, policy.document, source);
+    if (scoped) await inspectScopedBaseline(scoped, options);
     const issues = (output.analysis?.issues ?? []).filter((code: any) => typeof code === "string" && /^[A-Z][A-Z0-9_]{0,100}$/.test(code)).slice(0, 32);
     const originalBundle = output.bundle ?? (!output.binding && !output.result ? createEvidenceBundle({ "prepared/failure.json": {
       profile: policy.document.profile, outcome: "INCONCLUSIVE", verdict: "ABSTAIN", issues } }) : undefined);
@@ -73,6 +75,7 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
         runtimeTrust.scopedConfigHash = hash(scoped.frozen);
         runtimeTrust.sourceBudget = scoped.sourceBudget;
         runtimeTrust.publisher = scoped.publisher;
+        if (Object.hasOwn(scoped.trusted, "baseline")) Object.assign(runtimeTrust, { sourceIdentity: scoped.trusted.sourceIdentity, baseline: scoped.trusted.baseline });
       }
       const verdict = policyVerdict(bundle, output.result, policy.document, runtimeTrust);
       const now = Date.now();
@@ -94,7 +97,7 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
     finalizationStarted = true;
     const committed = await withSpan("scan.accept", {}, () => store.forTenant(job.tenantId, async (tx) => {
       const currentInput = await checkedInput(tx, job);
-      await checkedConfig(options, job, oci, currentInput.policy.document, currentInput.source);
+      await checkedConfig(tx, options, job, oci, currentInput.policy.document, currentInput.source);
       const scanId = derived ? job.preparationId : undefined, now = new Date().toISOString();
       const result = { outcome: derived ? "DERIVED_RELEASE_CREATED" : "INCONCLUSIVE", ...(derived ? { releaseId: derived.releaseId, scanId, verdict: scanResult!.verdict } : { verdict: "ABSTAIN" }),
         evidenceKey, reportRoot: bundle.manifest.root, issues,
@@ -119,6 +122,7 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
           }
         }
         const request = { releaseId: derived.releaseId, policyHash: job.policyHash, artifactDigest: derived.artifactDigest, preparationId: job.preparationId,
+          ...(Object.hasOwn(job.request, "baselineReleaseId") ? { baselineReleaseId: job.request.baselineReleaseId, scopedConfigHash: job.configHash } : {}),
           ...traceHeaders() };
         await tx.query(`INSERT INTO cp_scans(scan_id,tenant_id,release_id,policy_hash,idempotency_key,request_hash,request_json,state,stage,
           attempts,max_attempts,next_attempt_at,trace_id,result_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'COMPLETED','DONE',1,3,?,?,?,?,?)`,
@@ -162,19 +166,24 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
   return true;
 }
 
-export async function scanPreparedRelease(scan: ScanJob, release: Record<string, any>, options: ControlOptions, policy?: any, sourceRelease?: Record<string, any>) {
+export async function scanPreparedRelease(scan: ScanJob, release: Record<string, any>, options: ControlOptions, policy?: any, sourceRelease?: Record<string, any>, store?: ControlStore) {
   const oci = release.runtimeProfile === ociPolicy.profile, check = oci ? checkedOciEvidence : checkedPreparedEvidence;
   if (!(oci ? options.ociRuntime : options.preparedRuntime) || options.scannerOptions?.sandbox !== "docker") throw new Error("PREPARATION_NOT_CONFIGURED");
   const previous = await loadEvidence(options, scan.tenantId, release.preparedEvidenceKey, release.preparedReportRoot);
   const { binding, source } = check(previous, release);
   const scoped = isNodePreparedPolicy(policy) && policy.profile !== preparedPolicy.profile
-    ? await scopedPreparationContext(options, scan.tenantId, policy, sourceRelease!) : undefined;
+    ? await scopedPreparationContext(options, scan.tenantId, policy, sourceRelease!, store, scan.request.baselineReleaseId) : undefined;
   if (scoped && hash(scoped.scopedReview.executionPolicy) !== hash(binding.executionPolicy)) throw Error("SCOPED_EXECUTION_POLICY_MISMATCH");
   if (scoped) assertPublisherEvidence(previous, scoped.publisher);
+  if (scoped && Object.hasOwn(scoped.trusted, "baseline")) {
+    if (hash(scoped.frozen) !== scan.request.scopedConfigHash) throw Error("PREPARATION_CONFIG_CHANGED");
+    await inspectScopedBaseline(scoped, options);
+  }
   const localOci = oci ? checkedOciConfig(options.ociRuntime!) : undefined;
   const runtimeTrust = oci ? await inspectOciRuntime(binding, localOci!, options.inspectOciRuntime)
     : await inspectPreparedRuntime(binding, options.preparedRuntime!, options.inspectPreparedRuntime);
   if (scoped) runtimeTrust.sourceProvenance = scoped.scopedReview.sourceProvenance;
+  if (scoped && Object.hasOwn(scoped.trusted, "baseline")) Object.assign(runtimeTrust, { sourceIdentity: scoped.trusted.sourceIdentity, baseline: scoped.trusted.baseline });
   // @ts-expect-error Shared prepared scanner is ESM JavaScript.
   const execute = oci ? options.scanOciRuntime ?? (await import("../../../services/scanner/src/oci-scan.mjs")).scanOciRuntime
     // @ts-expect-error Shared prepared scanner is ESM JavaScript.
@@ -189,8 +198,9 @@ export async function scanPreparedRelease(scan: ScanJob, release: Record<string,
     "prepared/source-identity.json": source, ...publisherDocuments(output.bundle, scoped?.publisher) });
   check(bundle, release);
   if (scoped) {
-    const current = await scopedPreparationContext(options, scan.tenantId, policy, sourceRelease!);
+    const current = await scopedPreparationContext(options, scan.tenantId, policy, sourceRelease!, store, scan.request.baselineReleaseId);
     if (hash(current.frozen) !== hash(scoped.frozen)) throw Error("PREPARATION_CONFIG_CHANGED");
+    await inspectScopedBaseline(current, options);
     runtimeTrust.sourceProvenance = current.scopedReview.sourceProvenance;
     runtimeTrust.scopedConfigHash = hash(current.frozen);
     runtimeTrust.sourceBudget = current.sourceBudget;
