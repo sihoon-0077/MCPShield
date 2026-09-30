@@ -4,6 +4,33 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-10-01 KST — admission 원자료 체크포인트 `8569025`
+
+- 기존 측정기에 `--raw-samples`만 추가했다. 기본 출력은 그대로이며 smoke에서만 허용하고 matrix/plan 혼용은 거부한다. 8개 경로 × 최대 1,000회 = 8,000건 상한, 고정 필드와 오류 코드만 출력한다. 원문 오류·키·후보 내용은 기록하지 않는다.
+- 아래 명령을 깨끗한 `8569025185a1565ddadb342d16477bbe18c71cf2`에서 실제 실행했다. 시작/종료 Git SHA·파일 hash·작업 트리 상태가 동일했다. 측정 시각은 `2026-09-30T15:01:34.298Z` = 10월 1일 KST다.
+
+```sh
+node --import tsx scripts/ops/evaluate-admission.ts --requests 100 --identities 4 --concurrency 4 --raw-samples
+```
+
+- [추적 가능한 800건 JSON](../benchmarks/results/admission-smoke-100-8569025-2026-10-01.json): phase당 100건이며 개별 latency는 반올림하지 않았다. 원자료에서 p50/p95/p99/max·ALLOW/BLOCK/예상 fail-closed·cache·원인별 건수를 재계산해 모든 집계와 일치함을 확인했다. 순서는 완료 순서가 아닌 phase와 요청 시작 index다. 요약의 `throughputQps`는 실제 전체 phase 경과 시간으로 계산하며 개별 latency 합계로 재구성하는 값은 아니다.
+
+| 측정 경로 | p50 ms | p95 ms | 결과 |
+|---|---:|---:|---|
+| strict HTTP + local EVM, 동일 identity | 121.291 | 163.023 | ALLOW 100 |
+| strict HTTP + local EVM, 4 identities | 89.685 | 135.115 | ALLOW 100 |
+| 주입한 API 장애, balanced 읽기·유효 signed cache | 0.849 | 0.958 | ALLOW 100 |
+| 주입한 API 장애, strict 읽기 | 0.308 | 0.577 | 예상 fail-closed 100 |
+| 주입한 API 장애, balanced 쓰기 | 0.542 | 1.120 | 예상 fail-closed 100 |
+| 주입한 API 장애, 만료 signed cache | 0.559 | 1.875 | 예상 fail-closed 100 |
+| 실제 HTTP + 주입한 RPC 장애 | 4.456 | 7.365 | 예상 fail-closed 100 |
+| 실제 HTTP + local EVM 폐기 증거 | 80.562 | 101.154 | signed BLOCK 100, unsafe ALLOW 0 |
+
+- 환경: Windows, Node24.13.0, SQLite WAL, loopback HTTP, local Ganache, concurrency4. API 장애는 즉시 실패를 주입했으므로 TCP timeout 지연이 아니다. Ganache의 Node24 µWS fallback 경고가 있었으며 stderr를 JSON 증거에 섞지 않았다.
+- 측정 범위는 admission 호출 시작→결정/예상 fail-closed다. scanner는 합성 report이며 **파일 hash·프로세스 시작·warmup/control 검사·테스트넷·matrix를 포함하지 않는다**. 이전 날짜 smoke와 통제된 성능 비교가 아니며 p99 안정성·production 처리량/SLO·CAP2-504 전체 완료를 주장하지 않는다.
+- 같은 구현의 전체 `npm test` exit0: **445 PASS / 0 FAIL / 35 SKIP** (Backend150/12, Security133/19, Gateway120/3, Dashboard42/1; PASS/SKIP). 세 smoke PASS. Security는 별도 재실행도133/0/19다. 집중 측정기 검사12 PASS/0 SKIP 및 TypeScript PASS, 독립 reviewer 확인. 가장 최근 전체 production build는 선행 `8f06733`에서 성공했으며 이후 변경은 측정기/회귀 검사뿐이다.
+- 선행 `7df0453`의 [Linux CI36732591060](https://github.com/sihoon-0077/MCPShield/actions/runs/36732591060): Node24·실제 PostgreSQL job 성공. rebuilt builder HIGH/CRITICAL gate 및 이전 실패였던 OCI worker→독립 검증자→V2→두 Gateway 단계20 모두 PASS. 기록 시 후속 prepared/scoped/Compose 등 전체 Node22 결과는 아직 확인 중이다. 이 CI는 후속 측정기 코드 `8569025`의 전체 CI로 전용하지 않는다.
+
 ## 2026-09-30 재개 기록
 
 ### 최신 보안 이미지 체크포인트 — `8f06733`

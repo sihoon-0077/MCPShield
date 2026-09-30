@@ -57,6 +57,8 @@
 - 2026-09-30 재개: 미커밋 상태로 보존된 trace 수정 2파일을 검수하고 `3997871`로 통합했다. 재시도/terminal/DLQ 감사 기록이 원래 action trace에 남는다. 전체 로컬 **442 PASS / 0 FAIL / 35 SKIP**, 세 smoke 및 production build PASS. 종료된 이전 CI의 OCI `STATUS_UNAVAILABLE` 실패는 별도 조사 중이며 전체 Linux 성공·v2 완료를 선언하지 않는다.
 - 2026-09-30 후속: `6f7fe17` CI의 Node24/실제 PG는 성공했지만 builder HIGH 3건으로 Node22가 중단됐다. `8f06733`에서 기존 SRI 검증 절차로 brace-expansion5.0.11/undici6.28.1을 적용하고 label·설치 검사·report를 shared exact patch set으로 일치시켰다. 전체 로컬 **444 PASS / 0 FAIL / 35 SKIP**, 세 smoke/production build 및 별도 reviewer 통과. 새 Linux 이미지 검사 전에는 해결 검증 완료로 세지 않는다. CVE/원본 run/잔여 moderate는 [진행 기록](capstone-progress-2026-09-22.md)에 남겼다.
 
+- 2026-10-01 KST: `8569025`에 기존 admission smoke의 opt-in 원자료(최대8,000건)를 추가하고 깨끗한 SHA에서 phase당100회·총800회를 실제 측정했다. 추적 JSON·SHA·환경·집계 대조·제외 범위는 [진행 기록](capstone-progress-2026-09-22.md)에 연결했다. 전체 로컬445 PASS/0 FAIL/35 SKIP·세 smoke PASS. `7df0453` Linux의 builder security와 OCI 전체 폐기 경로는 PASS, 전체 run은 진행 중이며 후속 측정기 SHA의 CI와 구분한다.
+
 ## 다음 publisher pipeline 연결 시 주의
 
 현재 서명 검증은 resolver에 연결되었지만 API/독립 validator의 운영자 설정은 아직 연결되지 않았다.

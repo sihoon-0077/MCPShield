@@ -48,7 +48,7 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-501 | R/N: `demo/fixtures/`, 기존 평가 harness | 개발셋 분리 정상20/공격20·family·두 사람 label 검토 필요 |
 | CAP2-502 | R/F: `benchmarks/` | 동일 holdout의 5개 비교군 원자료·ABSTAIN/N/A 분모 |
 | CAP2-503 | R/N: Agent harness + 실제 Gateway 연결 | 실제 모델 OFF/ON 반복·sink/action oracle; OS 격리 OFF 금지 |
-| CAP2-504 | R: `scripts/ops/evaluate-admission.ts`, `benchmarks/` | 경로별100표본·hash/warm/cold 구분·testnet revoke3사례; local smoke와 구분 |
+| CAP2-504 | R: `scripts/ops/evaluate-admission.ts`, `benchmarks/` | `8569025` [local smoke 원자료800건](../benchmarks/results/admission-smoke-100-8569025-2026-10-01.json)·집계 대조 추가. hash 포함/warm-cold 구분·scan/Agent 비용·testnet revoke3사례는 남음 |
 | CAP2-505 | R/N: 기존 평가·handoff·CI 결과 | RC/model/prompt/policy/image/dataset/chain 묶음·원자료·실패/한계 |
 
 ## 이번 실행 기록의 출처
