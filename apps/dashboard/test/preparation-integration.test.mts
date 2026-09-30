@@ -1,21 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { NextRequest } from "next/server";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { GET, POST } from "../app/api/control/[...path]/route";
 import { PreparationConsole, PreparationDetail, PreparationRecords, canPrepare, canRetryPreparation, isPreparationPolicy } from "../components/preparation-console";
 import { EvidenceView } from "../components/evidence-view";
+import { baselineCandidates, baselineRequestFields } from "../components/baseline-selection";
+import { ReleaseWorkflow } from "../components/release-workflow";
 import { preparedDownload } from "../lib/prepared-download";
 import { buildApp } from "../../api/src/app.js";
 import { ControlStore } from "../../api/src/control-store.js";
 import { hash, type ControlOptions } from "../../api/src/control-plane.js";
-import { preparedPolicy } from "../../api/src/control-policy.js";
+import { preparedPolicy, scopedPreparedPolicy, scopedBaselinePreparedPolicy } from "../../api/src/control-policy.js";
 import { runPreparationWorkerOnce } from "../../api/src/preparation-worker.js";
+import { runControlWorkerOnce } from "../../api/src/control-worker.js";
 import { claimPreparation, failPreparation } from "../../api/src/preparation-store.js";
 import { syntheticPreparedFixture } from "../../../tests/api/prepared-fixture.js";
 import { exactReleaseIdentity } from "../../../packages/contracts-sdk/src/v2-identity.mjs";
@@ -25,6 +29,10 @@ import { createPreparedReleaseBinding, scopedPreparedExecutionPolicy } from "../
 import { scopedReviewPolicy } from "../../../services/scanner/src/scoped-policy.mjs";
 // @ts-expect-error Shared Merkle helper.
 import { createEvidenceBundle } from "../../../services/scanner/src/evidence.mjs";
+// @ts-expect-error Actual bounded source acquisition without executing candidate code.
+import { resolveArtifact } from "../../../services/resolver/src/resolver.mjs";
+// @ts-expect-error Shared exact descriptor commitment.
+import { hashPreparedRuntimeDescriptor } from "../../../services/resolver/src/runtime-descriptor.mjs";
 
 const policy = { policyHash: hash(preparedPolicy), alias: "prepared-test", version: "1.0.0", document: preparedPolicy, deprecatedAt: null };
 
@@ -164,4 +172,81 @@ test("BFF forwards exact optional baseline selection without converting omission
       assert.match(html, /비교 선택은 해당 검사에만 적용/); assert.doesNotMatch(html, /SYNTHETIC_PRIVATE|type="password"/);
     }
   } finally { previous === undefined ? delete process.env.MCPSHIELD_PUBLIC_ORIGIN : process.env.MCPSHIELD_PUBLIC_ORIGIN = previous; }
+});
+
+test("2.1 UI payloads reach real tenant API/worker through BFF with scan-specific null/ID and immutable runtime evidence", { timeout: 20000 }, async () => {
+  const fixture = await syntheticPreparedFixture(), directory = await mkdtemp(join(tmpdir(), "mcpshield-console-baseline-"));
+  const snapshots = await Promise.all(["1.0.0", "1.0.1"].map(version => resolveArtifact({ sourceType: "local", locator: fileURLToPath(new URL(`../../../demo/fixtures/mail-mcp-${version}`, import.meta.url)) })));
+  const sources = snapshots.map(snapshot => ({ ...exactReleaseIdentity(snapshot), artifactDigest: snapshot.artifactDigest, manifestDigest: snapshot.manifestDigest, toolSurfaceHash: snapshot.toolSurfaceHash,
+    artifactDir: snapshot.artifactDir, sourceType: "npm", legacyReleaseId: snapshot.releaseId, version: snapshot.metadata.version, status: "UNVERIFIED", policyHash: null, reportRoot: null, validUntil: null, chain: null }));
+  const tenant = "console-baseline", token = "synthetic-baseline-operator-token", filename = join(directory, "private-catalogue.json");
+  await writeFile(filename, JSON.stringify({ schemaVersion: "mcpshield.scoped-provenance-catalogue.v1", artifacts: sources.map(source => ({
+    schemaVersion: "mcpshield.operator-code-artifact.v1", authority: "OPERATOR_LOCAL_CATALOG", contentClass: "CODE_ARTIFACT_NO_CUSTOMER_DATA", sourceArtifactDigest: source.artifactDigest })) }));
+  const store = await ControlStore.open(), currentPolicy = scopedBaselinePreparedPolicy("LOCAL_CONTRACT_TEST"), currentHash = hash(currentPolicy), previousHash = hash(scopedPreparedPolicy("LOCAL_CONTRACT_TEST"));
+  const options: ControlOptions = { store, credentials: [{ tenantId: tenant, token, role: "operator" }, { tenantId: "foreign", token: "synthetic-baseline-foreign-token", role: "operator" }], artifactPath: "unused", evidencePath: join(directory, "evidence"), evidenceKey: "1".repeat(64),
+    scannerOptions: { sandbox: "docker", allowRemoteAi: false }, preparedRuntime: fixture.config,
+    scopedPrepared: { provenancePaths: { [tenant]: filename }, ai: { allowRemoteAi: true, disclosurePolicy: "SCOPED_PROVIDER_REVIEW_V1", evidenceMode: "LOCAL_CONTRACT_TEST", provider: "custom", url: "http://127.0.0.1:9", timeoutMs: 1000 } },
+    // Explicit synthetic runtime observations: real intake/storage/worker/BFF, no Docker or model execution.
+    inspectPreparedRuntime: async ({ descriptor }) => ({ ...fixture.trusted, sourceDescriptorDigest: hashPreparedRuntimeDescriptor({ ...descriptor, stage: "PREFLIGHT", finalImageDigest: null, toolSurfaceHash: null }) }) };
+  const output = async (input: any) => {
+    const descriptor = input.descriptor ?? { ...fixture.binding.descriptor, sourceDigest: input.preparation.sourceTreeDigest, sourceTreeDigest: input.preparation.sourceTreeDigest };
+    const binding = createPreparedReleaseBinding({ sourceReleaseId: input.sourceReleaseId, descriptor, executionPolicy: input.scopedReview.executionPolicy });
+    const result = { ...fixture.result, scanId: input.scanId, releaseId: input.releaseId, artifactDigest: binding.artifactDigest, scanStatus: "INCONCLUSIVE", source: "MOCK" };
+    return { binding, result, analysis: { profile: currentPolicy.profile, verdict: "ABSTAIN", issues: ["SYNTHETIC_CONTRACT_TEST_NOT_LIVE_DOCKER"] }, cleanup: async () => {}, runtimeTag: `mcpshield-runtime-${randomUUID()}:local`,
+      bundle: createEvidenceBundle({ ...fixture.documents, "report.json": result, "prepared/binding.json": binding, "runtime/descriptor.json": descriptor, "runtime/execution-policy.json": binding.executionPolicy,
+        "static/closure-report.json": { ...fixture.documents["static/closure-report.json"], sourceDescriptorDigest: hashPreparedRuntimeDescriptor({ ...descriptor, stage: "PREFLIGHT", finalImageDigest: null, toolSurfaceHash: null }) } }) };
+  };
+  options.prepareRuntime = output; options.scanPreparedRuntime = output;
+  const app = await buildApp({ adminApiToken: "synthetic-admin-token", scannerApiToken: "synthetic-scanner-token", controlPlane: options });
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  for (const source of sources) await store.put(tenant, "release", source.releaseId, source);
+  await store.put(tenant, "policy", currentHash, { policyHash: currentHash, alias: "baseline-local", version: currentPolicy.version, document: currentPolicy, deprecatedAt: null });
+  const names = ["MCPSHIELD_API_URL", "MCPSHIELD_PUBLIC_ORIGIN"], previous = names.map(name => process.env[name]);
+  process.env.MCPSHIELD_API_URL = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`; process.env.MCPSHIELD_PUBLIC_ORIGIN = "https://console.test";
+  let cookie = "";
+  const request = (path: string, body?: unknown, key = randomUUID()) => (body === undefined ? GET : POST)(new NextRequest(`https://console.test/api/control/${path}`, { method: body === undefined ? "GET" : "POST", headers: {
+    origin: "https://console.test", cookie, "content-type": "application/json", "idempotency-key": key }, body: body === undefined ? undefined : JSON.stringify(body) }), { params: Promise.resolve({ path: path.split("/") }) });
+  const read = async (path: string) => { const response = await request(path); assert.equal(response.status, 200); return response.json(); };
+  const prepare = async (source: typeof sources[number], body: object) => {
+    const response = await request(`releases/${source.releaseId}/prepare`, body); assert.equal(response.status, 202, await response.clone().text());
+    const { preparation } = await response.json(); await runPreparationWorkerOnce(store, options);
+    const completed = (await read(`preparations/${preparation.preparationId}`)).preparation;
+    assert.equal(completed.status, "COMPLETED", JSON.stringify(completed)); assert.equal(completed.result.verdict, "ABSTAIN"); return completed;
+  };
+  try {
+    const login = await request("session", { token }); assert.equal(login.status, 200); cookie = login.headers.get("set-cookie")!.split(";")[0];
+    const old = await prepare(sources[0], { policyHash: previousHash }); assert.equal(Object.hasOwn(old, "baselineReleaseId"), false);
+    const path = `releases/${sources[1].releaseId}/prepare`;
+    const missing = await request(path, { policyHash: currentHash }); assert.equal(missing.status, 400); assert.equal((await missing.json()).error.code, "SCOPED_BASELINE_SELECTION_REQUIRED");
+    const first = await prepare(sources[1], { policyHash: currentHash, baselineReleaseId: null }); assert.equal(first.baselineReleaseId, null);
+    const inventory = (await read("releases")).items, current = inventory.find((release: any) => release.releaseId === first.result.releaseId);
+    assert.deepEqual(baselineCandidates(inventory, current, currentPolicy).map(release => release.releaseId), [old.result.releaseId]);
+    const pinned = baselineRequestFields(inventory, current, currentPolicy, old.result.releaseId);
+    const original = await store.get(tenant, "release", current.releaseId);
+    const compared = await prepare(sources[1], { policyHash: currentHash, ...pinned });
+    assert.equal(compared.baselineReleaseId, old.result.releaseId); assert.equal(compared.result.releaseId, current.releaseId);
+    assert.deepEqual(await store.get(tenant, "release", current.releaseId), original, "changing comparison cannot replace original runtime ownership/evidence");
+    const body = { releaseId: current.releaseId, policyHash: currentHash, ...pinned };
+    const queued = await request("scans", body, "pinned-scan"); assert.equal(queued.status, 202, await queued.clone().text()); const scan = (await queued.json()).scan;
+    assert.equal(scan.baselineReleaseId, old.result.releaseId);
+    assert.equal((await (await request("scans", body, "pinned-scan")).json()).scan.scanId, scan.scanId);
+    assert.equal((await request("scans", { ...body, baselineReleaseId: null }, "pinned-scan")).status, 409);
+    const noComparison = await request("scans", { ...body, ...baselineRequestFields(inventory, current, currentPolicy, "none") }); assert.equal(noComparison.status, 202);
+    assert.equal((await noComparison.json()).scan.baselineReleaseId, null);
+    const omitted = await request("scans", { releaseId: current.releaseId, policyHash: currentHash }); assert.equal(omitted.status, 400); assert.equal((await omitted.json()).error.code, "SCOPED_BASELINE_SELECTION_REQUIRED");
+    for (const value of [[], {}, "null"]) assert.equal((await request("scans", { ...body, baselineReleaseId: value })).status, 400);
+    const crossVersion = await request("scans", { ...body, releaseId: old.result.releaseId, baselineReleaseId: null }); assert.equal(crossVersion.status, 409); assert.equal((await crossVersion.json()).error.code, "SCOPED_EXECUTION_POLICY_MISMATCH");
+    const crossMode = await request("scans", { ...body, policyHash: hash(scopedPreparedPolicy("PROVIDER_EXECUTION")) }); assert.equal(crossMode.status, 409); assert.equal((await crossMode.json()).error.code, "SCAN_SEMANTIC_MODE_MISMATCH");
+    await runControlWorkerOnce(store, options); await runControlWorkerOnce(store, options);
+    const projected = (await read(`scans/${scan.scanId}`)).scan;
+    assert.equal(projected.status, "COMPLETED"); assert.equal(projected.result.verdict, "ABSTAIN"); assert.equal(projected.baselineReleaseId, old.result.releaseId);
+    const html = renderToStaticMarkup(React.createElement(ReleaseWorkflow, { release: current, scans: [projected], policies: [], actions: [], manage: false, onRefresh: async () => {} }));
+    assert.match(html, new RegExp(old.result.releaseId)); assert.match(html, /선택한 검사의 비교 대상/); assert.match(html, /ABSTAIN/);
+    for (const endpoint of ["releases", "scans", "preparations"]) assert.doesNotMatch(JSON.stringify(await read(endpoint)), /private-catalogue|artifactDir|scopedConfigHash|preparedEvidenceKey|provenancePaths|127\.0\.0\.1:9/);
+    cookie = (await request("session", { token: "synthetic-baseline-foreign-token" })).headers.get("set-cookie")!.split(";")[0];
+    assert.equal((await request("scans", body)).status, 404); assert.equal((await request(path, { policyHash: currentHash, ...pinned })).status, 404);
+  } finally {
+    names.forEach((name, index) => previous[index] === undefined ? delete process.env[name] : process.env[name] = previous[index]);
+    await app.close(); for (const snapshot of snapshots) await snapshot.cleanup(); await rm(directory, { recursive: true, force: true });
+  }
 });

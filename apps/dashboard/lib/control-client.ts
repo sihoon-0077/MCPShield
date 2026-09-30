@@ -35,7 +35,7 @@ const messages: Record<string, string> = {
   SCOPED_BASELINE_CLOSURE_MISMATCH: "비교할 이미지의 설치 파일이 증거와 일치하지 않습니다. 관리자에게 고정 이미지 확인을 요청하세요.",
   SCOPED_BASELINE_DISCOVERY_INCOMPLETE: "비교할 이미지의 도구 목록을 안전하게 확인하지 못했습니다. 관리자에게 실행 환경 확인을 요청하세요.",
   SCAN_QUOTA_EXCEEDED: "검사 한도에 도달했습니다. 대기 중인 검사와 조직의 사용 한도를 확인하세요.",
-  IDEMPOTENCY_CONFLICT: "재시도 식별키가 다른 요청에 사용되었습니다. 새로고침해 기존 요청을 확인하세요.",
+  IDEMPOTENCY_CONFLICT: "이전 요청과 내용 또는 검사 설정이 다릅니다. 새로고침해 기존 요청을 확인하세요.",
 };
 const statusMessages: Record<number, string> = {
   400: "입력 내용을 확인한 뒤 다시 요청하세요.", 401: "운영 로그인 정보가 없거나 만료되었습니다. 다시 연결하세요.",
