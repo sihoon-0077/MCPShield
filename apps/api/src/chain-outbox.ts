@@ -104,13 +104,15 @@ export async function runChainActionOnce(store: ControlStore, relayer: ChainRela
     const dead = manual || !terminal && exhausted(), state = terminal ? "FAILED" : dead ? "DEAD_LETTER" : action.raw_tx ? action.state === "SUBMITTED" ? "SUBMITTED" : "PREPARED" : "NEW";
     const delay = Math.min(chainRetryBudget.maxDelayMs, chainRetryBudget.baseDelayMs * 2 ** Math.max(0, action.attempts - 1));
     const next = terminal || dead ? null : new Date(Date.now() + delay).toISOString();
-    await store.forTenant(action.tenant_id, async (tx) => {
+    // Submission has unwound here (or never began for exhausted jobs). Recover
+    // the durable action parent rather than attaching audit events to this worker.
+    await withSpan("chain.failure", { "mcpshield.chain_id": relayer.chainId }, () => store.forTenant(action.tenant_id, async (tx) => {
       const rows = await tx.query(`UPDATE cp_chain_actions SET state = ?, error_code = ?, next_attempt_at = ?, updated_at = ?,
         nonce = CASE WHEN raw_tx IS NULL AND ? IN ('FAILED','DEAD_LETTER') THEN NULL ELSE nonce END WHERE action_id = ? AND lease_owner = ? RETURNING action_id`,
         [state, code, next, new Date().toISOString(), state, action.action_id, owner]);
       if (rows.length) await tx.event(action.tenant_id, action.release_id, dead ? "chain.action.dead_letter" : terminal ? "chain.action.failed" : "chain.action.retry_scheduled",
         { actionId: action.action_id, txHash: action.tx_hash, code, attempts: action.attempts, nextAttemptAt: next, retryBudget: chainRetryBudget }, currentTraceId());
-    });
+    }), { traceparent: action.trace_parent ?? undefined });
   };
   try {
     // A historical signed transaction without a registry domain must never be sent
