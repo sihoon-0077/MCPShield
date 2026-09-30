@@ -707,7 +707,8 @@ comparison may create another child scan for the same prepared release, while th
 original `preparedEvidenceKey`, tag ownership, publisher proof and chain projection
 are preserved. Different baseline/config contexts cannot reuse a completed result;
 explicit null also excludes rows with a missing field. Reusing one idempotency key
-with another baseline returns 409. Retries retain their original selection/config.
+with another baseline or changed operator configuration returns 409; a new key
+creates a fresh frozen preparation. Retries retain their original selection/config.
 Public scan and preparation records expose the selected ID/null only, not runtime
 trust, local paths, publisher manifest, keys or raw comparison source.
 
