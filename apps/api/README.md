@@ -559,7 +559,8 @@ API and worker require:
   Tier 3 requires independently transmitted distinct OpenAI model selections and
   distinct nonempty response model identities, not merely different aliases.
 
-The catalogue file has exactly this local-only shape (digest shown as a placeholder):
+The unsigned-compatible catalogue has this exact local-only shape; the only
+optional additional top-level field is `publishers` below (digest is a placeholder):
 
 ```json
 {
@@ -600,11 +601,60 @@ performs a fresh scoped review and Docker run. It reloads/reacquires before sign
 API-supplied provenance, an absent independent scan, changed source/archive/mode,
 over-budget source or mismatched verdict cannot authorize a signature.
 
-Public summaries include only policy-derived `semanticEvidenceMode` and fixed
+Public scoped-review summaries include policy-derived `semanticEvidenceMode` and fixed
 `providerQuality: PROVIDER_QUALITY_NOT_MEASURED`. The mode does **not** prove that a
 provider request happened: budget/config failures can cause zero requests. Raw
 review execution evidence stays encrypted and operator-only. Paths, provider keys,
 catalogues, runtime trust and private source budgets are not public projections.
+
+#### Optional operator-pinned demo publisher
+
+The same catalogue may add `publishers`, a map keyed by the **exact original
+source tree digest**, not the download archive or prepared image digest. Each
+entry has exactly `{publisherId, pinnedPublicKey, manifest}`: `pinnedPublicKey`
+is an Ed25519 SPKI PEM, and `manifest` is the existing
+`mcpshield.demo-publisher-signature.v1` signed document. The entire catalogue
+retains the 512 KiB / 128-artifact limits; at most 128 publisher entries are
+allowed and each must reference a declared artifact. Keys and manifests are
+installed by each operator, never accepted from request bodies or candidate metadata.
+
+An absent `publishers` section explicitly preserves unsigned configuration. If
+the section exists, an empty map or a missing selected digest is
+`SCOPED_PUBLISHER_SIGNATURE_REQUIRED`, not unsigned fallback. Actual bounded
+source bytes plus package name/version are verified using the existing resolver's
+operator-only argument. Invalid pins/signatures/identity return fixed
+`SCOPED_PUBLISHER_SIGNATURE_INVALID`; configured OCI sources are unsupported.
+The original five-field source identity and four-field provenance remain unchanged.
+
+Initial preparation and rescans store `{manifest,verification}` in the separate
+tenant-encrypted Merkle leaf `prepared/publisher.json`. The frozen configuration
+also commits the proof and operator trust hash. Removing/replacing authority
+between queueing, execution and final persistence fails closed. Each validator
+reacquires its own source and reads its own catalogue before its independent run
+and again before signing; it compares both bundles against its locally verified
+proof. Missing/forged or signed-vs-unsigned evidence fails with
+`SCOPED_PUBLISHER_EVIDENCE_MISMATCH`. API `VALID` metadata is never authority.
+
+Resolve and release list/detail responses, plus scoped scan results, expose only
+`publisherVerification:{status,purpose,behaviorSafety,publisherId?,sourceArtifactDigest?,publicKeyFingerprint?}`.
+Status is `VERIFIED` or `NOT_CONFIGURED`; purpose is always
+`DEMO_ONLY_NOT_NPM_PROVENANCE` and behaviorSafety is always `NOT_ASSESSED`.
+The three optional identity fields occur only when verified. Older records may
+lack the projection. No raw PEM, manifest, signature or private path is public.
+This is a **historical source-authentication snapshot**, not current admission:
+one publisher may sign both safe and malicious bytes, and signature `VERIFIED`
+can coexist with scan `FAIL` and release `REVOKED`. Removing the catalogue does
+not erase past evidence or revoke a chain release; normal admission/quorum rules
+still apply. Prepare a new source under its explicit authority rather than
+relabeling signed evidence as unsigned.
+
+If a preparation produces an already stored exact runtime identity, its publisher
+proof must match that release's original encrypted proof. Same-authority repeats
+are allowed; unsigned→signed, signature removal or publisher-key rotation produces
+`PREPARED_RELEASE_COLLISION` and rolls back the new child scan. Only the new
+untransferred image tag is cleaned up; original proof, chain status and ownership
+are preserved. Silent historical-identity upgrades and migration tooling are
+outside this batch.
 
 Rollback: disable the separate scoped configuration or deprecate its policy; keep
 existing v1 configuration unchanged. Do not relabel existing v2 evidence as v1.
@@ -618,6 +668,7 @@ The separate real Linux fullcycle is
 `node --import tsx --test --test-name-pattern="scoped Node v2 source" tests/api/prepared-fullcycle.test.ts`
 with `MCPSHIELD_DOCKER_TESTS=1`, `MCPSHIELD_SCOPED_DOCKER_TESTS=1` and a pinned local
 `MCPSHIELD_RUNTIME_BUILDER_IMAGE`. It uses a naturally sized authored mailbox,
-separate local catalogues, two real validator subprocesses, local EVM quorum and
+separate local catalogues with the same ephemeral publisher signing both complete
+safe/malicious sources, two real validator subprocesses, local EVM quorum and
 Gateway allow/revoke with Docker create/start evidence. No paid provider, actual
 customer data or public-registry provenance is claimed.
