@@ -272,8 +272,10 @@ change kinds still count toward the same metadata redaction/disclosure union and
 citations. Unknown fields or exceeded budgets must fail before any HTTP request.
 The aggregate reconstructs this diff from independently acquired inventories and
 checks the same DTO; merely accepting a caller's `packageDiff` is insufficient.
-This extension is still gated: the portable `6fc9dcf` checkpoint does not yet
-implement comparison transmission, runtime acquisition or aggregate approval.
+Runtime acquisition, comparison transmission and the explicit 2.1 assessor are
+implemented at `3746bd9`, after the portable `6fc9dcf` checkpoint. Portable contract
+tests pass; native Docker execution and Control/validator integration remain
+separate verification requirements. Do not enable 2.1 through a legacy assessor.
 
 Unchanged current files still undergo full current risk selection. Before/after
 spans, tools and metadata share one combined disclosure/work budget, not one limit
@@ -303,6 +305,25 @@ explicit 2.1 assessor. Baseline comparison is scan/report-root context, not a ne
 execution-release ID. Never overwrite immutable runtime ownership/prepared
 evidence/publisher records merely to change a scan's baseline. Public comparison
 is scan-specific; private keys, manifests and internal locators remain private.
+
+Approved independent validator selection extends the existing operator-owned
+`ValidatorSources` JSON object with optional `baselines`, a map of current prepared
+release ID to explicit null or baseline prepared release ID. Preserve the existing
+512 KiB file bound; cap this map at 128 entries and require lowercase bytes32 keys
+and non-null values. Legacy array catalogues and policies before 2.1 remain valid.
+For 2.1 require an own map entry keyed by the current prepared ID recomputed from
+the checked source tool and runtime binding, not the original source ID. Missing
+is not null; a report/API-selected baseline cannot become independent authority.
+Reload the existing operator file on each verification and bind the selected entry
+to the configuration hash checked before/after scanning and immediately before
+signing. An operator prepares the current runtime, verifies its exact ID, then pins
+that ID's baseline selection in each validator's own catalogue before validation.
+
+The API does not need a Docker socket: it checks saved immutable runtime evidence
+and freshly acquired source/operator/publisher context. The worker and independent
+validator additionally inspect the actual pinned runtime image and acquire its
+baseline closure and tool surface. Neither layer may treat stored tool arrays or
+a previous VERIFIED status as current independent measurement.
 
 ### Single-key quarantine and three-process acceptance contract
 
