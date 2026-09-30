@@ -245,8 +245,12 @@ The assessor also requires independently supplied `trusted.baseline` authority.
 The aggregate requires current `trusted.sourceIdentity` as well. Compare the
 existing five-field identity to the private scanner selection and Merkle source
 identity leaf; a report-provided matching identity is not independent authority.
-`trusted.baseline` is explicit null or the existing runtime trust pins plus
-`sourceIdentity`, `sourceProvenance`, `sourceBudget` and `publisher`.
+`trusted.baseline` is explicit null or exactly 13 fields: the existing eight runtime
+trust pins plus `releaseId`, `sourceIdentity`, `sourceProvenance`, `sourceBudget`
+and `publisher`. Its `releaseId` is the independently selected **prepared** release
+ID, not `sourceIdentity.releaseId`. Require equality with the baseline commitment;
+source/image pins alone cannot prevent substitution of another execution policy
+and its newly derived prepared ID over those same source/image bytes.
 `sourceBudget` reuses `{sourceArtifactDigest, sourceBytes}`; publisher is independently
 verified proof or explicit null. API and each validator reacquire the source and
 publisher context. The scanner's comparison cannot substitute for that acquisition.
@@ -282,6 +286,24 @@ or validator equality keys. Reuse resolver `metadata.retrievedAt`, not registrat
 `createdAt`. API/validator baseline selection, tenant/tool checks, exact null/ID
 idempotency/cache keys and UI projection require a subsequent integration review.
 
+Approved Control integration uses the existing `baselineReleaseId` name. Only an
+explicit 2.1 policy accepts prepare `{policyHash, baselineReleaseId}` with required
+null or exact prepared ID; 2.1 scan requests also require that property. Omission
+is not null. Preserve legacy/2.0 defaults and OCI behavior. Resolve the selection
+within the authenticated tenant and verify same tool/different source, supported
+Node 2.0/2.1 policy and matching evidence mode, saved evidence and independently
+reacquired source/publisher/runtime pins. An old VERIFIED state is not inherited.
+
+Freeze the exact selection and operator-derived scoped configuration hash in the
+job and preparation/child-scan request. Cache and idempotency must compare both
+null versus ID and that hash; a truthy-only baseline SQL filter is insufficient.
+Recheck source/configuration before and after execution and before validator
+signing, then assess original and independently generated evidence with the new
+explicit 2.1 assessor. Baseline comparison is scan/report-root context, not a new
+execution-release ID. Never overwrite immutable runtime ownership/prepared
+evidence/publisher records merely to change a scan's baseline. Public comparison
+is scan-specific; private keys, manifests and internal locators remain private.
+
 ### Single-key quarantine and three-process acceptance contract
 
 `runValidatorFanout` may take `quarantineOnly: true`; the CLI equivalent is
@@ -302,6 +324,30 @@ receipts mean three safe attestations, one bad quarantine and two bad attestatio
 each address/root to the actual child PID, successful exit and confirmed exact
 chain operation. Local EVM/Docker and loopback AI are not independent institutions,
 Base Sepolia or actual AI quality evidence.
+
+### V2 indexer persistence and observation metadata
+
+Reuse `ControlStore.forTenant` with a chain/registry-scoped transaction key.
+For each canonical block, its events, matching tenant audit entries and checkpoint
+must commit together. Fetch RPC logs/blocks outside SQL transactions; keep the
+existing 500-block window and sort by block/transaction/log position. Reject
+out-of-range logs, mismatched block hashes and stale concurrent checkpoints with
+fixed error codes. Except for the configured first block, require the stored
+predecessor hash to equal the incoming block's parent hash inside the transaction.
+Rewind also rechecks the observed checkpoint inside its transaction before recording
+orphan audits and deleting events/checkpoints. Do not silently overwrite a competing
+canonical branch. Existing event uniqueness prevents duplicate audit insertion.
+
+Authenticated release projection adds `chain.observedAt`: the successful fresh
+reader's observation time (or immediately after that read), not block time. A failed
+read sets `chainUnavailable`/UNVERIFIED while preserving the old chain observation.
+The index result additionally returns `observedAt` for the completed indexing pass.
+Worker `chain.synchronized` JSON contains only chainId, head, indexedBlock, lag and
+that pass timestamp. Lag is blocks, not seconds; a completed pass does not mean
+every release read succeeded. Neither timestamp nor the DB projection grants
+Gateway ALLOW: the existing fresh signed-reader authority remains unchanged.
+SQL event/checkpoint rows are scoped by chain and registry. Release projection
+continues to assume one configured chain/registry; this is not multi-chain support.
 
 ### Explicit local emergency execution
 

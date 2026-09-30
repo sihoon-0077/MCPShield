@@ -29,7 +29,7 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-203 | R: `tests/contracts/release-registry-v2.test.ts` | 고유 2-of-3·중복/비활성·불일치 회귀 |
 | CAP2-204 | R: `tests/contracts/release-registry-v2.test.ts`, `apps/gateway/test/frame-expiry.test.mjs` | 격리 TTL·terminal revoke·승인 만료 우선순위 |
 | CAP2-205 | R: `contracts/scripts/deploy-v2.ts` | Base Sepolia 실제 배포·safe/revoke tx·source/bytecode 확인 필요 |
-| CAP2-206 | R: `apps/indexer/src/v2-indexer.ts`, `tests/api/v2-fullcycle.test.ts` | 실제 전파·block/hash/reorg 경로 존재. `tests/contracts/indexer.test.ts`는 v1이므로 V2 중복/역순/재시작·관측시각/lag를 추가 검수해야 함 |
+| CAP2-206 | F: `apps/indexer/src/v2-indexer.ts`, `tests/api/v2-indexer.test.ts`, `v2-fullcycle.test.ts` | `6bfb51c` 블록별 event/audit/checkpoint 원자화·same-height/shorter-fork/rewind 경합 방어·관측시각/lag 통합. 실제 Ganache/SQLite rollback·역순중복·DB/provider reopen 검사 및 두 Gateway/OTLP 회귀. native PG 경합/최종 Linux·OS 재시작 증거와는 구분 |
 | CAP2-207 | R: `tests/api/control-plane.test.ts`, `prepared-validator.test.ts` | off-chain 암호화/무결성·on-chain 필드·최종 공개 secret 검사 |
 | CAP2-301 | R: `scripts/demo/mcp-client.mjs`, `apps/gateway/test/gateway.test.mjs` | 실제 SDK stdio 통신·framing·stderr |
 | CAP2-302 | R: `apps/gateway/test/prepared-docker.test.mjs` | exact identity 거부 시 후보 start 0건 및 safe 양성 대조군 |
@@ -52,6 +52,8 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-505 | R/N: 기존 평가·handoff·CI 결과 | RC/model/prompt/policy/image/dataset/chain 묶음·원자료·실패/한계 |
 
 ## 이번 실행 기록의 출처
+
+- 최종 `6bfb51c` 로컬 전체466 PASS/0 FAIL/35 SKIP·세 smoke/build/forms3 PASS. 새 indexer 포함이며 native Linux/PG 경합·실제 모델/테스트넷 완료가 아니다. [동일 SHA의 범위·한계](capstone-progress-2026-09-22.md).
 
 - `f1d2929` CI36744373202는 Node24/PG 성공, Node22 기본 검사·빌드 성공 후 native Docker readiness 시간 초과로 실패. `cee4f04` 최소 서버 조회 수정은 집중10 PASS/2 SKIP·독립 리뷰를 통과했으며 새 Linux 결과 대기다. `6fc9dcf` baseline 기반 Main 집중27 PASS/1 native SKIP. 전체 실행 및 native 여부는 [진행 기록](capstone-progress-2026-09-22.md)에서 SHA별로 구분한다.
 

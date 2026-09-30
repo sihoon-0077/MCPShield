@@ -13,6 +13,17 @@
 - Main 집중 검사27 PASS/1 native SKIP, Reviewer 신규9 PASS/0 SKIP. synthetic inventory와 실제 loopback HTTP 계약 검사이며 Docker baseline 재취득·실제 AI·API/validator 연결 완료가 아니다. 후속 runtime 연결과 indexer 원자화는 별도 worktree 작업 중이다.
 - `6fc9dcf` 전체 **`npm test` 465 PASS/0 FAIL/35 SKIP**: Backend159/12, Security142/19, Gateway120/3, Dashboard44/1(PASS/SKIP). 세 smoke·production build PASS. 후속 forms 명령의 파일명을 잘못 지정해 묶음 명령은 exit1이었으나, 실제 `forms.test.mts`와 `MCPSHIELD_FORM_HTTP_TESTS=1`로 실행한 built HTTP 검사3 PASS/0 SKIP를 별도 확인했다. tracked secret 검사도 PASS. 앞선 간헐 RPC 실패의 근본 원인을 해결했다는 증거는 아니며 최신 native 결과와도 구분한다.
 
+### V2 indexer 블록 저장·동시 복구 보강
+
+Backend `98fdc53` → `e832f1c` → `e5896ec`를 독립 리뷰 후 Main `d423102` → `edb3843` → `6bfb51c`로 통합했다.
+
+- 실제 SQL trigger로 tenant 감사 저장 실패를 주입하면 기존 코드에 event1행이 남는 것을 재현했다. event별 트랜잭션만 추가한 중간안도 checkpoint 저장 실패 때 event1행이 남았다. 최종 코드는 **블록의 event·모든 관련 tenant 감사·checkpoint를 같은 기존 SQL 트랜잭션**으로 저장하며 모두0행으로 rollback한다. RPC 호출은 트랜잭션 밖에 두고 새 DB나 서비스를 추가하지 않았다.
+- 블록/transaction/log 순서 정렬, 범위 및 block hash 불일치 거부, 같은 canonical block의 중복 허용을 확인했다. 재조직된 이벤트의 orphan 감사와 event/checkpoint 삭제도 한 트랜잭션이다.
+- Reviewer가 먼저 같은 높이의 새 checkpoint 아래 옛 event가 남는 경합을 독립 재현했다. 이어 Main이 짧아진 fork의 parent가 바뀐 경우를 지적하고 양쪽이 재현했다. 후자는 다음 poll에 복구되더라도 일시적 혼합 체인을 저장하므로 승인하지 않았다. 최종 코드가 저장 직전 same-height hash·predecessor 존재/parentHash를 확인하고 rewind 전 latest number/hash도 비교한다. 정확히 `deploymentBlock` 한 블록만 predecessor 예외이며 설정 변경으로 아래 블록 전체를 면제하지 않는다.
+- 새 `release.chain.observedAt`은 성공한 fresh read 관측 시간이다. 실패 시 이전 chain/시간을 유지하며 UNVERIFIED/chainUnavailable을 표시한다. `chain.synchronized`의 pass 종료 시각과 block 단위 lag는 개별 릴리스 성공이나 Gateway 허가가 아니다. `/v1/releases/:releaseId`와 `/v1/releases/:releaseId/history`의 기존 인증 경로 및 Worker JSON 로그에서 관측·감사를 확인한다. Gateway의 별도 fresh authority는 유지한다.
+- Backend 최종 `e5896ec` 실제 Ganache/SQLite 신규 검사1 PASS(약30.5초), 기존 실제 두 Gateway·OTLP fullcycle1 PASS(약46.5초, 87spans/connected25), 타입 검사 PASS. Reviewer는 `98fdc53` 신규 실제EVM1 PASS 및 shorter-fork 수정 전/후 synthetic RPC+실제SQL 재현을 별도로 수행하고 최종 diff를 승인했다. native PG 경합·OS 프로세스 강제 종료·Base Sepolia 성공을 주장하지 않는다. DB/provider close→reopen 검증과 OS 재시작은 다르다.
+- 최종 Main `6bfb51c` **전체 `npm test` 466 PASS/0 FAIL/35 SKIP**, 세 smoke·production build·built forms3 PASS/0 SKIP. Backend160/12, Security142/19, Gateway120/3, Dashboard44/1(PASS/SKIP). 같은 전체 실행에서 신규 indexer32.6초와 OTLP47.3초가 모두 성공했다. 단일 configured-chain/registry projection 범위를 유지하며 Linux native 결과는 별도 확인한다. 간헐 RPC 근본 원인 해결·CAP2-206 전체 완료·CAP2 전체 완료율을 이 재실행 성공만으로 확정하지 않는다.
+
 ## 2026-10-01 KST 후속 — CI 호환 수정·세 검증자 연결, 간헐 RPC 실패 추적
 
 통합 `4fb62d7`, 테스트 진단 `2fa3bc2`. 아직 새 Linux native 성공 또는 CAP2 전체 완료가 아니다.
