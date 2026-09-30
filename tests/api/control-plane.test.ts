@@ -260,8 +260,9 @@ test("existing chain outbox upgrades without guessing its historical registry an
     for (let attempt = 0; attempt < 2; attempt++) {
       const upgraded = await ControlStore.open(path);
       try {
-        const [action] = await upgraded.query("SELECT registry_address,state FROM cp_chain_actions WHERE action_id = ?", ["legacy-action"]);
+        const [action] = await upgraded.query("SELECT registry_address,state,attempts,retry_started_at,next_attempt_at FROM cp_chain_actions WHERE action_id = ?", ["legacy-action"]);
         assert.equal(action.registry_address, null); assert.equal(action.state, "NEW");
+        assert.equal(action.attempts, 0); assert.equal(action.retry_started_at, null); assert.equal(action.next_attempt_at, null);
       } finally { await upgraded.close(); }
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -307,7 +308,7 @@ test("PostgreSQL real adapter persists and atomically dequeues", { skip: !proces
         timer = setTimeout(() => reject(Error("OPEN_REPLAYED_DDL_ON_BUSY_TABLES")), 3000);
       })]);
       assert.equal(reopened.driver, "POSTGRESQL");
-      assert.equal((await reopened.query("SELECT migration_id FROM cp_schema_migrations")).length, 9);
+      assert.equal((await reopened.query("SELECT migration_id FROM cp_schema_migrations")).length, 10);
     } finally { clearTimeout(timer); releaseLock(); await business; await (await reopening.catch(() => undefined))?.close(); }
     const first = await store.enqueue(tenantId, { releaseId: release.releaseId, policyHash: hash(defaultPolicy) }, "once", "input", "trace");
     assert.equal((await store.enqueue(tenantId, { releaseId: release.releaseId, policyHash: hash(defaultPolicy) }, "once", "input", "trace")).deduplicated, true);

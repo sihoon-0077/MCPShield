@@ -24,7 +24,7 @@ import { preparations } from "../../apps/api/src/preparation-store.js";
 import { V2Relayer, runChainActionOnce } from "../../apps/api/src/chain-outbox.js";
 import { v2ChainReader } from "../../apps/api/src/registry-v2-client.js";
 import { indexV2 } from "../../apps/indexer/src/v2-indexer.js";
-import { privateNode, deniedGatewayChild, dockerEvents } from "./runtime-fullcycle-helpers.js";
+import { privateNode, deniedGatewayChild, completedGateways, dockerEvents } from "./runtime-fullcycle-helpers.js";
 // @ts-expect-error Shared authored native SOURCE fixture, not an injected scanner.
 import { createOciProfileFixture, OCI_PROFILE_PROBE_PLAN } from "../security/oci-profile-fixture.mjs";
 // @ts-expect-error Actual operator-local immutable source resolver.
@@ -46,6 +46,24 @@ test("OCI fullcycle uses genuine initialization and paginated fixture tools with
   assert.deepEqual(ociMcpInput.trim().split("\n").map(line => JSON.parse(line).method), ["initialize", "notifications/initialized", "tools/list", "tools/call"]);
   assert.deepEqual(OCI_PROFILE_PROBE_PLAN.scenarios.map((s: any) => s.toolName), ["read_messages", "read_context"]);
   await assert.rejects(privateNode("for await(const chunk of process.stdin)process.stdout.write(chunk)", { privateKeys: ["SYNTHETIC_PRIVATE_KEY_ONLY"] }), /EXPOSED_PRIVATE_CONFIG/);
+});
+
+test("OCI negative-proof fixture keeps a stable head after manually mining queued transactions", { timeout: 10000 }, async () => {
+  const chain = ganache.provider({ logging: { quiet: true }, miner: { blockTime: 1 }, wallet: { deterministic: true, totalAccounts: 2 } });
+  try {
+    const [from, to] = await chain.request({ method: "eth_accounts", params: [] });
+    await chain.request({ method: "miner_stop", params: [] });
+    const before = await chain.request({ method: "eth_blockNumber", params: [] });
+    const txHash = await chain.request({ method: "eth_sendTransaction", params: [{ from, to, value: "0x1", gas: "0x5208", gasPrice: "0x77359400" }] });
+    assert.equal(await chain.request({ method: "eth_getTransactionReceipt", params: [txHash] }), null);
+    await chain.request({ method: "evm_mine", params: [] });
+    const receipt = await chain.request({ method: "eth_getTransactionReceipt", params: [txHash] });
+    assert.equal(receipt.status, "0x1"); assert.equal(Number(receipt.blockNumber), Number(before) + 1);
+    await pause(1100); // Cross the old automatic one-second mining tick.
+    const head = await chain.request({ method: "eth_getBlockByNumber", params: ["latest", false] });
+    assert.ok(head);
+    assert.equal(head.number, receipt.blockNumber); assert.equal(head.hash, receipt.blockHash);
+  } finally { await chain.disconnect(); }
 });
 
 // Real local Linux Docker, offline Trivy, immutable source resolver, V2 transactions
@@ -183,7 +201,12 @@ test("OCI source → worker → independent single-key validators → V2 quorum 
     } finally { await client.close(); }
     const safeEvents = await dockerEvents(safeSince);
     for (const action of ["create", "start"]) assert.ok(safeEvents.some(e => e.Action === action && e.Actor.Attributes.image === safe.imageDigest));
-    const bad = await prepare("malicious"); await vote(bad.scan.scanId);
+    const bad = await prepare("malicious");
+    // Only the final negative-proof phase needs a stable head: a new automatic
+    // block during canonicality recheck correctly rejects even a REVOKED view.
+    // vote() still mines pending transactions, then joins its pump before proof.
+    await chain.provider.request({ method: "miner_stop", params: [] });
+    await vote(bad.scan.scanId);
     const denied = await admission(bad.release);
     assert.deepEqual({ decision: denied.decision, status: denied.status, reasonCode: denied.reasonCode, snapshotStatus: denied.snapshot?.status },
       { decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED", snapshotStatus: "REVOKED" });
@@ -194,7 +217,7 @@ test("OCI source → worker → independent single-key validators → V2 quorum 
     const attempts = await Promise.allSettled(["Gateway-A", "Gateway-B"].map(agentId => privateNode(deniedGatewayChild, { mode: "live", apiBaseUrl: apiUrl, apiToken: token,
       timeoutMs: 5000, policyHash, tenantId, publicKey, keyId, chainId: 1337, registryContract: deployment.releaseRegistry.address, validatorSetVersion: 1,
       operationClass: "READ_PRIVATE", admissionMode: "strict", agentId, preparedIdentityPath: bad.file, input: ociMcpInput }, 60000)));
-    const gateways = attempts.map(attempt => { assert.equal(attempt.status, "fulfilled"); return (attempt as PromiseFulfilledResult<any>).value; });
+    const gateways = completedGateways(attempts);
     assert.equal(new Set(gateways.map(g => g.pid)).size, 2);
     for (const { pid, ...decision } of gateways) { assert.notEqual(pid, process.pid); assert.deepEqual(decision, { releaseId: bad.release.releaseId,
       decision: "BLOCK", status: "REVOKED", reasonCode: "RELEASE_REVOKED", source: "LIVE", cacheHit: false }); }

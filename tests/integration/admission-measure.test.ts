@@ -7,12 +7,35 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createServer } from "node:http";
-import { latencySummary, measureAdmission, measuredDecision, assertFreshRevocation, admissionMatrixPlan, cacheAttemptAt, benchmarkProxy, benchmarkRpcBatch, measureAdmissionMatrix, assertUnavailableAdmission, safeMatrixFailure, matrixProxyFailureCode, matrixParallel } from "./admission-measure.js";
+import { latencySummary, measureAdmission, measuredDecision, assertFreshRevocation, admissionMatrixPlan, cacheAttemptAt, benchmarkProxy, benchmarkRpcBatch, measureAdmissionMatrix, assertUnavailableAdmission, safeMatrixFailure, matrixProxyFailureCode, matrixParallel, admissionRawSample } from "./admission-measure.js";
 import { sourceSnapshot, withSourceProvenance } from "../../scripts/ops/evaluate-admission.js";
 test("load report uses nearest-rank quantiles, all samples, and bounded opt-in inputs", async () => {
   assert.deepEqual(latencySummary([100, 1, 3, 2]), { samples: 4, p50Ms: 2, p95Ms: 100, p99Ms: 100, maxMs: 100 });
   assert.throws(() => latencySummary([])); assert.throws(() => latencySummary([NaN]));
   await assert.rejects(measureAdmission({ requests: 0 })); await assert.rejects(measureAdmission({ concurrency: 17 }));
+});
+
+test("smoke raw samples preserve recomputable timings and failures while projecting only bounded public fields", async () => {
+  const allow = await measuredDecision(async () => ({ decision: "ALLOW", cacheHit: false, releaseStatus: "VERIFIED", reasonCode: "RELEASE_VERIFIED", source: "LIVE", decisionSource: "API" }));
+  const denied = await measuredDecision(async () => ({ decision: "BLOCK", cacheHit: false, releaseStatus: "REVOKED", reasonCode: "RELEASE_REVOKED", source: "LIVE", decisionSource: "API" }));
+  const failed = await measuredDecision(async () => { throw Error("Admission unavailable; strict or non-read-only calls fail closed"); }, "OFFLINE_STRICT_OR_WRITE");
+  const durations = [1.123456, 5.987654, 3.456789], decisions = [allow, denied, failed];
+  const records = decisions.map((result, index) => admissionRawSample("actual_http_evm_revoked_signed_block", index, durations[index], result, "BLOCK"));
+  assert.deepEqual(records.map(record => record.latencyMs), durations);
+  assert.deepEqual(records.map(record => record.requestIndex), [0, 1, 2]);
+  assert.deepEqual(latencySummary(records.map(record => record.latencyMs)), latencySummary(durations));
+  assert.equal(records.filter(record => record.outcome === "BLOCK").length, 1);
+  assert.equal(records.filter(record => record.outcome === "FAIL_CLOSED_ERROR").length, 1);
+  assert.equal(records.filter(record => record.outcome === "ALLOW" && record.expectedOutcome !== "ALLOW").length, 1, "Unexpected ALLOW is never relabeled as a defense success");
+  assert.equal(records[2].failureCode, "OFFLINE_STRICT_OR_WRITE"); assert.equal(records[2].source, "UNKNOWN");
+  const privateValue = "SYNTHETIC_PRIVATE_URL_TOKEN_PATH";
+  const projected = admissionRawSample("actual_http_evm_strict_hot_key", 999, 0, { ...allow, source: privateValue, decisionSource: privateValue,
+    reasonCode: privateValue, releaseStatus: privateValue, failureCode: privateValue, rawBody: privateValue, apiToken: privateValue } as any, "ALLOW");
+  for (const field of ["source", "decisionSource", "reasonCode", "releaseStatus", "failureCode"] as const) assert.equal(projected[field], "UNKNOWN");
+  assert.equal(JSON.stringify(projected).includes(privateValue), false); assert.equal(Object.hasOwn(projected, "rawBody"), false);
+  for (const index of [-1, 1000]) assert.throws(() => admissionRawSample("actual_http_evm_strict_hot_key", index, 0, allow, "ALLOW"));
+  assert.throws(() => admissionRawSample(privateValue as any, 0, 0, allow, "ALLOW"));
+  assert.throws(() => admissionRawSample("actual_http_evm_strict_hot_key", 0, NaN, allow, "ALLOW"));
 });
 
 test("matrix plans exact workload and native setup cost without claiming cache hits or running a 10,000-key chain", async () => {

@@ -3,6 +3,42 @@
 The resolver verifies bounded npm archives and OCI blobs without executing them.
 The existing self-contained v1 scanner/Gateway profile is unchanged.
 
+## Capstone demo publisher signature (CAP2-004)
+
+`resolveArtifact(input, { demoPublisher })` can require a small operator-configured
+Ed25519 signature before returning an npm/local/tarball source snapshot.
+`demoPublisher` contains `publisherId`, `pinnedPublicKey` (SPKI PEM), and `manifest`.
+It is a separate trusted argument, not a candidate/public API request field.
+Absent configuration preserves the existing unsigned resolver behavior; a configured
+missing/invalid signature rejects. Configured OCI verification is unsupported and rejects.
+
+`demo-publisher.mjs` fixes `mcpshield.demo-publisher-signature.v1` to canonical JSON,
+Ed25519, and `DEMO_ONLY_NOT_NPM_PROVENANCE`. The signed payload binds the publisher,
+package name/version and actual source tree digest computed from the acquired snapshot.
+The digest algorithm is the existing `sha256-sorted-path-nul-content-nul-v1` (paths
+and bytes, excluding `.git`/`node_modules`), not an archive checksum or runtime identity.
+The existing source-tree → prepared descriptor binding remains necessary afterward.
+The verifier trusts the operator-pinned key, never a key supplied by the manifest.
+
+Both `mail-mcp` fixture versions have signatures from the same demo-only publisher
+in `demo/fixtures/publisher-signatures.json`, outside the signed artifact directories.
+Only a public key and signatures are retained. An ephemeral `generateKeyPairSync('ed25519')`
+key signed these fixtures; its private key was not persisted. To change fixture bytes,
+generate a new ephemeral pair and call `signDemoPublisherManifest` for **both** exact
+digests, then replace the reviewed public catalogue together. Never reuse a validator key.
+
+Verification adds `DEMO_PUBLISHER_SIGNATURE_VALID` with `behaviorSafety: NOT_ASSESSED`.
+It does not mean npm provenance, scanner PASS, registry approval, or permission to run.
+The resolver option is ready for an operator-owned catalogue; public API/UI policy wiring
+and the native prepared-runtime demo remain separate integration work.
+
+```powershell
+node --import tsx --test tests/security/demo-publisher.test.mjs
+```
+
+The tests read both existing fixtures without executing them, and reject byte tampering,
+missing signatures, another key, identity/signature substitution and self-supplied keys.
+
 ## Implemented checkpoint: 1A (not generic execution)
 
 `resolveArtifact()` now adds `metadata.runtimePreparation` for npm/local/tarball
@@ -72,8 +108,8 @@ the official npm tarball SRI. Candidate input is never present during this
 network-enabled trusted builder build. CI must vulnerability-scan the resulting
 builder ID before approving it; no clean vulnerability result is implied here.
 The toolchain additionally replaces npm's vulnerable bundled brace-expansion,
-ip-address and tar with SRI-verified 5.0.9, 10.3.1 and 7.5.22 archives. Only native
-tar extraction runs for these three replacements: no dependency solver, lifecycle
+ip-address, tar and undici with SRI-verified 5.0.11, 10.3.1, 7.5.22 and 6.28.1 archives. Only native
+tar extraction runs for these four replacements: no dependency solver, lifecycle
 script or dev/audit install. The patch-set label and installed versions are checked
 before candidate preparation; an unpatched npm 12.0.2 image is refused.
 

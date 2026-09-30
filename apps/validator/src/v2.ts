@@ -106,6 +106,7 @@ export async function runValidatorFanout(options: { apiUrl: string; token: strin
     while (Date.now() < deadline) {
       const { action } = await request(`/v1/chain/actions/${actionId}`);
       if (action.status === "FAILED") throw new Error("CHAIN_ACTION_FAILED");
+      if (action.status === "DEAD_LETTER") throw new Error("CHAIN_ACTION_REQUIRES_RECONCILIATION");
       if (action.status === "COMPLETED" && /^0x[0-9a-f]{64}$/.test(action.txHash ?? "")) {
         const [tx, receipt] = await Promise.all([provider.getTransaction(action.txHash), provider.getTransactionReceipt(action.txHash)]);
         if (tx?.to?.toLowerCase() !== options.registryAddress.toLowerCase() || tx.data !== calldata || tx.value !== 0n || receipt?.status !== 1) throw new Error("VALIDATOR_CHAIN_CONFIRMATION_MISMATCH");

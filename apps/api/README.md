@@ -210,6 +210,38 @@ before broadcast and retained for identical rebroadcast after uncertain outcomes
 An expiring SQL lease serializes each relayer's nonce stream. Reorg reconciliation
 rewinds missing receipts and indexer checkpoints, appending orphan notices to history.
 
+V2 chain retries use the existing SQL outbox, not a new broker. The fixed capstone
+budget (`chainRetryBudget` in `src/chain-outbox.ts`) is 12 execution attempts,
+with no new attempt after 5 minutes from the first claim. In-flight RPC calls retain
+their transport timeouts; this is a scheduling deadline, not transaction cancellation.
+Failures and pending receipts back off exponentially from 1 second to 30 seconds.
+Attempts are persisted before RPC work, so restarting a worker does not reset them.
+The claim starts the elapsed-time budget; a crash before the separate attempt increment
+consumes lease/time but no RPC attempt, since no external work has started yet.
+Malformed/explicitly rejected unsigned actions become `FAILED` without retry;
+transient failures or unconfirmed receipts exhaust into `DEAD_LETTER`. A genuine
+receipt reorg starts a new bounded recovery cycle for the same signed transaction.
+
+Inspect `/v1/chain/actions/:actionId` for `attempts`, `retryStartedAt`, `nextAttemptAt`,
+`retryBudget`, and the last safe `errorCode`; `/v1/events` records
+`chain.action.retry_scheduled`, `chain.action.failed`, and `chain.action.dead_letter`.
+DLQ is a work queue outcome, not proof that a submitted transaction failed on chain.
+The raw signed transaction/hash/nonce are retained but raw bytes are never returned
+by this API. An unresolved signed DLQ transaction pauses that account's writes across
+registry domains; backoff also prevents another tenant from skipping its nonce head.
+Other relayer accounts continue independently.
+Historical unsigned rows with an unknown registry are not adopted or allowed to starve
+known-domain work. A signed/reserved legacy row with no domain is stopped explicitly
+with `CHAIN_REGISTRY_UNRESOLVED`; its signed bytes are retained for operator review.
+
+No blind DLQ retry endpoint is provided. Pause the affected worker and inspect the
+exact chain ID/registry/transaction hash/nonce with the configured RPC. A confirmed
+receipt must be reconciled before clearing the pause; an absent/uncertain receipt
+must not cause nonce reuse, a new signature, or a fabricated success. Keep admission
+fail-closed, record the operator's resolution, and preserve the original outbox row.
+Do not delete a stuck action to make later writes proceed. If a repair cannot be
+proved safe, leave that account paused for manual investigation.
+
 `node --import tsx apps/validator/src/v2.ts` independently reacquires source and reruns
 the local scanner before signing; checking a supplied Merkle root alone is insufficient.
 Supply `CONTROL_API_URL`, `CONTROL_API_TOKEN`, `CONTROL_SCAN_ID`, and a private
