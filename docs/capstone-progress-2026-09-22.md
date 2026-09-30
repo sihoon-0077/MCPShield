@@ -4,6 +4,17 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-09-30 재개 기록
+
+- 9월 22일 사용량 제한으로 중단한 뒤 사용자가 재개를 요청했다. 당시 Main `2fb36d6`, 원격 `e172651`, Backend worktree의 미커밋 trace 수정 2파일을 확인하고 보존했다.
+- `3997871`에 trace 수정을 통합했다. `chain.submit` span 종료 후 retry/실패/DLQ 감사 로그가 worker trace에 붙던 원인을 공통 `fail()` 경로에서 수정했다. 기존 `withSpan`에 저장된 `action.trace_parent`를 전달한다. nonce·서명 bytes·상태 전이·재시도 상한은 바꾸지 않았다.
+- 결정론적 회귀: foreign worker trace `ffff…`와 원래 요청 `aaaa…`를 구분해 retry/terminal/pre-submit DLQ 세 경로를 검사한다. 담당 worktree에서 outbox + 실제 local EVM/OTLP 8 PASS / 0 FAIL / PG 1 SKIP, 별도 telemetry 2 PASS, TypeScript PASS.
+- Main `3997871`의 전체 `npm test` exit 0: Backend 147 PASS / 12 SKIP, Security 133 PASS / 19 SKIP, Gateway 120 PASS / 3 SKIP, Dashboard 42 PASS / 1 SKIP. **442 PASS / 0 FAIL / 35 SKIP**, 세 demo smoke 모두 PASS. `npm run build`의 backend TypeScript·Next.js production build도 PASS. 이 결과는 실제 모델·테스트넷·Windows에서 실행되지 않은 Docker 검사의 성공을 뜻하지 않는다.
+- 종료된 `e172651` [CI 35741226333](https://github.com/sihoon-0077/MCPShield/actions/runs/35741226333)를 다시 확인했다. PostgreSQL·Node24 성공, Node22 실패다. Gateway/Agent·scoped Node native는 성공했지만 OCI 단계에서 API가 `BLOCK/UNVERIFIED/STATUS_UNAVAILABLE`을 반환해 `REVOKED` 증거 검사에 실패했다(`oci-fullcycle.test.ts:188`). 이전 run의 child rejection과 지점이 다르며 같은 원인이라고 단정하지 않는다.
+- 해당 실패 때문에 후속 sandbox/Compose/관측성/image 검사 일부가 SKIP되었다. 전체 Linux 검증 성공으로 표기하지 않으며 main 머지·공개 배포도 하지 않았다.
+- OCI 경합 보완은 테스트에만 적용했다. 마지막 악성 릴리스 prepare 뒤 자동 1초 채굴을 중지하고, 기존 validator vote의 명시적 `evm_mine` pump가 끝난 뒤 동일 head에서 폐기 증거를 확인한다. 긴 정상 분석 구간의 자동 채굴·production reader의 negative-head-change 거부·시간 제한·정확한 REVOKED 기대값을 유지한다. 실제 과거 실패의 내부 코드가 없어 이 경합이 유일한 원인이었다고 확정하지 않으며 Linux 재실행으로 확인한다.
+- `8ad0a40`에 OCI 테스트 보완을 통합했다. Main의 outbox/OCI/helper 집중 검사 11 PASS / 0 FAIL / 2 native SKIP. 별도 Reviewer의 portable OCI 2 PASS / 1 native SKIP 및 reader/RPC 8 PASS / 0 SKIP, 변경 경계 리뷰 통과. 새 portable Ganache 검사는 실제 대기 거래를 수동 채굴하고 1.1초 후 head/hash가 변하지 않는지 확인한다.
+
 ## 이번에 실제 반영한 것
 
 | 파트 | 반영 | 아직 구분해야 할 것 |
@@ -47,6 +58,11 @@ Windows / Node 24.13.0. `c3c46dc`에서 `npm test` exit 0.
 - 같은 통합 CI의 Node22 prepared Gateway/Agent native 단계는 실패했다. Windows의 SKIP을 성공으로 취급하지 않았기에 발견한 실패이며, 상세 로그 확인과 수정 전까지 해당 기능의 native 완료로 세지 않는다. scoped Node scanner 등 후속 native 단계는 별도로 성공했다.
 - 두 Gateway 테스트가 같은 Docker daemon의 전체 컨테이너 목록을 검사하면서 병렬 실행되는 충돌을 교차 리뷰에서 발견했다. 누수 검사를 유지하고 `--test-concurrency=1`을 고정했으며, CI 명령 계약 검사 9개가 PASS했다. 실제 실패 로그 및 후속 native 결과 확인 전에는 이것만으로 원인 해결을 확정하지 않는다.
 - 같은 SHA의 PR run에서는 OCI worker/validator native 단계도 실패했으나 push run에서는 성공했다. 원인 미확정으로 별도 추적한다. P0 Node 경로 성공과 P1 OCI 경로 성공을 혼동하지 않는다.
+- 상세 로그 확보 후 구분: `fab3ed1`에서 신규 Agent native 자체는 PASS(실제 prepared Docker/SDK/Gateway, 가짜 모델)였다. 같은 단계의 기존 `prepared-docker.test.mjs:171` 전역 컨테이너 비교가 추가 CID 1개 때문에 실패했다. 전체 단계가 실패했으므로 Agent PASS만으로 통합 성공이라고 하지 않는다.
+- OCI 실패는 `oci-fullcycle.test.ts:197`의 마지막 두 Gateway 차단 검사 중 child rejection이다. 그 이전 독립 validator·quorum·REVOKED admission 검사는 지나갔다. 기존 helper가 상세 원인을 지워 root cause는 아직 불명확하며, 테스트 전용 고정 allowlist 코드로 진단을 보강한다. raw 오류·토큰·키·경로는 출력하지 않는다.
+- 후속 `e172651`의 [CI 35741226333](https://github.com/sihoon-0077/MCPShield/actions/runs/35741226333)는 순차 native 검사와 Agent 정리 검사를 포함한다. Node24·PostgreSQL job PASS, 기록 시 Node22 native는 진행 중이다. `fab3ed1`의 진행 중 run은 후속 push로 취소되었으며 이를 전체 성공으로 세지 않는다.
+- `e172651`의 **순차 prepared Gateway/Agent native 단계 PASS**. 추가한 Agent의 정상/폐기 경로 컨테이너 정리 검사도 이 단계에 포함된다. 후속 OCI 등 전체 Node22 job은 별도 결과다.
+- 후속 진단 통합 `2fb36d6`의 로컬 전체 재검사에서 backend 145 PASS / 1 FAIL / 12 SKIP: 기존 OTLP fullcycle의 trace 연결 검사가 실패했다. 독립 재실행은 PASS했지만 무시하지 않았다. 새 outbox의 retry audit가 `chain.submit` span 밖에서 caller trace를 기록하는 것이 원인으로 확인되어, 원래 action trace에 다시 연결하는 회귀 수정 대상이다. 기존 439 PASS는 이전 SHA 결과이며 이 실패를 덮는 최신 성공으로 표기하지 않는다.
 - main 머지·Railway 재배포·테스트넷 거래·유료 모델 호출은 하지 않았다. 개발 PR은 검증 대기 상태로 유지한다.
 
 ## 로컬 성능 smoke (정식 평가와 구분)

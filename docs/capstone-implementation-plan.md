@@ -54,6 +54,7 @@
 - 새 전체 로컬 검사: **439 PASS / 0 FAIL / 35 SKIP**, 세 demo smoke PASS, backend/dashboard production build PASS. 결과·commit·외부 미검증 범위는 [1차 구현 결과](capstone-progress-2026-09-22.md)에 기록했다.
 - 최초 fixture 수정 SHA `35019f6`의 기존 실패 두 native gate 모두 실제 PASS 확인. 후속 기능의 CI와는 분리한다. 새 통합본을 같은 PR에 push하면 기존 진행 중 run이 workflow concurrency 정책으로 취소될 수 있으므로 개별 gate 성공을 전체 run 성공이라고 하지 않는다.
 - 통합 `fab3ed1` native PostgreSQL outbox PASS. Gateway native 실패 조사 중 공유 daemon 누수 검사의 병렬 충돌을 발견해 두 test file을 순차 실행하도록 수정했다. 가드·누수 검사는 유지하며 실제 재실행으로 확인한다.
+- 2026-09-30 재개: 미커밋 상태로 보존된 trace 수정 2파일을 검수하고 `3997871`로 통합했다. 재시도/terminal/DLQ 감사 기록이 원래 action trace에 남는다. 전체 로컬 **442 PASS / 0 FAIL / 35 SKIP**, 세 smoke 및 production build PASS. 종료된 이전 CI의 OCI `STATUS_UNAVAILABLE` 실패는 별도 조사 중이며 전체 Linux 성공·v2 완료를 선언하지 않는다.
 
 ## 다음 publisher pipeline 연결 시 주의
 
