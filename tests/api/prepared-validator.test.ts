@@ -3,11 +3,13 @@ import { test } from "node:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
 import { comparePreparedScans, independentlyScanPrepared, recordPreparedVerification, checkedPreparedValidatorAi } from "../../apps/validator/src/prepared-verification.js";
-import { checkedValidatorPayload, configuredValidatorKeys } from "../../apps/validator/src/v2.js";
+import { checkedValidatorPayload, configuredValidatorKeys, configuredValidatorMode, runValidatorFanout } from "../../apps/validator/src/v2.js";
 import { preparedPolicy } from "../../apps/api/src/control-policy.js";
 import { hash } from "../../apps/api/src/control-plane.js";
-import { attestationV2Domain, attestationV2Types, bytes32 } from "../../packages/contracts-sdk/src/v2.js";
+import { attestationV2Domain, attestationV2Types, quarantineV2Types, bytes32 } from "../../packages/contracts-sdk/src/v2.js";
+import { id } from "ethers";
 import { syntheticPreparedFixture } from "./prepared-fixture.js";
 import { controlConfig } from "../../apps/api/src/control-config.js";
 import { preparedAi } from "../../apps/api/src/prepared-config.js";
@@ -38,6 +40,18 @@ test("prepared signing requires independent evidence, not API PASS or a supplied
   assert.throws(() => comparePreparedScans({ ...f, bundle: createEvidenceBundle(documents) }, independent, preparedPolicy, f.trusted), /DID_NOT_CONFIRM/);
   const different = structuredClone(independent.result); different.scanStatus = "FAILED";
   assert.throws(() => comparePreparedScans(f, { ...independent, result: different }, preparedPolicy, f.trusted), /DID_NOT_CONFIRM/);
+  const quarantine = { domain: template.domain, types: quarantineV2Types, payload: { releaseId: f.identity.releaseId, policyHash,
+    evidenceHash: f.bundle.manifest.root, reasonCode: id("CANARY_EXFILTRATION"), expiresAt: now + 120, validatorSetVersion: 1, nonce: 0, deadline: now + 60 } };
+  // An advertised API FAIL cannot turn independently confirmed PASS into emergency authority.
+  for (const verdict of ["PASS", "FAIL", "ABSTAIN"]) await assert.rejects(checkedValidatorPayload(quarantine,
+    { ...context, scan: { ...scan, result: { ...scan.result, verdict } } }, true), /BINDING_MISMATCH/);
+  await assert.rejects(checkedValidatorPayload(quarantine, { ...context, independentPreparedEvidence: undefined }, true), /BINDING_MISMATCH/);
+  const forged = structuredClone(f.bundle); forged.files["report.json"] = "{\"scanStatus\":\"FAILED\"}";
+  await assert.rejects(checkedValidatorPayload(quarantine, { ...context, evidence: { ...context.evidence, bundle: forged } }, true), /BINDING_MISMATCH/);
+  const incompleteDocs = structuredClone(f.documents); delete incompleteDocs["semantic/reviews.json"].reviews[0].critic;
+  const incomplete = createEvidenceBundle(incompleteDocs), incompleteContext = { ...context, evidence: { bundle: incomplete, reportRoot: incomplete.manifest.root },
+    scan: { ...scan, result: { ...scan.result, reportRoot: incomplete.manifest.root } } };
+  await assert.rejects(checkedValidatorPayload({ ...quarantine, payload: { ...quarantine.payload, evidenceHash: incomplete.manifest.root } }, incompleteContext, true), /DID_NOT_CONFIRM/);
 });
 
 test("operator AI test disclosure is explicit, strictly numeric-loopback and preserved by API and validator configuration", () => {
@@ -97,4 +111,47 @@ test("one institution can configure one key without sharing keys; CLI rejects am
   assert.throws(() => configuredValidatorKeys({ VALIDATOR_PRIVATE_KEY: key, VALIDATOR_PRIVATE_KEYS: "[]" }), /MODES_CONFLICT/);
   for (const env of [{}, { VALIDATOR_PRIVATE_KEY: "" }, { VALIDATOR_PRIVATE_KEYS: "not-json" }, { VALIDATOR_PRIVATE_KEYS: "{}" }, { VALIDATOR_PRIVATE_KEYS: "[]" }])
     assert.throws(() => configuredValidatorKeys(env), /CONFIG_INVALID/);
+});
+
+test("quarantine-only is explicit, single-key and cannot silently accept conflicting or malformed flags", async () => {
+  assert.deepEqual(configuredValidatorMode([]), { quarantineFirst: false, quarantineOnly: false });
+  assert.deepEqual(configuredValidatorMode(["--quarantine"]), { quarantineFirst: true, quarantineOnly: false });
+  assert.deepEqual(configuredValidatorMode(["--quarantine-only"]), { quarantineFirst: false, quarantineOnly: true });
+  for (const args of [["--quarantine", "--quarantine-only"], ["--quarantine-only", "--quarantine-only"], ["--quarantine-only=true"], ["--quarantine-only", "false"], ["--unknown"]])
+    assert.throws(() => configuredValidatorMode(args), /QUARANTINE_MODE_INVALID/);
+  const options = { apiUrl: "http://127.0.0.1:9", token: "synthetic-only", scanId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", privateKeys: [`0x${"1".repeat(64)}`],
+    chainId: 1337, registryAddress: `0x${"a".repeat(40)}`, policyHash: `0x${"a".repeat(64)}`, rpcUrl: "http://127.0.0.1:9", quarantineOnly: true };
+  for (const edit of [{ quarantineFirst: true }, { quarantineOnly: "true" }, { quarantineFirst: "false" }, { privateKeys: [] }, { privateKeys: [...options.privateKeys, `0x${"2".repeat(64)}`] }])
+    await assert.rejects(runValidatorFanout({ ...options, ...edit } as any), /QUARANTINE_MODE_INVALID/);
+});
+
+test("quarantine-only always enters independent verification even when API advertises PASS/ABSTAIN (loopback contract, no Docker)", async () => {
+  const f = await syntheticPreparedFixture(), policyHash = hash(preparedPolicy), scanId = f.result.scanId;
+  let advertised = "PASS", forged = false, posts = 0;
+  const server = createServer(async (request, response) => {
+    let body: any;
+    if (request.url === "/rpc") {
+      let text = ""; for await (const chunk of request) text += chunk;
+      const rpc = JSON.parse(text);
+      assert.ok(["eth_chainId", "eth_call"].includes(rpc.method));
+      body = { jsonrpc: "2.0", id: rpc.id, result: rpc.method === "eth_chainId" ? "0x539" : `0x${"0".repeat(24)}${"b".repeat(40)}` };
+    } else {
+      if (request.method === "POST") posts++;
+      if (request.url === "/v1/policies") body = { items: [{ policyHash, document: preparedPolicy }] };
+      else if (request.url?.endsWith("/evidence")) body = { reportRoot: f.bundle.manifest.root, bundle: forged ? { ...f.bundle, files: {} } : f.bundle };
+      else body = { scan: { scanId, releaseId: f.identity.releaseId, policyHash, status: "COMPLETED", result: { scanResult: f.result, reportRoot: f.bundle.manifest.root, verdict: advertised } } };
+    }
+    response.writeHead(200, { "content-type": "application/json", connection: "close" }).end(JSON.stringify(body));
+  });
+  try {
+    await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+    const apiUrl = `http://127.0.0.1:${(server.address() as any).port}`;
+    const options = { apiUrl, token: "synthetic-local-only", scanId, privateKeys: [`0x${"1".repeat(64)}`], chainId: 1337,
+      registryAddress: `0x${"a".repeat(40)}`, policyHash, rpcUrl: `${apiUrl}/rpc`, quarantineOnly: true };
+    // No prepared-runtime authority is injected. All advertised verdicts must reach
+    // the independent-runtime boundary and reject, never skip into success/no-op.
+    for (advertised of ["PASS", "ABSTAIN", "FAIL"]) await assert.rejects(runValidatorFanout(options), /PREPARED_VALIDATOR_TRUST_REQUIRED/);
+    forged = true; await assert.rejects(runValidatorFanout(options), /VALIDATOR_EVIDENCE_BINDING_MISMATCH/);
+    assert.equal(posts, 0, "failed independent verification cannot submit an attestation or quarantine");
+  } finally { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); }
 });
