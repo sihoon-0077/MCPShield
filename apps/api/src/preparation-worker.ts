@@ -113,6 +113,7 @@ export async function runPreparationWorkerOnce(store: ControlStore, options: Con
           if (existing?.runtimeProfile !== policy.document.profile) throw new Error("PREPARED_RELEASE_COLLISION");
           if (scoped) {
             const saved = await loadEvidence(options, job.tenantId, existing!.preparedEvidenceKey, existing!.preparedReportRoot);
+            check(saved, existing);
             try { assertPublisherEvidence(saved, scoped.publisher); }
             catch { throw new Error("PREPARED_RELEASE_COLLISION"); }
           }
