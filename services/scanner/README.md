@@ -922,3 +922,102 @@ and the benchmark-specific provider paths. Shared `requestAiJson` stays a generi
 transport; each caller must declare its disclosure domain rather than bypass the
 scoped DTO through a caller-supplied prompt. Configured semantics must migrate to
 the scoped path, not remain permanently disabled as the privacy solution.
+
+### Baseline 2.1 portable contract checkpoint — NOT runtime approval
+
+`scopedBaselineReviewPolicy(mode)` explicitly adds
+`mcpshield.scoped-review-policy.v2.1`; `scopedReviewPolicy(mode)` and its existing
+v2.0 golden hashes are unchanged. The execution profile remains
+`restricted-node-docker-v2`, but the different semantic commitment produces a
+different execution-policy/manifest digest. A future control policy must select
+`version: "2.1.0"` explicitly, never reinterpret `2.0.0` or OCI evidence.
+
+The new pure/provider entry points are `buildScopedSemanticInputV21`,
+`verifyScopedSemanticInputV21`, `reviewScopedSemanticsV21` and
+`validateScopedAiV21`. Their input/proof/review domains end in `.v2.1`; provider
+schema names start `mcpshield_scoped_v2_1_`. They reuse existing redaction,
+citation, no-tools transport, independent-context critic and synthetic probe
+validators. Semantic review still returns `approvalVerdict: ABSTAIN`.
+
+Private semantic input retains `{files,tools,runtime,executionPolicy,
+sourceProvenance,sourceArtifactDigest}` and adds the existing exact five-field
+`sourceIdentity` plus an explicit `baseline`:
+
+```js
+baseline: null // first release, explicitly NOT an update comparison
+// or:
+baseline: {
+  releaseId,        // exact prepared execution ID, not name@version
+  sourceIdentity,   // existing five fields; same tool, different source identity
+  binding,         // existing checked PreparedReleaseBinding, Node v2.0 or v2.1
+  sourceProvenance, // independently supplied operator declaration for prior bytes
+  files, tools,    // independently exported installed text and discovered tools
+  closureDigest
+}
+```
+
+`scopedBaselineCommitment` checks the four-field selection
+`{releaseId,sourceIdentity,binding,sourceProvenance}` independently of private
+files/tools inputs. Provider input contains only its identity/digest projection,
+not original paths, publisher manifests/keys, retrieval timestamps or locators.
+These checks establish commitment consistency, **not** that a caller really ran
+Docker or independently verified an operator/publisher. Missing baseline is an
+error; only explicit `null` means no baseline. Same source identity cannot be its
+own baseline. Same package name/version with different source bytes remains
+distinguishable by the existing exact identity.
+
+Every current file is classified and its risk spans selected even when its digest
+equals the baseline. Previous changed/deleted files add before-context; they never
+exempt current files. Both sides share the existing 8 MiB local source budget,
+file-count limit, 64 KiB DTO, snippet/work limits and exact metadata/source union.
+The tier cannot drop because a risk is unchanged; unknown classification or
+budget failure prevents all provider requests. All required roles receive one
+frozen DTO/input digest. With `baseline: null`, current risks remain reviewed but
+`changes` is empty and the result says `NO_BASELINE_NOT_AN_UPDATE_COMPARISON`.
+
+`comparePreparedClosures({current,tools,executionPolicy,baseline})` reuses
+`inspectPreparedSources` and `compareRelease`. Its baseline is either `null` or
+`{closure,tools,executionPolicy}`. It verifies synthetic or acquired inventory
+bytes/SBOM, compares discovered surfaces, declared dependency ranges, hashed
+install scripts and execution egress policy. `installedDependencies` separately
+compares installed paths, names, versions, package.json digest and the component's
+owned-file content digest (nested installed packages are separate). Same
+version/package.json with changed dependency source is not missed. This helper
+never labels supplied bytes as LIVE acquisition. Its schema is
+`mcpshield.prepared-package-diff.v1`; no baseline produces empty change arrays,
+not a fabricated update. Policy egress changes are not observed network effects.
+This separate comparison is **not yet included in the provider DTO**: dependency
+names/versions/diff metadata have not acquired a provider-disclosure approval.
+The DTO rejects unknown top-level fields rather than silently dropping a supplied
+`packageDiff`. Later integration must reconstruct/project that comparison and
+include all its metadata in the same disclosure union before any transmission.
+
+This commit does **not** wire baseline image export/discovery, the aggregate 2.1
+assessor, API preparation/rescan, independent validators or public UI. The existing
+aggregate explicitly returns `SCOPED_BASELINE_RUNTIME_NOT_INTEGRATED` for the new
+policy, so rewritten v2.0 evidence cannot accidentally authorize it. Existing
+2.0 scans and API `PREPARED_BASELINE_UNSUPPORTED` behavior are preserved.
+
+The next trusted runtime contract is `trusted.baseline: null | {...runtimeTrust,
+sourceIdentity,sourceProvenance,sourceBudget,publisher}`: reuse current
+`builderImageDigest,collectorDigest,observerDigest,finalImageDigest,platform,
+closureDigest,sourceDescriptorDigest,entrypointDigest` fields; `sourceBudget`
+retains `{sourceArtifactDigest,sourceBytes}` and `publisher` is independently
+verified evidence or explicit `null`, never a report's self-declared VALID. API
+and each validator must acquire their own context and compare it to the selection
+and Merkle evidence before approval/signing. No parser in this portable slice
+claims to implement that pending trust contract. Frozen jobs/cache/idempotency
+must also distinguish exact baseline ID versus null. Actual resolver
+`metadata.retrievedAt` already exists: retain it as an observation timestamp,
+separate from API `createdAt`, but exclude fresh timestamps from stable config
+hashes/independent-equivalence checks.
+
+```sh
+node --import tsx --test tests/security/scoped-baseline.test.mjs tests/security/scoped-semantic.test.mjs tests/security/scoped-prepared.test.mjs
+```
+
+Portable tests use actual numeric-loopback HTTP with authored synthetic model
+responses and inventory bytes. This is not Linux/Docker acquisition, a real
+provider call or measured semantic quality. Native baseline integration and
+actual model normal-update/permission-expansion evidence remain unverified;
+CAP2-005/101/103 are not completed by this contract checkpoint.
