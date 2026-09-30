@@ -211,6 +211,78 @@ model identities in the responses; different aliases alone are insufficient. The
 transport has no such selector and cannot satisfy that requirement. Local Responses
 contract tests do not become real-model quality evidence.
 
+### Approved Node scoped baseline v2.1 contract (implementation in progress)
+
+This is an additive contract, not an enabled API policy or completed comparison.
+Keep `restricted-node-docker-v2`, the release-ID algorithm and Registry ABI.
+Control policy `version: "2.1.0"` must bind a separate exact
+`scopedBaselineReviewPolicy(mode)` object (`mcpshield.scoped-review-policy.v2.1`).
+Preserve the existing `scopedReviewPolicy(mode)` bytes, defaults and 2.0 hashes.
+The new tier is `LOCAL_RISK_TIERED_BASELINE_V1`, disclosure selection is
+`ALL_CURRENT_RISK_PLUS_PINNED_BASELINE_DIFF`, and its exact baseline declaration is:
+
+```json
+{
+  "selection": "EXPLICIT_PREPARED_RELEASE_OR_NULL",
+  "authority": "SAME_TOOL_OPERATOR_REACQUIRED_SOURCE_AND_RUNTIME",
+  "currentCoverage": "NO_BASELINE_EXEMPTION",
+  "acquisition": "IMAGE_EXPORT_AND_ISOLATED_TOOLS_LIST",
+  "approvalInheritance": "NONE",
+  "unverifiable": "ABSTAIN"
+}
+```
+
+Only the new policy accepts scanner options
+`scopedReview: {executionPolicy, sourceProvenance, sourceIdentity, baseline}`.
+`sourceIdentity` reuses the existing exact five fields. `baseline` is explicitly
+`null` for a first release or `{releaseId, sourceIdentity, binding, sourceProvenance}`;
+the binding and four-field provenance schemas are reused, not redefined.
+Require the same tool, exact source/binding identity, supported Node v2.0/v2.1
+baseline and independently reacquired operator authority/runtime pins. Do not
+accept API report flags or inherit its old approval. Missing is not implicit null.
+The assessor also requires independently supplied `trusted.baseline` authority.
+
+Re-export the unstarted baseline image closure and collect isolated `tools/list`;
+do not replay its entire AI/probe pipeline or trust its stored tool array as a new
+measurement. Old runtime risks are not current candidate observations. Diff evidence
+reuses `static/package-diff.json` under `mcpshield.prepared-package-diff.v1`, binding
+current and baseline prepared/source IDs, descriptor/closure/surface digests, tool,
+declared and installed dependency, install-script and egress-policy changes.
+Installed package bytes changing at the same version must remain visible.
+Keep raw baseline inventory/discovery in separate encrypted Merkle evidence leaves.
+
+Unchanged current files still undergo full current risk selection. Before/after
+spans, tools and metadata share one combined disclosure/work budget, not one limit
+per version. Unknown classification or over-budget input sends zero provider
+requests. All AI roles receive one frozen bounded DTO. Use new `.v2.1`
+input/proof/review domains and `mcpshield_scoped_v2_1_<role>` provider schema names;
+old assessors must reject new evidence, and OCI v2 must not become implicitly enabled.
+Actual acquisition timestamps are observations, not stable identity/config hashes
+or validator equality keys. Reuse resolver `metadata.retrievedAt`, not registration
+`createdAt`. API/validator baseline selection, tenant/tool checks, exact null/ID
+idempotency/cache keys and UI projection require a subsequent integration review.
+
+### Single-key quarantine and three-process acceptance contract
+
+`runValidatorFanout` may take `quarantineOnly: true`; the CLI equivalent is
+`--quarantine-only`. Require exactly one key and reject conflicting/malformed flags.
+Use the same independent source/publisher/runtime/semantic verification, fresh
+validator nonce/domain, strict reconstructed payload, signature and exact confirmed
+transaction checks as normal submission. Never skip verification based on an API
+PASS/ABSTAIN/FAIL flag. Only independently established critical FAIL may quarantine.
+No attestation follows this mode. The existing default and `--quarantine` flow stay
+compatible; quorum, ABI and terminal revocation rules are unchanged.
+
+The native scoped acceptance test uses three distinct key-owning OS processes for
+each release: safe A/B reach VERIFIED with exactly two approvals, then C attests;
+bad C quarantines with zero rejections, A attests FAIL once, B's second FAIL revokes.
+Do not submit a third FAIL after terminal revocation. Six independent verification
+receipts mean three safe attestations, one bad quarantine and two bad attestations.
+`LOCAL_VERIFICATION_ONLY` receipts alone prove neither signing nor inclusion: bind
+each address/root to the actual child PID, successful exit and confirmed exact
+chain operation. Local EVM/Docker and loopback AI are not independent institutions,
+Base Sepolia or actual AI quality evidence.
+
 ### Explicit local emergency execution
 
 `mcpshield.break-glass-grant.v1` is separate from normal admission and FR407 receipts.
