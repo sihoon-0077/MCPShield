@@ -310,7 +310,8 @@ Approved independent validator selection extends the existing operator-owned
 `ValidatorSources` JSON object with optional `baselines`, a map of current prepared
 release ID to explicit null or baseline prepared release ID. Preserve the existing
 512 KiB file bound; cap this map at 128 entries and require lowercase bytes32 keys
-and non-null values. Legacy array catalogues and policies before 2.1 remain valid.
+and values when non-null. Existing catalogue objects with a `sources` array and
+no `baselines`, and policies before 2.1, remain valid.
 For 2.1 require an own map entry keyed by the current prepared ID recomputed from
 the checked source tool and runtime binding, not the original source ID. Missing
 is not null; a report/API-selected baseline cannot become independent authority.

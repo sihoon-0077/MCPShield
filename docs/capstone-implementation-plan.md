@@ -40,6 +40,8 @@
 
 ## 진행 로그
 
+- 2026-10-01 후속: `3746bd9` baseline2.1 runtime과 `b759be8` 정상/악성 업데이트 회귀를 독립 리뷰 후 통합했다. Main focused32 PASS/0 FAIL/2 native SKIP. `a1f7ac5`는 기존 immutable builder 뒤 별도 순차 native CI gate를 추가하고, 독립 validator의 기존 `ValidatorSources.baselines` 설정 계약을 기록한다. CI 명령/서명 gate 회귀9 PASS. API/worker/validator 연결은 별도 Backend 구현 중이며 외부 AI·실제 Docker 성공을 이 portable 결과로 대체하지 않는다.
+
 - 2026-10-01 후속: indexer의 감사 저장·checkpoint 실패 및 동시 reorg/shorter-fork 저장 경합을 재현하고 기존 `forTenant` 블록 원자화·checkpoint/parent fence로 보완했다. 독립 최종 리뷰 후 `d423102`/`edb3843`/`6bfb51c`에 통합. 담당자 실제 Ganache/SQLite+기존 두 Gateway OTLP2 PASS, Reviewer 실제EVM1 PASS 및 별도 SQL interleaving 재현. 최종 Main6bfb51c 전체466 PASS/0 FAIL/35 SKIP·세 smoke/build/forms3 PASS. 새 Linux 성공은 별도 확인한다. API/validator baseline2.1 연결은 Security stable runtime 계약 확인 뒤 이어간다.
 
 - 2026-10-01 후속: `f1d2929` CI36744373202는 Node24/PG 성공, Node22 기본 검사·빌드 후 Docker readiness 시간 초과로 실패했다. `cee4f04`는 제한시간을 유지하고 서버 OS만 조회하도록 수정했다(집중10 PASS/2 SKIP·독립 리뷰). `6fc9dcf`에 baseline2.1 기반 계약을 통합했다(Main 집중27 PASS/1 SKIP·Reviewer 신규9 PASS). runtime 재취득/API/validator 연결과 실제 모델 증거는 별도 잔여다. indexer block 원자화 draft는 짧은 fork 동시성 경합을 추가 재현하여 보완·리뷰 중이며 완료로 세지 않는다.

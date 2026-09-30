@@ -14,11 +14,11 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-002 | R: `tests/security/npm-closure.test.mjs`, `prepared-binding.test.mjs` | 실제 builder·source/closure/image 교체 거부; Linux 실행 |
 | CAP2-003 | R: `tests/security/prepared-observation.test.mjs`, `apps/gateway/test/protocol-guard.test.mjs` | 전체 pagination·정규화·description/schema/annotation 변경 |
 | CAP2-004 | N: resolver의 작은 demo publisher 서명 검사 | 같은 키 safe/bad 실제 서명, 누락·다른 키·bytes 변조 거부; sidecar는 source 밖 |
-| CAP2-005 | R/F: `services/resolver/`, `tests/api/scoped-preparations.test.ts` | resolver `retrievedAt`와 출처 존재. publisher 수준은 `b8ec89d`/`4225255`로 연결; `6fc9dcf` pinned baseline2.1 기반 계약 통합, 실제 재취득/API/validator 연결은 미완료 |
+| CAP2-005 | R/F: `services/resolver/`, `tests/api/scoped-preparations.test.ts` | resolver `retrievedAt`와 출처 존재. publisher 수준은 `b8ec89d`/`4225255`로 연결; `3746bd9`에 pinned baseline2.1 image 재수집·독립 prepared ID 결합을 통합. API/validator 선택 연결과 새 native 검증은 미완료 |
 | CAP2-006 | R: `tests/api/prepared-fullcycle.test.ts` | 같은 source/runtime/policy·독립 validator·Gateway 실제 통합 |
-| CAP2-101 | R: `tests/security/scanner.test.mjs`, `master-scanner.test.mjs` | 신호별 양성/음성·정상 허용 접근 검사 존재. `6fc9dcf` 설치 bytes·dependency 최소 diff 기반 검사; 실제 runtime 및 AI DTO 연결 남음 |
+| CAP2-101 | R: `tests/security/scanner.test.mjs`, `master-scanner.test.mjs` | 신호별 양성/음성·정상 허용 접근 검사 존재. `3746bd9` 설치 bytes·dependency diff를 runtime/AI DTO에 연결하고 aggregate가 재구성. portable synthetic 검사 통과, 새 native·실제 모델 실행은 별도 |
 | CAP2-102 | R: `tests/security/scoped-semantic.test.mjs`, `ai-provider.test.mjs` | 로컬 응답 계약과 실제 모델 호출 증거 분리; 모델·예산 필요 |
-| CAP2-103 | R: `tests/security/semantic-review.test.mjs`, `scoped-baseline.test.mjs` | `6fc9dcf` 현재 위험을 생략하지 않는 버전 고정 before/after DTO·합산 전송 한도 검사 통합. local synthetic 계약만 검증, 실제 runtime/모델 비교 및 API 연결 미완료; runtime 승인은 거부 |
+| CAP2-103 | R: `tests/security/semantic-review.test.mjs`, `scoped-baseline.test.mjs` | `3746bd9` current 위험 보존·실측 baseline 재취득·합산 DTO·명시2.1 assessor 통합. `b759be8` same baseline safe/bad native 회귀와 `a1f7ac5` CI gate 추가; Main focused32 PASS/2 native SKIP. 실제 native·모델 비교 및 API/validator 연결 미완료, 구2.0 assessor의2.1 승인은 계속 거부 |
 | CAP2-104 | R: `tests/security/docker-sandbox.test.mjs` | Linux Docker 격리 필수; Windows SKIP은 완료 아님 |
 | CAP2-105 | F: `tests/security/scoped-prepared.test.mjs`, `tests/api/prepared-fullcycle.test.ts` | JSON sink 계약 수정 후 실제 canary hash·identity 결합 재실행 |
 | CAP2-106 | R: `tests/security/ai-probes.test.mjs`, `scoped-prepared.test.mjs` | 생성한 probe와 실제 실행 digest·인자·관찰 결합 |
@@ -52,6 +52,8 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-505 | R/N: 기존 평가·handoff·CI 결과 | RC/model/prompt/policy/image/dataset/chain 묶음·원자료·실패/한계 |
 
 ## 이번 실행 기록의 출처
+
+- `a1f7ac5` baseline runtime/회귀/CI 연결 로컬 전체471 PASS/0 FAIL/36 SKIP·세 smoke/build/forms3 PASS. 새 Docker baseline1건이 SKIP에 추가됐으며 API/validator2.1 연결·화면·새 Linux 검증은 남아 있다. [같은 구현의 검증 범위](capstone-progress-2026-09-22.md).
 
 - 최종 `6bfb51c` 로컬 전체466 PASS/0 FAIL/35 SKIP·세 smoke/build/forms3 PASS. 새 indexer 포함이며 native Linux/PG 경합·실제 모델/테스트넷 완료가 아니다. [동일 SHA의 범위·한계](capstone-progress-2026-09-22.md).
 

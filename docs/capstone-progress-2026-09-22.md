@@ -4,6 +4,17 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-10-01 KST 후속 — baseline runtime 통합·native 회귀 연결
+
+- `3746bd9`에 Security `966ae3c`를 통합했다. pinned 이전 image를 실행 전 다시 export해 closure/설치 bytes를 검사하고 격리된 `tools/list`를 재수집한다. 이전 전체 AI/probe를 다시 실행하거나 저장된 도구 표면을 실측으로 취급하지 않는다. 현재 위험 검사는 baseline과 같아도 생략하지 않는다.
+- 정확한 current source와 독립적으로 선택된 baseline **prepared ID**를 결합한다. 같은 source/image라도 실행 정책이 다른 prepared ID로 바꾼 공격을 거부한다. baseline trust는 기존 runtime8필드에 prepared ID·source identity/provenance·source budget·publisher를 더한 정확한13필드다. API/독립 validator가 원본·게시자 설정을 다시 취득하는 책임을 scanner 비교로 대신하지 않는다.
+- `static/package-diff.json`을 기존 encrypted Merkle bundle에 추가하고 2.1 assessor가 양쪽 closure·표면·동일 버전의 설치 bytes 변화와 bounded AI DTO를 재구성한다. old finding은 분석 tier를 올릴 수 있지만 current deterministic FAIL 증거로 승격하지 않는다. baseline 원문·metadata는 current와 같은 합산 전송 한도를 쓰며 unknown/초과는 HTTP0건이다. 기존2.0 golden hash/assessor와 OCI 동작은 유지한다.
+- `b759be8`은 Security `c81b726`의 test-only 확장이다. 같은1.0.0 baseline에 safe1.0.1 PASS/rescan과 bad1.0.2 실제 canary FAIL을 검사하도록 native 사례를 확장했다. 위조 current/baseline authority와 재-Merkle화한 가짜 canary hash는 ABSTAIN이어야 한다. malicious fixture의 실제 크기가 전송 예산을 초과하는 점도 configured loopback AI의 HTTP0건으로 별도 검사한다. native bad의 FAIL은 AI가 아닌 current sink의 실제 hash 증거가 필요하다. padding·한도·300초 제한·production 판정 변경은 없다.
+- Main 집중32 PASS/0 FAIL/2 native SKIP, Security/별도 Reviewer 각각14 PASS/1 native SKIP. `a1f7ac5`는 기존 검증된 immutable builder 뒤 새2.1 native 단계를 별도로 순차 실행한다. Node22/Docker opt-in·builder 성공 조건·이미지 서명 상위 성공 조건을 보존하며 외부 모델 키·실패 무시 옵션은 없다. CI 계약 Main/Reviewer 각각9 PASS/0 SKIP.
+- 기능/검사 기준 **`a1f7ac5` 전체 `npm test` 471 PASS/0 FAIL/36 SKIP**, 세 smoke·production build·built forms3 PASS/0 SKIP, 묶음 명령 exit0. Backend160/12, Security147/20, Gateway120/3, Dashboard44/1(PASS/SKIP). 같은 실행의 실제 Ganache/SQLite indexer30.1초·OTLP47.5초(87spans/connected25)도 통과했다. 36 SKIP에는 새 baseline Docker1건이 포함된다. tracked secret 검사·diff-check PASS. 과거 간헐 RPC의 근본 원인 해결이나 native Linux 성공을 뜻하지 않는다.
+- API/worker/validator2.1 연결은 Backend worktree에서 구현 중이다. 독립 validator의 기존 운영자 `ValidatorSources`에 선택적 `baselines[currentPreparedId] = null | baselinePreparedId` 계약을 승인했다. 누락≠null, 최대128항목/기존512KiB 파일 한도, fresh reload·configHash·cache/idempotency 정확 일치를 요구한다. API는 Docker 없이 저장 proof와 최신 원본 설정을 확인하며 실제 image 재검증은 worker/validator가 한다. 현재 화면은2.0 선택만 지원하므로2.1 baseline 선택 UI도 남아 있다.
+- 새 Linux 실행은 push 후 별도로 확인한다. 기존 `f1d2929` readiness 실패와 수정 `cee4f04`는 아래 이력을 유지한다. main 머지·공개 배포·실제 외부 모델·테스트넷 거래 없음. 최종 CAP2 완료율은 아직 확정하지 않았다.
+
 ## 2026-10-01 KST 후속 — Docker 준비 검사 수정·baseline 2.1 기반 통합
 
 - `f1d2929`의 [CI36744373202](https://github.com/sihoon-0077/MCPShield/actions/runs/36744373202)는 **FAILURE**로 종료했다. Node24와 실제 PostgreSQL·별도 DB 복원은 SUCCESS. Node22도 기본 전체 검사·production build·built forms·admission 측정·Compose 설정 검사는 성공했으나 native Docker readiness에서 `DOCKER_TIMEOUT`으로 실패했다. 후속 builder/native 스캔·Compose E2E는 미실행이다. 이전 POSIX/Node22 테스트 호환 문제는 이 실행에서 해소됐지만 전체 Linux 성공은 아니다.
