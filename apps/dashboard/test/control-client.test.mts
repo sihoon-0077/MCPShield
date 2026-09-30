@@ -11,6 +11,10 @@ test("control client explains failures while retaining codes, HTTP status and pr
     [409, "APPEAL_NEW_DIGEST_OR_POLICY_REQUIRED", "수정된 파일"], [409, "SCAN_PROFILE_MISMATCH", "같은 프로필"],
     [409, "SCAN_SEMANTIC_MODE_MISMATCH", "같은 분석 모드"],
     [400, "SCOPED_OPERATOR_PROVENANCE_REQUIRED", "관리자에게 허가 목록"],
+    [400, "SCOPED_PUBLISHER_SIGNATURE_REQUIRED", "게시자 서명이 등록되지 않았습니다"],
+    [400, "SCOPED_PUBLISHER_SIGNATURE_INVALID", "원본 파일 또는 고정 공개키와 맞지 않습니다"],
+    [400, "SCOPED_PUBLISHER_EVIDENCE_MISMATCH", "게시자 증거가 원본 검증 결과와 일치하지 않습니다"],
+    [400, "SCOPED_PUBLISHER_SOURCE_UNSUPPORTED", "원본 유형에는 게시자 서명 검증이 지원되지 않습니다"],
     [400, "SCOPED_SOURCE_BUDGET_EXCEEDED", "파일 용량"], [400, "SCOPED_CONFIG_REQUIRED", "관리자 설정"],
     [409, "SCOPED_CONFIG_CHANGED", "검사 설정이 변경"], [409, "PREPARATION_CONFIG_CHANGED", "이미지 준비 설정이 변경"],
     [400, "SCOPED_EVIDENCE_MODE_MISMATCH", "검사 방식과 서버 설정"],
@@ -19,7 +23,8 @@ test("control client explains failures while retaining codes, HTTP status and pr
     status = http; payload = { error: { code, message: code, details: { reason: "SYNTHETIC_PRIVATE_DIAGNOSTIC" } } };
     await assert.rejects(controlApi("scans"), (error: any) => {
       assert.equal(error.code, code); assert.equal(error.status, http); assert.equal(error.details.reason, "SYNTHETIC_PRIVATE_DIAGNOSTIC");
-      assert.ok(error.message.includes(message)); assert.equal(error.serverMessage, code); assert.doesNotMatch(error.message, /SYNTHETIC_PRIVATE/); return true;
+      assert.ok(error.message.includes(message)); assert.equal(error.serverMessage, code); assert.doesNotMatch(error.message, /SYNTHETIC_PRIVATE/);
+      if (code.startsWith("SCOPED_PUBLISHER_")) assert.ok(error.message.includes(`(${code})`)); return true;
     });
   }
   status = 403; payload = { error: "FORBIDDEN" };
@@ -34,14 +39,14 @@ test("alert text never reflects arbitrary Korean/English server messages, paths,
   context.mock.method(globalThis, "fetch", async () => Response.json(payload, { status: 409 }));
   for (const original of ["SYNTHETIC_PRIVATE_TOKEN_ABC", "private English failure C:/private/source token=synthetic-private-value",
     "검사 실패: C:/private/source token=synthetic-private-value", "<script>비공개 synthetic-private-value</script>"]) {
-    for (const code of [undefined, "SYNTHETIC_PRIVATE_TOKEN_ABC", "SCAN_SEMANTIC_MODE_MISMATCH"]) {
+    for (const code of [undefined, "SYNTHETIC_PRIVATE_TOKEN_ABC", "SCAN_SEMANTIC_MODE_MISMATCH", "SCOPED_PUBLISHER_SIGNATURE_INVALID"]) {
       payload = { error: { code, message: original, details: { path: "C:/private/catalogue", token: "synthetic-private-value" } } };
       await assert.rejects(controlApi("scans"), (error: any) => {
         const expectedCode = code ?? (original === "SYNTHETIC_PRIVATE_TOKEN_ABC" ? original : undefined);
         assert.equal(error.code, expectedCode); assert.equal(error.status, 409); assert.equal(error.serverMessage, original);
         assert.deepEqual(error.details, { path: "C:/private/catalogue", token: "synthetic-private-value" });
         assert.doesNotMatch(error.message, /SYNTHETIC_PRIVATE|synthetic-private|C:\/private|<script>|private English|검사 실패/);
-        assert.match(error.message, code === "SCAN_SEMANTIC_MODE_MISMATCH" ? /같은 분석 모드.*\(SCAN_SEMANTIC_MODE_MISMATCH\)/ : /새로고침해 현재 상태/);
+        assert.match(error.message, code === "SCAN_SEMANTIC_MODE_MISMATCH" ? /같은 분석 모드.*\(SCAN_SEMANTIC_MODE_MISMATCH\)/ : code === "SCOPED_PUBLISHER_SIGNATURE_INVALID" ? /원본 파일 또는 고정 공개키.*\(SCOPED_PUBLISHER_SIGNATURE_INVALID\)/ : /새로고침해 현재 상태/);
         return true;
       });
     }
