@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { randomUUID } from "node:crypto";
 import { ControlStore } from "../../apps/api/src/control-store.js";
 import { chainActions, chainRetryBudget, enqueueChainAction, reconcileV2Actions, runChainActionOnce, type ChainRelayer } from "../../apps/api/src/chain-outbox.js";
+import { withSpan } from "../../packages/telemetry/index.mjs";
 
 // Queue fault injection only: these tests make no real-chain/finality claim.
 function fixture() {
@@ -157,5 +158,22 @@ test("PostgreSQL outbox budgets, account lease/head, backoff and signed DLQ pers
   } finally {
     // Only this fresh, regex-validated test schema, never public or the shared database.
     await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); await pool.end();
+  }
+});
+
+test("chain retry, rejection and pre-submit exhaustion retain the durable action trace instead of the worker caller trace", async () => {
+  const authoritativeTrace = "a".repeat(32), traceparent = `00-${authoritativeTrace}-${"b".repeat(16)}-01`;
+  for (const eventName of ["chain.action.retry_scheduled", "chain.action.failed", "chain.action.dead_letter"]) {
+    const store = await ControlStore.open(), f = fixture();
+    try {
+      const action = await enqueueChainAction(store, f.client, "team", "REGISTER_RELEASE", {}, traceparent);
+      if (eventName === "chain.action.failed") f.relayer.prepare = async () => { throw Object.assign(Error("synthetic reject"), { code: "CALL_EXCEPTION" }); };
+      if (eventName === "chain.action.dead_letter") await store.query("UPDATE cp_chain_actions SET attempts = ? WHERE action_id = ?", [chainRetryBudget.maxAttempts, action.actionId]);
+      await withSpan("test.foreign_worker", {}, () => runChainActionOnce(store, f.client), { traceparent: `00-${"f".repeat(32)}-${"e".repeat(16)}-01` });
+      const events = await store.events("team");
+      assert.equal(events.length, 1); assert.equal(events[0].eventName, eventName);
+      assert.equal(events[0].traceId, authoritativeTrace, `${eventName} must stay linked to its persisted action trace`);
+      if (eventName === "chain.action.retry_scheduled") assert.equal(events[0].payload.txHash, `0x${"3".repeat(64)}`);
+    } finally { await store.close(); }
   }
 });
