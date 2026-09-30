@@ -4,6 +4,15 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-10-01 KST 후속 — Docker 준비 검사 수정·baseline 2.1 기반 통합
+
+- `f1d2929`의 [CI36744373202](https://github.com/sihoon-0077/MCPShield/actions/runs/36744373202)는 **FAILURE**로 종료했다. Node24와 실제 PostgreSQL·별도 DB 복원은 SUCCESS. Node22도 기본 전체 검사·production build·built forms·admission 측정·Compose 설정 검사는 성공했으나 native Docker readiness에서 `DOCKER_TIMEOUT`으로 실패했다. 후속 builder/native 스캔·Compose E2E는 미실행이다. 이전 POSIX/Node22 테스트 호환 문제는 이 실행에서 해소됐지만 전체 Linux 성공은 아니다.
+- 준비 검사 로그는 약1511ms에 실패했으며 runner 정리 단계에는 `docker-buildx` orphan이 있었다. Docker 공식 [info 구현](https://github.com/docker/cli/blob/master/cli/command/system/info.go)은 서버 조회 전 CLI plugin 목록을 조사한다. [version 구현](https://github.com/docker/cli/blob/master/cli/command/system/version.go)은 실제 서버의 OS를 조회한다. 플러그인 조사가 지연 원인이라는 판단은 이 증거에 기반한 추론이며 동일 runner에서의 분리 성능 측정은 아니다.
+- `cee4f04`: 기존 heartbeat probe만 `docker version --format '{{json .Server.Os}}'`로 교체했다. 1500ms·SIGKILL·1024 bytes·외부2000ms 제한, Linux daemon 확인 및 오류 시 DOWN은 그대로다. 실제 후보는 실행하지 않는다. 집중 검사10 PASS/2 환경 SKIP, 타입 검사·독립 리뷰 PASS. 새 native CI 성공 전에는 시간 초과 해결을 확정하지 않는다.
+- `6fc9dcf`는 Security `b9f31b4`의 baseline 2.1 기반 코드를 독립 리뷰 후 통합했다. 현재 위험은 이전 버전과 같아도 검사하고, 두 버전의 원문·metadata를 합산해 전송 한도를 적용한다. 같은 dependency 버전에서 설치 bytes만 바뀐 경우도 구분한다. 기존2.0 정책 hash는 유지하고 새 정책의 runtime 승인은 명시 거부한다.
+- Main 집중 검사27 PASS/1 native SKIP, Reviewer 신규9 PASS/0 SKIP. synthetic inventory와 실제 loopback HTTP 계약 검사이며 Docker baseline 재취득·실제 AI·API/validator 연결 완료가 아니다. 후속 runtime 연결과 indexer 원자화는 별도 worktree 작업 중이다.
+- `6fc9dcf` 전체 **`npm test` 465 PASS/0 FAIL/35 SKIP**: Backend159/12, Security142/19, Gateway120/3, Dashboard44/1(PASS/SKIP). 세 smoke·production build PASS. 후속 forms 명령의 파일명을 잘못 지정해 묶음 명령은 exit1이었으나, 실제 `forms.test.mts`와 `MCPSHIELD_FORM_HTTP_TESTS=1`로 실행한 built HTTP 검사3 PASS/0 SKIP를 별도 확인했다. tracked secret 검사도 PASS. 앞선 간헐 RPC 실패의 근본 원인을 해결했다는 증거는 아니며 최신 native 결과와도 구분한다.
+
 ## 2026-10-01 KST 후속 — CI 호환 수정·세 검증자 연결, 간헐 RPC 실패 추적
 
 통합 `4fb62d7`, 테스트 진단 `2fa3bc2`. 아직 새 Linux native 성공 또는 CAP2 전체 완료가 아니다.

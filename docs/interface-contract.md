@@ -242,6 +242,15 @@ baseline and independently reacquired operator authority/runtime pins. Do not
 accept API report flags or inherit its old approval. Missing is not implicit null.
 The assessor also requires independently supplied `trusted.baseline` authority.
 
+The aggregate requires current `trusted.sourceIdentity` as well. Compare the
+existing five-field identity to the private scanner selection and Merkle source
+identity leaf; a report-provided matching identity is not independent authority.
+`trusted.baseline` is explicit null or the existing runtime trust pins plus
+`sourceIdentity`, `sourceProvenance`, `sourceBudget` and `publisher`.
+`sourceBudget` reuses `{sourceArtifactDigest, sourceBytes}`; publisher is independently
+verified proof or explicit null. API and each validator reacquire the source and
+publisher context. The scanner's comparison cannot substitute for that acquisition.
+
 Re-export the unstarted baseline image closure and collect isolated `tools/list`;
 do not replay its entire AI/probe pipeline or trust its stored tool array as a new
 measurement. Old runtime risks are not current candidate observations. Diff evidence
@@ -250,6 +259,17 @@ current and baseline prepared/source IDs, descriptor/closure/surface digests, to
 declared and installed dependency, install-script and egress-policy changes.
 Installed package bytes changing at the same version must remain visible.
 Keep raw baseline inventory/discovery in separate encrypted Merkle evidence leaves.
+
+The approved private semantic input adds exact `comparison` from the reconstructed
+closure diff. The provider DTO preserves its `comparison` mode string and puts the
+bounded projection in `packageDiff`. Installed paths become hashed package IDs;
+install scripts expose only before/after hashes. Names, versions, digests and
+change kinds still count toward the same metadata redaction/disclosure union and
+citations. Unknown fields or exceeded budgets must fail before any HTTP request.
+The aggregate reconstructs this diff from independently acquired inventories and
+checks the same DTO; merely accepting a caller's `packageDiff` is insufficient.
+This extension is still gated: the portable `6fc9dcf` checkpoint does not yet
+implement comparison transmission, runtime acquisition or aggregate approval.
 
 Unchanged current files still undergo full current risk selection. Before/after
 spans, tools and metadata share one combined disclosure/work budget, not one limit
