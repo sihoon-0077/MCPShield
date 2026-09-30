@@ -419,18 +419,26 @@ test('dependency names/versions and script hashes share provider DTO disclosure,
   assert.equal(requests.length, 0);
 });
 
-const nativeDocuments = version => {
+const nativeDocuments = (version, malicious = false) => {
   const pkg = { name: 'scoped-synthetic', version, bin: 'server.js', private: true, engines: { node: '>=22.14.0' }, license: 'UNLICENSED' };
   return { 'package.json': JSON.stringify(pkg),
     'package-lock.json': JSON.stringify({ name: pkg.name, version, lockfileVersion: 3, packages: { '': pkg } }),
-    'server.js': authoredMailbox(tools).replace("subject:'Welcome'", `subject:'Welcome ${version}'`) };
+    'server.js': authoredMailbox(tools, malicious).replace("subject:'Welcome'", `subject:'Welcome ${version}'`) };
 };
 
-test('naturally sized before/after mailbox meets shared disclosure bounds without padding', () => {
+test('natural safe update fits disclosure bounds; malicious and tiny over-disclosure send zero HTTP without padding', async context => {
+  const { ai, requests } = await provider(context);
   const original = input(), files = value => Object.entries(value).map(([path, content]) => ({ path, content }));
   original.files = files(nativeDocuments('1.0.1')); original.baseline.files = files(nativeDocuments('1.0.0'));
   const selected = buildScopedSemanticInputV21(original);
   assert.equal(selected.proof.scopeComplete, true, JSON.stringify(selected.proof));
+  const malicious = { ...original, files: files(nativeDocuments('1.0.2', true)) };
+  const risky = buildScopedSemanticInputV21(malicious);
+  assert.equal(risky.proof.scopeComplete, false);
+  assert.ok(risky.proof.issues.includes('SCOPED_DISCLOSURE_UNION_EXCEEDED'));
+  assert.ok(risky.input.excerpts.some(item => item.path.startsWith('after/') && item.content.includes('MCP_CANARY_PATH')));
+  assert.equal((await reviewScopedSemanticsV21({ ...malicious, ai })).scopeComplete, false);
+  assert.equal(requests.length, 0, 'native deterministic effects never authorize over-budget source disclosure');
   const small = structuredClone(original);
   for (const list of [small.files, small.baseline.files]) {
     const pkg = list.find(f => f.path === 'package.json'); const value = JSON.parse(pkg.content);
@@ -439,52 +447,83 @@ test('naturally sized before/after mailbox meets shared disclosure bounds withou
   const limited = buildScopedSemanticInputV21(small);
   assert.equal(limited.proof.scopeComplete, false);
   assert.ok(limited.proof.issues.includes('SCOPED_DISCLOSURE_UNION_EXCEEDED'), 'small files receive no privacy exemption');
+  assert.equal((await reviewScopedSemanticsV21({ ...small, ai })).scopeComplete, false);
+  assert.equal(requests.length, 0);
 });
 
-test('native Docker 2.1 reexports old image, rediscovers old tools and binds current probe arguments (local model contract only)', {
+test('native Docker 2.1 binds one baseline to safe update PASS, actual canary update FAIL and exact authority (local model contract only)', {
   skip: process.env.MCPSHIELD_DOCKER_TESTS !== '1' || !process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE,
   timeout: 300_000,
 }, async context => {
-  const { ai } = await provider(context), builderImageDigest = process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE;
+  const { ai, requests } = await provider(context), builderImageDigest = process.env.MCPSHIELD_RUNTIME_BUILDER_IMAGE;
   const roots = [], outputs = [];
   try {
     let previous = null, previousTrust = null;
-    for (const version of ['1.0.0', '1.0.1']) {
+    for (const [version, malicious] of [['1.0.0', false], ['1.0.1', false], ['1.0.2', true]]) {
       const root = await mkdtemp(join(tmpdir(), 'mcpshield-baseline-native-')); roots.push(root);
-      const documents = nativeDocuments(version);
+      const documents = nativeDocuments(version, malicious);
       for (const [path, content] of Object.entries(documents)) await writeFile(join(root, path), content);
       const sourceTreeDigest = await artifactDigest(root), sourceIdentity = identity('scoped-synthetic', sourceTreeDigest);
       const sourceProvenance = provenance(sourceTreeDigest), trust = readTrustedPreparedIdentity(builderImageDigest);
       const executionPolicy = scopedPreparedExecutionPolicy({ collectorDigest: trust.collectorDigest, observerDigest: trust.observerDigest,
-        egressAllowHosts: [] }, version === '1.0.0' ? scopedReviewPolicy('LOCAL_CONTRACT_TEST') : scopedBaselineReviewPolicy('LOCAL_CONTRACT_TEST'));
+        egressAllowHosts: ['mail-api.local', 'exfil-sink.local'] }, version === '1.0.0' ? scopedReviewPolicy('LOCAL_CONTRACT_TEST') : scopedBaselineReviewPolicy('LOCAL_CONTRACT_TEST'));
       const scopedReview = { executionPolicy, sourceProvenance, ...(previous ? { sourceIdentity, baseline: previous } : {}) };
       const trusted = { ...trust, sourceProvenance, ...(previous ? { sourceIdentity, baseline: previousTrust } : {}) };
+      const callsBefore = requests.length;
       const output = await prepareAndScanRuntime({ preparation: { root, sourceDigest: sourceTreeDigest, sourceTreeDigest, builderImageDigest,
         platform: { os: 'linux', architecture: 'amd64' } }, sourceReleaseId: sourceIdentity.releaseId, releaseId: `scoped-synthetic@${version}`,
-        trusted, scopedReview, ai }, { download: async () => { throw Error('NO_EXTERNAL_PACKAGE_DOWNLOADS'); } });
+        trusted, scopedReview, ai: malicious ? undefined : ai }, { download: async () => { throw Error('NO_EXTERNAL_PACKAGE_DOWNLOADS'); } });
       outputs.push(output);
-      assert.equal(output.analysis.verdict, 'PASS', JSON.stringify(output.analysis));
+      assert.equal(output.analysis.verdict, malicious ? 'FAIL' : 'PASS', JSON.stringify(output.analysis));
       const independent = { ...await readTrustedPreparedRuntime({ descriptor: output.binding.descriptor,
         expectedDescriptorDigest: output.binding.descriptorDigest, builderImageDigest }), sourceIdentity, sourceProvenance,
         releaseId: exactReleaseIdentity({ toolId: sourceIdentity.toolId, ...output.binding }).releaseId,
         sourceBudget: { sourceArtifactDigest: sourceTreeDigest, sourceBytes: Object.values(documents).reduce((sum, s) => sum + Buffer.byteLength(s), 0) }, publisher: null };
       if (previous) {
-        assert.equal(assessScopedPreparedPolicyV21(output.bundle, output.result, output.binding, { ...independent, baseline: previousTrust }).verdict, 'PASS');
+        const authority = { ...independent, baseline: previousTrust };
+        const assess = (bundle = output.bundle, result = output.result, trusted = authority) =>
+          assessScopedPreparedPolicyV21(bundle, result, output.binding, trusted);
+        assert.equal(assess().verdict, malicious ? 'FAIL' : 'PASS');
         const proof = JSON.parse(output.bundle.files['prepared/baseline.json']);
         assert.equal(proof.closure.inventory.source, 'LIVE_DOCKER_IMAGE_EXPORT');
         assert.equal(proof.discovery.toolSurfaceHash, previous.binding.toolSurfaceHash);
-        const again = await scanPreparedRuntime({ descriptor: output.binding.descriptor, expectedDescriptorDigest: output.binding.descriptorDigest,
-          sourceReleaseId: sourceIdentity.releaseId, releaseId: `scoped-synthetic@${version}`, trusted: { ...independent, baseline: previousTrust }, scopedReview, ai });
-        assert.equal(again.analysis.verdict, 'PASS', JSON.stringify(again.analysis));
-        assert.deepEqual(again.binding, output.binding); assert.notEqual(again.result.scanId, output.result.scanId);
-        assert.deepEqual(JSON.parse(again.bundle.files['static/package-diff.json']), JSON.parse(output.bundle.files['static/package-diff.json']));
+        assert.equal(proof.selection.releaseId, previousTrust.releaseId, 'safe and malicious update use the same original baseline');
+        assert.equal(proof.discovery.canaryExfiltration, false, 'baseline is not the source of a current violation');
+        for (const trusted of [
+          { ...authority, sourceIdentity: { ...sourceIdentity, manifestDigest: digest } },
+          { ...authority, baseline: { ...previousTrust, releaseId: sourceIdentity.releaseId } },
+          { ...authority, baseline: { ...previousTrust, sourceProvenance: { ...previousTrust.sourceProvenance, authority: 'WITHDRAWN' } } },
+        ]) assert.equal(assess(output.bundle, output.result, trusted).verdict, 'ABSTAIN', 'even real effects cannot substitute selected authority');
+        if (malicious) {
+          assert.equal(requests.length, callsBefore, 'canary FAIL is measured by the independent sink, not an AI decision');
+          assert.equal(output.result.scanStatus, 'FAILED');
+          const observation = JSON.parse(output.bundle.files['prepared/observation.json']);
+          const step = observation.steps.discovery, actualHash = step.canaryHash;
+          assert.equal(step.canaryExfiltration, true); assert.match(actualHash, /^[a-f0-9]{64}$/);
+          const finding = output.result.findings.find(item => item.code === 'CANARY_EXFILTRATION' && item.deterministic && item.stage === 'SANDBOX');
+          assert.equal(finding?.evidence.canaryHash, actualHash, 'current independently observed canary commits the FAIL');
+          const tampered = structuredClone(output.result), forgedHash = sha('not the observed native canary').slice(7);
+          assert.notEqual(actualHash, forgedHash);
+          tampered.findings.find(item => item.code === 'CANARY_EXFILTRATION').evidence.canaryHash = forgedHash;
+          const docs = Object.fromEntries(Object.entries(output.bundle.files).map(([path, content]) => [path, JSON.parse(content)]));
+          docs['report.json'] = { ...docs['report.json'], ...tampered };
+          assert.equal(assess(createEvidenceBundle(docs), tampered).verdict, 'ABSTAIN', 'a re-Merkled fabricated canary hash cannot FAIL');
+        } else {
+          const again = await scanPreparedRuntime({ descriptor: output.binding.descriptor, expectedDescriptorDigest: output.binding.descriptorDigest,
+            sourceReleaseId: sourceIdentity.releaseId, releaseId: `scoped-synthetic@${version}`, trusted: authority, scopedReview, ai });
+          assert.equal(again.analysis.verdict, 'PASS', JSON.stringify(again.analysis));
+          assert.deepEqual(again.binding, output.binding); assert.notEqual(again.result.scanId, output.result.scanId);
+          assert.deepEqual(JSON.parse(again.bundle.files['static/package-diff.json']), JSON.parse(output.bundle.files['static/package-diff.json']));
+        }
         await assert.rejects(scanPreparedRuntime({ descriptor: output.binding.descriptor, expectedDescriptorDigest: output.binding.descriptorDigest,
           sourceReleaseId: sourceIdentity.releaseId, releaseId: `scoped-synthetic@${version}`, trusted: { ...independent, baseline: null }, scopedReview, ai }),
         /SCOPED_BASELINE_AUTHORITY_MISMATCH/);
       }
-      previous = { releaseId: exactReleaseIdentity({ toolId: sourceIdentity.toolId, ...output.binding }).releaseId,
-        sourceIdentity, binding: output.binding, sourceProvenance };
-      previousTrust = independent;
+      if (previous === null) {
+        previous = { releaseId: exactReleaseIdentity({ toolId: sourceIdentity.toolId, ...output.binding }).releaseId,
+          sourceIdentity, binding: output.binding, sourceProvenance };
+        previousTrust = independent;
+      }
     }
   } finally {
     for (const output of outputs.reverse()) await output?.cleanup?.();
