@@ -19,6 +19,18 @@ test("control client explains failures while retaining codes, HTTP status and pr
     [409, "SCOPED_CONFIG_CHANGED", "검사 설정이 변경"], [409, "PREPARATION_CONFIG_CHANGED", "이미지 준비 설정이 변경"],
     [409, "PREPARED_RELEASE_COLLISION", "기존 설정 또는 증거와 요청이 일치하지 않습니다"],
     [400, "SCOPED_EVIDENCE_MODE_MISMATCH", "검사 방식과 서버 설정"],
+    [409, "SCOPED_EXECUTION_POLICY_MISMATCH", "필요한 정책으로 원본을 다시 준비"],
+    [400, "SCOPED_BASELINE_SELECTION_REQUIRED", "선택 누락은 비교하지 않음과 다릅니다"],
+    [400, "SCOPED_BASELINE_UNAVAILABLE", "비교 대상을 사용할 수 없습니다"],
+    [400, "SCOPED_BASELINE_SOURCE_MISMATCH", "다른 원본의 이전 실행 릴리스"],
+    [400, "SCOPED_BASELINE_RUNTIME_UNAVAILABLE", "원래 증거를 확인할 수 없습니다"],
+    [400, "SCOPED_BASELINE_RUNTIME_CHANGED", "실행 환경이 변경"],
+    [400, "SCOPED_BASELINE_BINDING_INVALID", "선택 정책 버전으로 원본을 다시 준비"],
+    [400, "SCOPED_BASELINE_IDENTITY_MISMATCH", "식별자가 원본 증거와 다릅니다"],
+    [400, "SCOPED_BASELINE_AUTHORITY_MISMATCH", "독립 검사 권한을 확인할 수 없습니다"],
+    [400, "SCOPED_BASELINE_EVIDENCE_MISMATCH", "원래 증거가 일치하지 않습니다"],
+    [400, "SCOPED_BASELINE_CLOSURE_MISMATCH", "설치 파일이 증거와 일치하지 않습니다"],
+    [400, "SCOPED_BASELINE_DISCOVERY_INCOMPLETE", "도구 목록을 안전하게 확인하지 못했습니다"],
     [429, "SCAN_QUOTA_EXCEEDED", "조직의 사용 한도"], [503, "CONTROL_PLANE_FAILED", "기록을 확인"],
   ] as const) {
     status = http; payload = { error: { code, message: code, details: { reason: "SYNTHETIC_PRIVATE_DIAGNOSTIC" } } };
