@@ -680,8 +680,10 @@ customer data or public-registry provenance is claimed.
 
 Administrators may register the exact `scopedBaselinePreparedPolicy(mode)` document
 (`version: "2.1.0"`, semantic schema `mcpshield.scoped-review-policy.v2.1`) through
-the existing policy API. It is **not seeded by default**; the current public UI
-still selects 2.0. Existing 2.0, legacy automatic source baselines and OCI behavior
+the existing policy API. It is **not seeded by default**. The operations console
+supports an explicitly selected registered 2.1 policy and requires the user to choose
+either no comparison (`null`) or an exact prior prepared release ID. This is not a
+public-demo redeployment. Existing 2.0, legacy automatic source baselines and OCI behavior
 are unchanged. Baselines neither inherit PASS nor remove current risk coverage.
 
 For 2.1 only, preparation bodies are exactly

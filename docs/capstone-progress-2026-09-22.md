@@ -4,6 +4,32 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-10-01 KST 후속 — baseline API·UI 통합, native 증거와 의존성 실패 분리
+
+### 통합 코드와 로컬 검증
+
+- `4d58923`/`743db4c`: 2.1 API·준비 worker·스캔 worker·독립 validator 연결. baseline null/ID와 최신 운영자 설정을 캐시/요청 identity에 결합하며, 같은 키에서 설정이 바뀌면 409로 거부한다. 기존 runtime 소유권·원본 encrypted evidence는 비교 대상 변경으로 덮어쓰지 않는다. current2.0↔2.1 정책 혼용은 intake에서 거부하며, 2.0 runtime을 새2.1 검사의 baseline으로 사용하는 것은 별개다. Main 집중14 PASS/4 환경 SKIP·backend 타입 PASS, 독립 리뷰 승인.
+- `d37a929`/`565602f`: 기존 콘솔에서 등록된2.1 정책 선택, 명시적 ‘비교하지 않음’/이전 prepared ID, 원본·정책 변경 시 선택 초기화, 제출 직전 후보 재확인, 응답 유실 시 재시도 키 보존, 검사별 비교 대상·한국어 오류를 연결했다. BFF→실제 API/worker/SQL 검사는 synthetic runtime `MOCK/ABSTAIN`이며 Docker/실제 모델 증거가 아니다. Reviewer 집중17 PASS/0 SKIP, production 경계 차단 이슈 없음.
+- `8f01679`: Reviewer가 발견한 새 UI 통합 테스트의 setup 실패 cleanup 누락을 보완했다. 취득 즉시 자원 정리를 등록하고 snapshot 두 번째 취득/app 초기화 실패도 처리한다. 담당자 집중3 PASS·타입 PASS, Main diff 검토 완료. **이 후속 cleanup과 의존성 패치의 추가 독립 리뷰는 담당자 사용량 제한으로 미완료**다.
+- 코드 기준 **`8f01679`**: `npm test` 전체·세 smoke·`npm run build`(backend 타입 및 Next16.3.8 Turbopack)·별도 built forms3 PASS/0 SKIP, 묶음 명령 exit0. dashboard48 PASS/1 HTTP SKIP, Gateway120 PASS/3 native SKIP를 확인했다. 전체 출력 일부가 수집 한도에서 잘려 이번 실행의 전체 PASS 합계는 재인용하지 않는다. 새2.1 fullcycle와 PG 경로는 Windows 조건부 SKIP이며 성공으로 세지 않는다. 간헐 RPC 원인 해결·브라우저 이벤트 검수·실제 모델 품질을 의미하지 않는다.
+- `1505b70`: 기존2.0 뒤 별도2.1 source→세 validator→V2→두 Gateway native 단계, PG job 내 별도 schema의 baseline cache 검사를 추가했다. Main/Reviewer CI 계약9 PASS. 아래 선행6dd run에는 이 두 새 단계가 없으므로 새 CI로 검증해야 한다.
+
+### 종료된 Linux 실행: `6dd40bf` / run36749815609
+
+[CI 원본](https://github.com/sihoon-0077/MCPShield/actions/runs/36749815609)의 완료된 job 로그를 확인했다. Node24 SUCCESS, PostgreSQL SUCCESS, **Node22 FAILURE**다.
+
+- Docker readiness와 immutable npm builder 보안 검사가 성공했다. scanner baseline2.1은 **15 PASS/0 SKIP**: 같은 pinned baseline에 정상 업데이트 PASS·악성 업데이트 실제 canary FAIL을 포함한다. 외부 모델 품질이 아닌 로컬 모델 계약 검사다.
+- scoped2.0 API native fullcycle은 **1 PASS/0 SKIP**. 별도 프로세스·세 주소의 독립 검사6회, 정상 A/B/C PASS 및 악성 C격리/A/B FAIL, Gateway2개와 차단 시 create/start0건(정상 양성 대조군 포함)을 기록했다. 테스트넷·독립 기관 실증이나 새2.1 API fullcycle 증거는 아니다.
+- OCI/기존 prepared/native sandbox·Docker V2·Compose 전체 환경·Grafana provision/실제 exporter→Prometheus pipeline도 성공했다. 관측 데이터는 `SYNTHETIC_MOCK`이다. PG 집중49 PASS/1 조건부 SKIP와 별도 빈 DB backup/restore 성공을 확인했다.
+- 마지막 `npm audit --omit=dev --audit-level=high`에서 Next16.3.4의 critical와 fast-uri moderate가 보고되어 전체 run이 실패했다. 이후 secret scan은 실행되지 않았으며 repeat-demo/signed-image는 SKIP이다. 기능 성공을 전체 CI 성공으로 표현하지 않는다.
+
+### 의존성 수정과 남은 일
+
+- [Next 공식 보안 공지](https://github.com/vercel/next.js/security/advisories/GHSA-vcvr-r3jv-pc5j)는 Node `next/og` ImageResponse의 비신뢰 SVG 입력 경로와 패치16.3.6을 명시한다. 저장소에서 해당 API 사용은 찾지 못했지만 이를 audit 면제 근거로 사용하지 않았다. `3bc90db`에 Next16.3.8과 대응 SWC/env, fast-uri3.1.8/4.2.1을 갱신했다. [fast-uri 공식 공지](https://github.com/fastify/fast-uri/security/advisories/GHSA-jvvf-x445-j334)도 확인했다.
+- 기존 npm install `--ignore-scripts`와 lock normalizer를 사용했다. 새 production 의존성/override/audit 예외 없음. npm이 재기록한 Ganache의 기존 dev optional peer2개는 보존하고 extraneous317개는 기존 규칙으로 제거했다. 로컬 production audit **0 vulnerabilities**. 보안이 영구 보장되거나 공개 배포가 패치됐다는 의미는 아니다.
+- 평가 담당이 `capstone/security-v2`의 untracked `benchmarks/evaluation-contract.mjs` 초안을 남긴 뒤 사용량 제한으로 종료했다. 아직 CLI 연결·테스트·리뷰·Main 통합 전이므로 평가 완료로 세지 않는다. 초안은 보존한다.
+- 다음: 최신 SHA Linux2.1/PG 검증, 패치/cleanup 독립 리뷰, 실제 브라우저, 평가 계약/holdout·실제 모델·테스트넷·같은 RC10회·PPTX/PDF/영상. main 머지·공개 배포·유료 모델·테스트넷 거래 없음. CAP2 전체 완료율은 아직 미산정.
+
 ## 2026-10-01 KST 후속 — baseline runtime 통합·native 회귀 연결
 
 - `3746bd9`에 Security `966ae3c`를 통합했다. pinned 이전 image를 실행 전 다시 export해 closure/설치 bytes를 검사하고 격리된 `tools/list`를 재수집한다. 이전 전체 AI/probe를 다시 실행하거나 저장된 도구 표면을 실측으로 취급하지 않는다. 현재 위험 검사는 baseline과 같아도 생략하지 않는다.

@@ -40,6 +40,8 @@
 
 ## 진행 로그
 
+- 2026-10-01 후속: `4d58923`/`743db4c` baseline API/worker/독립 validator와 `d37a929`/`565602f` UI를 통합하고 `8f01679` test setup cleanup을 보완했다. `8f01679` 전체 npm test·세 smoke·production build·built forms PASS. `1505b70`에 별도2.1 native/PG gate를 추가했다. 선행6dd의 CI36749815609는 native baseline15/0SKIP·scoped2.0 세validator1/0SKIP·Compose/Grafana·PG 성공 후 Next critical audit로 FAILURE. `3bc90db` Next16.3.8/fast-uri patch의 local production audit0; 새 CI·후속독립리뷰는 대기. 평가 계약 초안은 별도 Security worktree에 미검증 상태로 보존했다. 상세는 [진행 기록](capstone-progress-2026-09-22.md)의 최상단을 따른다.
+
 - 2026-10-01 후속: `3746bd9` baseline2.1 runtime과 `b759be8` 정상/악성 업데이트 회귀를 독립 리뷰 후 통합했다. Main focused32 PASS/0 FAIL/2 native SKIP. `a1f7ac5`는 기존 immutable builder 뒤 별도 순차 native CI gate를 추가하고, 독립 validator의 기존 `ValidatorSources.baselines` 설정 계약을 기록한다. CI 명령/서명 gate 회귀9 PASS. API/worker/validator 연결은 별도 Backend 구현 중이며 외부 AI·실제 Docker 성공을 이 portable 결과로 대체하지 않는다.
 
 - 2026-10-01 후속: indexer의 감사 저장·checkpoint 실패 및 동시 reorg/shorter-fork 저장 경합을 재현하고 기존 `forTenant` 블록 원자화·checkpoint/parent fence로 보완했다. 독립 최종 리뷰 후 `d423102`/`edb3843`/`6bfb51c`에 통합. 담당자 실제 Ganache/SQLite+기존 두 Gateway OTLP2 PASS, Reviewer 실제EVM1 PASS 및 별도 SQL interleaving 재현. 최종 Main6bfb51c 전체466 PASS/0 FAIL/35 SKIP·세 smoke/build/forms3 PASS. 새 Linux 성공은 별도 확인한다. API/validator baseline2.1 연결은 Security stable runtime 계약 확인 뒤 이어간다.
