@@ -4,6 +4,22 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-10-01 KST 후속 — 콘솔 중복 수정·실제 브라우저 검수
+
+사용자가 이번 범위를 화면 QA와 최신 Linux/Docker 통합·RPC 원인 확인·독립 리뷰로 한정했다. 다른 실환경 연동·평가·배포는 진행하지 않는다.
+
+- `f339e53`: health/preparation/receipt 형제 컴포넌트가 동일한 tenant/role React key를 사용해 새로고침 때 준비 패널이 늘어났다. 수정 전 브라우저에서 5→6개를 재현했고 AST 회귀도 1≠3으로 실패했다. 세 키의 접두사만 구분해 tenant/role 변경 시 초기화는 보존했다. 새 의존성·인증·판정 변경 없음.
+- Windows/Node24, Next16.3.8 production build와 실제 BFF/API/SQL worker로 검수했다. 대시보드 **49 PASS/0 FAIL/1 built-HTTP SKIP**, backend 타입·production build PASS; 이후 opt-in built forms **4 PASS/0 SKIP**. 키/preview diff와 이전 `8f01679` cleanup·`3bc90db` dependency 패치의 읽기 전용 독립 리뷰에서 지적 없음. Reviewer forms3 PASS/1 SKIP, 2.1 API/BFF1 PASS, lock normalize/설치 버전 일치 확인.
+- 실제 브라우저에서 반복 새로고침 3회와 비교 선택 후 추가 새로고침에도 준비 패널 **1개** 및 선택 유지. 원본 변경 시 정책/비교 초기화, 정책 왕복 변경 시 명시적 비교 재선택·제출 비활성, reader의 준비/검사/등록 버튼0개, admin 재로그인 시 선택 초기화를 확인했다.
+- `control-preview.mts --baseline-ui`는 loopback 임시 DB에 표시 전용 `SYNTHETIC_UI_ONLY/UNVERIFIED` 4개와 2.1 정책만 추가한다. 원본·실행 증거/이미지/키가 없는 행이다. 브라우저 준비 요청은 **source identity mismatch의409**, 검사 요청은 **execution policy mismatch의409**와 한국어 안내로 거부됐다. 성공한 Docker 준비나 운영 권한 경로 검증이 아니다. Reviewer 별도 메모리 API는 reader 변경403·Gateway 구성409·큐0개도 확인했다.
+- 별도로 브라우저에서 허용된 `mail-mcp-1.0.0` fixture를 등록하고 기본 정책 검사를 제출했다. 실제 worker/SSE가 `QUEUED → COMPLETED / INCONCLUSIVE`를 표시하고 릴리스는 `UNVERIFIED/체인 증빙 없음`을 유지했다. 합성 fixture·정적 검사이며 실제 AI·Docker·체인 증거로 세지 않는다. QA 로그아웃/임시 탭 종료 후 이 실행 소유 임시 DB·증거만 정리했다. 공개 배포는 변경하지 않았다.
+- 간헐 RPC는 읽기 전용 집중 검사 두 묶음에서 재현되지 않았다: 실제 OTLP/신뢰/health **8 PASS/0 SKIP**, concurrency4 OTLP/fullcycle/indexer/health **8 PASS/1 Docker SKIP**. 87spans/연결25를 확인했다. 동일 소스 동기 컴파일의 약2.8–2.9초 event-loop 지연은 관찰했으나 장애 원인이라는 증거는 아니다. deadline/socket/HTTP5xx가 동일한 안전 오류로 정제되므로 역사적 `SERVICE_TRANSPORT_UNAVAILABLE`의 원인은 아직 미확정이다. 타임아웃·retry·fail-closed를 완화하지 않았다.
+- 선행 코드 `f0f407e`의 [CI36807645907](https://github.com/sihoon-0077/MCPShield/actions/runs/36807645907)는 종료됐다. Node24/PG SUCCESS, **Node22는 최종 production audit FAILURE**다. 일반 suite는 Backend162/14, Security148/19, Gateway120/3, Dashboard48/1(PASS/SKIP), 세 smoke/build/built forms가 성공했다. 새2.1 API→검증자3→V2→Gateway는 별도 **1 PASS/0 SKIP(약80.2초)**: 독립 검사6회·검증자별 baseline 설정파일3개·Gateway프로세스2개·악성 실행 create/start0건과 정상 양성 대조군을 확인했다. 실제 Linux/Docker/local EVM이며 AI는 stub, 단일기관 테스트다. 테스트넷·실제 모델 증거가 아니다.
+- 같은 run의 실제 sandbox/Docker V2·Compose·Grafana/Prometheus도 성공했다. 완료된 PG 로그는 일반49 PASS/1 조건부 SKIP와 별도 baseline 선택·캐시 분리 **1 PASS/0 SKIP**(실제 PostgreSQL, 합성 Docker), 별도 빈 DB 복원 성공을 확인했다. production audit 실패 뒤 secret gate와 dispatch 전용 반복/이미지 서명은 SKIP이다. UI 수정과 후속 dependency 패치는 이 선행 run에 포함되지 않는다.
+- `83a8597`: 새 감사 실패는 Fastify5.12.1과 grpc-js1.14.4의 high2건이다. [Fastify 공식5.12.5 보안 릴리스](https://github.com/fastify/fastify/releases/tag/v5.12.5)와 [gRPC 공식 패치 공지](https://github.com/grpc/grpc-node/security/advisories/GHSA-m9gg-hp2v-232j)를 확인하고 기존 semver 범위 안에서 lock만5.12.5/1.14.5로 갱신했다. 설치 후 기존 lock normalizer를 적용해 최종 diff는 두 패키지의 버전/URL/integrity12줄뿐이며 manifest·의존성·override·감사 면제는 추가하지 않았다. Main/독립 Reviewer의 설치된 production audit0건 및 lock/설치/공식 수정 버전 일치 확인; dev 포함 전체 취약점0이라는 뜻은 아니다.
+- 최종 코드 **`83a8597`**, Windows/Node24: **전체 npm test 478 PASS/0 FAIL/38 SKIP**(Backend162/14, Security147/20, Gateway120/3, Dashboard49/1), 세 smoke·backend 타입·Next16.3.8 production build·별도 built forms4 PASS/0 SKIP. 묶음 명령 exit0. 같은 실행의 실제 V2 fullcycle35.7초/OTLP36.8초·87spans/연결25 PASS. SKIP은 주로 Linux/Docker/PG 조건이며 해결된 것으로 세지 않는다. 새 Linux CI는 push 후 별도 확인하고, 간헐 RPC의 원인 해결·전체 CAP2 완료로 세지 않는다.
+- RPC 추가 전체 backend run은 실행 handle67315가 사라져 종료 코드/집계 미확보다. 일부 PASS 출력만으로 전체 성공으로 세지 않는다. 위 CI의 실제 OTLP87spans/연결25 및 별도 집중 검사는 성공했지만 과거 간헐 장애의 원인 해결을 증명하지 않는다.
+
 ## 2026-10-01 KST 후속 — baseline API·UI 통합, native 증거와 의존성 실패 분리
 
 ### 통합 코드와 로컬 검증

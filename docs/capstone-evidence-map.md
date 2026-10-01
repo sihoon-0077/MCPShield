@@ -14,18 +14,18 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-002 | R: `tests/security/npm-closure.test.mjs`, `prepared-binding.test.mjs` | 실제 builder·source/closure/image 교체 거부; Linux 실행 |
 | CAP2-003 | R: `tests/security/prepared-observation.test.mjs`, `apps/gateway/test/protocol-guard.test.mjs` | 전체 pagination·정규화·description/schema/annotation 변경 |
 | CAP2-004 | N: resolver의 작은 demo publisher 서명 검사 | 같은 키 safe/bad 실제 서명, 누락·다른 키·bytes 변조 거부; sidecar는 source 밖 |
-| CAP2-005 | R/F: `services/resolver/`, `tests/api/scoped-preparations.test.ts` | 출처·publisher·pinned baseline image/ID 결합, `4d58923`/`743db4c` API/worker/validator 선택 연결 및 UI 통합. 선행6dd scanner2.1 native15 PASS/0SKIP. 새2.1 API/PG native와 실제 모델 증거는 남음 |
+| CAP2-005 | R/F: `services/resolver/`, `tests/api/scoped-preparations.test.ts` | 출처·publisher·pinned baseline image/ID 결합, API/worker/validator/UI 통합. `f0f407e` CI36807645907 새2.1 API native1 PASS/0SKIP 및 별도 실제 PG baseline1 PASS/0SKIP(합성 Docker). 실제 모델과 후속 의존성 패치 SHA 검증은 별도 |
 | CAP2-006 | R: `tests/api/prepared-fullcycle.test.ts` | 같은 source/runtime/policy·독립 validator·Gateway 실제 통합 |
 | CAP2-101 | R: `tests/security/scanner.test.mjs`, `master-scanner.test.mjs` | 신호별 양성/음성·정상 허용 접근 검사 존재. `3746bd9` 설치 bytes·dependency diff를 runtime/AI DTO에 연결하고 aggregate가 재구성. portable synthetic 검사 통과, 새 native·실제 모델 실행은 별도 |
 | CAP2-102 | R: `tests/security/scoped-semantic.test.mjs`, `ai-provider.test.mjs` | 로컬 응답 계약과 실제 모델 호출 증거 분리; 모델·예산 필요 |
-| CAP2-103 | R: `tests/security/semantic-review.test.mjs`, `scoped-baseline.test.mjs` | current 위험 보존·실측 baseline·합산 DTO·2.1 assessor, API/validator/UI 연결. 선행6dd scanner native15 PASS/0SKIP는 로컬 모델 계약이다. 실제 모델 비교·최신2.1 통합native는 남음; 구2.0 assessor의2.1 승인 거부 유지 |
+| CAP2-103 | R: `tests/security/semantic-review.test.mjs`, `scoped-baseline.test.mjs` | current 위험 보존·실측 baseline·합산 DTO·2.1 assessor, API/validator/UI 연결. `f0f407e` Linux scanner/API native 성공은 로컬 모델 계약이다. 실제 모델 비교와 후속 패치 SHA 검증은 남음; 구2.0 assessor의2.1 승인 거부 유지 |
 | CAP2-104 | R: `tests/security/docker-sandbox.test.mjs` | Linux Docker 격리 필수; Windows SKIP은 완료 아님 |
 | CAP2-105 | F: `tests/security/scoped-prepared.test.mjs`, `tests/api/prepared-fullcycle.test.ts` | JSON sink 계약 수정 후 실제 canary hash·identity 결합 재실행 |
 | CAP2-106 | R: `tests/security/ai-probes.test.mjs`, `scoped-prepared.test.mjs` | 생성한 probe와 실제 실행 digest·인자·관찰 결합 |
 | CAP2-107 | R/F: `tests/security/scoped-prepared.test.mjs`, `tests/api/scoped-validator.test.ts` | safe PASS·bound violation FAIL·AI 장애 ABSTAIN; 기대값 완화 금지 |
 | CAP2-108 | R: `tests/security/scoped-policy.test.mjs`, `apps/dashboard/test/scoped-node-policy.test.tsx` | incomplete·test-only·관찰 범위 한계가 결과/화면에서 유지되는지 |
 | CAP2-201 | R: `tests/contracts/release-registry-v2.test.ts` | EIP-712 recovery·domain/policy/root·expiry/nonce 거부 |
-| CAP2-202 | F: `tests/api/scoped-validator.test.ts`, `prepared-fullcycle.test.ts` | 6dd Linux scoped2.0 actual Docker/local EVM에서 세 키·프로세스 독립 검사6회/PID/주소/root/tx, safe A/B2→C3·bad C격리→A/B2FAIL 성공. 단일 기관·가짜 AI 계약이며 새2.1 baseline 연결native는 별도 검증 |
+| CAP2-202 | F: `tests/api/scoped-validator.test.ts`, `prepared-fullcycle.test.ts` | `f0f407e` Linux2.1 native1 PASS/0SKIP: 세 키·프로세스/설정파일3개·독립 검사6회/PID/주소/root/tx, safe A/B2→C3·bad C격리→A/B2FAIL, Gateway2개 차단 시 create/start0건. 단일기관·가짜 AI/local EVM; 후속 패치 SHA는 별도 검증 |
 | CAP2-203 | R: `tests/contracts/release-registry-v2.test.ts` | 고유 2-of-3·중복/비활성·불일치 회귀 |
 | CAP2-204 | R: `tests/contracts/release-registry-v2.test.ts`, `apps/gateway/test/frame-expiry.test.mjs` | 격리 TTL·terminal revoke·승인 만료 우선순위 |
 | CAP2-205 | R: `contracts/scripts/deploy-v2.ts` | Base Sepolia 실제 배포·safe/revoke tx·source/bytecode 확인 필요 |
@@ -41,8 +41,8 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-401 | F: `apps/api/src/chain-outbox.ts`, 기존 SQL queue | durable attempt·backoff·DLQ·receipt 불명 때 nonce 보호·PG 회귀 |
 | CAP2-402 | R: `tests/api/control-plane.test.ts`, `preparations.test.ts` | 400/401/403/409·역할·임의 명령/키/경로 입력 거부 |
 | CAP2-403 | R: `apps/dashboard/test/control-integration.test.mts`, `workflow.test.tsx` | 판정/tx/admission 상호 로그·한국어 사용자 오류 실제 조회 |
-| CAP2-404 | R: `apps/dashboard/test/preparation-integration.test.mts` | publisher/행동 안전 분리·한국어 오류·명시2.1 null/ID 선택·검사별baseline 표시 통합. 실제API/BFF+합성runtime, SSR/forms 성공. 실제 브라우저 전체 조작과 응답유실 hook QA는 남음 |
-| CAP2-405 | R/F: `.github/workflows/frontend-gateway-devops.yml` | 선행6dd native/Compose/PG 성공 후 의존성audit FAILURE. Next/fast-uri patch 후 local audit0·전체test/build PASS. 최신2.1/PG gate 포함 새CI와 patch/cleanup 독립 리뷰 필요 |
+| CAP2-404 | R: `apps/dashboard/test/preparation-integration.test.mts` | `f339e53` 중복 key 수정 후 실제 브라우저에서 반복 새로고침1패널·비교 선택 유지/초기화·합성 요청 거부·reader 변경버튼0·재로그인 초기화·fixture 등록→worker/SSE INCONCLUSIVE/UNVERIFIED 확인. Docker/체인 증거의 브라우저 전체 조작과 응답유실 hook QA는 별도 |
+| CAP2-405 | R/F: `.github/workflows/frontend-gateway-devops.yml` | `f0f407e` CI36807645907 새2.1/native/Compose/PG 성공 후 Fastify/grpc audit FAILURE. `83a8597` 패치로 local production audit0, 독립 리뷰 통과. 패치 포함 최신 전체 Linux 성공 필요; 과거 간헐 RPC 원인 미확정 |
 | CAP2-406 | R: 기존 `repeat-demo` workflow job·Compose | 기존 반복 job은 legacy V2 Docker fullcycle. 새 scoped publisher RC의 clean Linux 10/10으로 확장·실행해야 하며 과거 성공으로 대체 금지 |
 | CAP2-407 | R: `docs/pitch/MCPShield_사업계획서_10p.html` | RC에 맞는 실제 PPTX/PDF·3분 영상·검수된 링크 필요 |
 | CAP2-501 | R/N: `demo/fixtures/`, 기존 평가 harness | 개발셋 분리 정상20/공격20·family·두 사람 label 검토 필요 |

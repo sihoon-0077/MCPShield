@@ -4,6 +4,8 @@
 사용자가 과거 잔여 50% 중단 조건을 해제했다. 이전 목표·전체 감사 수치는 역사 자료다.
 현재 CAP2 완료율은 아직 재산정하지 않았다. 코드 존재나 부분 테스트 성공을 전체 완료로 세지 않는다.
 
+> **2026-10-01 현재 사용자 지정 작업 범위:** 이번 작업은 (1) 화면 중복 오류·이전 버전 선택·검사 요청·권한별 브라우저 검수, (2) 최신 baseline API/validator/chain/Gateway Linux/Docker 통합 검증·간헐 RPC 원인 확인·독립 리뷰까지만 진행한다. 실제 AI/테스트넷·평가·배포·제출물은 이번 작업에서 진행하지 않는다. 전체 v2.0 목표의 완료 조건을 축소한 것은 아니다.
+
 ## 첫 병렬 작업
 
 | 역할 | 브랜치 | 현재 범위 | 근거/검수 |
@@ -39,6 +41,8 @@
 - 최종 RC의 브라우저 검수·clean 재현·PPT/PDF·영상.
 
 ## 진행 로그
+
+- 2026-10-01 제한 범위 후속: `f339e53` 콘솔 형제 key3곳 수정·실제 브라우저 QA와 독립 리뷰 완료. `f0f407e` CI36807645907에서 새 baseline2.1 API→세validator→V2→두Gateway1 PASS/0SKIP·PG baseline1 PASS/0SKIP·Compose/Grafana 성공, 최종 Fastify/grpc audit로 전체 FAILURE. `83a8597` 두 패키지 patch와 독립 리뷰 후 전체 로컬478 PASS/38SKIP·세smoke/build/forms4 PASS, production audit0. 간헐RPC는 재현되지 않아 원인 미확정이며 새 patch SHA Linux 검증은 별도 확인한다. 공개 배포·실제 AI·테스트넷 없음. [증거와 제한](capstone-progress-2026-09-22.md).
 
 - 2026-10-01 후속: `4d58923`/`743db4c` baseline API/worker/독립 validator와 `d37a929`/`565602f` UI를 통합하고 `8f01679` test setup cleanup을 보완했다. `8f01679` 전체 npm test·세 smoke·production build·built forms PASS. `1505b70`에 별도2.1 native/PG gate를 추가했다. 선행6dd의 CI36749815609는 native baseline15/0SKIP·scoped2.0 세validator1/0SKIP·Compose/Grafana·PG 성공 후 Next critical audit로 FAILURE. `3bc90db` Next16.3.8/fast-uri patch의 local production audit0; 새 CI·후속독립리뷰는 대기. 평가 계약 초안은 별도 Security worktree에 미검증 상태로 보존했다. 상세는 [진행 기록](capstone-progress-2026-09-22.md)의 최상단을 따른다.
 
