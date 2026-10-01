@@ -57,7 +57,7 @@ test('synthetic broker fixture mode is explicit and never invokes an external fe
   } finally { await broker.close(); }
 });
 
-test('metadata body timeout aborts an actual stalled HTTP response without retaining private body text', { timeout: 15_000 }, async () => {
+test('metadata body timeout aborts an actual stalled HTTP response without retaining private body text', { timeout: 15_000 }, async (t) => {
   const upstream = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.write('{"private":"SYNTHETIC_NEVER_LOG');
@@ -66,7 +66,7 @@ test('metadata body timeout aborts an actual stalled HTTP response without retai
   const broker = await startRegistryBroker({ token, fetchMetadata: (_url, options) => fetch(`http://127.0.0.1:${upstream.address().port}`, options) });
   try {
     const started = Date.now();
-    const response = await fetch(`${broker.url}/fixture`, { headers: { authorization: `Bearer ${token}` } });
+    const response = await fetch(`${broker.url}/fixture`, { headers: { authorization: `Bearer ${token}` }, signal: t.signal });
     assert.equal(response.status, 502);
     assert.deepEqual(await response.json(), { error: 'REGISTRY_TIMEOUT_OR_SIZE_LIMIT' });
     assert.ok(Date.now() - started < 12_000);
@@ -74,8 +74,34 @@ test('metadata body timeout aborts an actual stalled HTTP response without retai
     assert.equal(broker.evidence().totalBytes, 0);
     assert.equal(JSON.stringify(broker.evidence()).includes('SYNTHETIC_NEVER_LOG'), false);
   } finally {
-    await broker.close();
+    const upstreamClosed = new Promise((resolve) => upstream.close(resolve));
     upstream.closeAllConnections();
-    await new Promise((resolve) => upstream.close(resolve));
+    await upstreamClosed;
+    await broker.close();
+  }
+});
+
+test('broker cancels a stalled body even when the transport does not propagate abort, never caching partial metadata', { timeout: 15_000 }, async (t) => {
+  let source, cancelled = 0;
+  const broker = await startRegistryBroker({ token, fetchMetadata: async () => new Response(new ReadableStream({
+    start(controller) {
+      source = controller;
+      // Valid JSON without EOF must not become success when cancellation ends the stream.
+      controller.enqueue(Buffer.from(JSON.stringify(metadata)));
+    },
+    cancel() { cancelled++; },
+  })) });
+  try {
+    const started = Date.now();
+    const response = await fetch(`${broker.url}/fixture`, { headers: { authorization: `Bearer ${token}` }, signal: t.signal });
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { error: 'REGISTRY_TIMEOUT_OR_SIZE_LIMIT' });
+    assert.ok(Date.now() - started < 12_000);
+    assert.equal(cancelled, 1);
+    assert.equal(broker.evidence().records.length, 0);
+    assert.equal(broker.evidence().totalBytes, 0);
+  } finally {
+    source?.error(Error('TEST_FINISHED'));
+    await broker.close();
   }
 });
