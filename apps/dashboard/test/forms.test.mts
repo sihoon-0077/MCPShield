@@ -9,6 +9,22 @@ import { POST } from "../app/api/control/[...path]/route";
 import { privateNode } from "../../../tests/api/runtime-fullcycle-helpers.js";
 
 const dashboard = dirname(dirname(fileURLToPath(import.meta.url)));
+test("session-bound sibling panels have distinct stable keys so refresh cannot duplicate controls", async () => {
+  const source = ts.createSourceFile("operations-console.tsx", await readFile(join(dashboard, "components/operations-console.tsx"), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const panels = new Set(["HealthPanel", "PreparationConsole", "ReceiptConsole"]), prefixes: string[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isJsxSelfClosingElement(node) && panels.has(node.tagName.getText(source))) {
+      const key = node.attributes.properties.filter(ts.isJsxAttribute).find(attr => attr.name.getText(source) === "key")?.initializer;
+      assert.ok(key && ts.isJsxExpression(key) && key.expression && ts.isTemplateExpression(key.expression));
+      prefixes.push(key.expression.head.text);
+      assert.deepEqual(key.expression.templateSpans.map(span => span.expression.getText(source)), ["session.tenantId", "session.role"]);
+    }
+    ts.forEachChild(node, visit);
+  }; visit(source);
+  assert.equal(prefixes.length, panels.size);
+  assert.equal(new Set(prefixes).size, panels.size, "Sibling component types must not share a session key");
+});
+
 test("every dashboard form has POST fallback and no action/submit override that can put private values in a URL", async () => {
   const components = join(dashboard, "components"); let forms = 0;
   for (const path of (await readdir(components, { recursive: true })).filter(path => path.endsWith(".tsx"))) {
