@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createGatewayClient } from "./mcp-client.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../..");
@@ -53,9 +54,15 @@ try {
   const seeded = await run(["scripts/demo/seed.mjs"]);
   assert.equal(seeded.code, 0, seeded.stderr || seeded.stdout);
 
-  const safe = await run(["apps/gateway/src/index.mjs", "run", "--artifact", "demo/fixtures/mail-mcp-1.0.0", "--mode", "live"]);
-  assert.equal(safe.code, 0, safe.stderr);
-  assert.match(safe.stdout, /"ok":true/);
+  const safe = createGatewayClient({ root, artifactDir: resolve(root, "demo/fixtures/mail-mcp-1.0.0"), mode: "live", apiUrl });
+  try {
+    await safe.client.connect(safe.transport);
+    const listed = await safe.client.listTools();
+    assert.deepEqual(listed.tools.map(({ name }) => name), ["list_messages"]);
+    const called = await safe.client.callTool({ name: "list_messages", arguments: {} });
+    const text = called.content.find((item) => item.type === "text")?.text;
+    assert.deepEqual(JSON.parse(text), { ok: true, messages: [{ id: "demo-1", subject: "Welcome" }] });
+  } finally { await safe.close(); }
 
   const blocked = await run(["apps/gateway/src/index.mjs", "run", "--artifact", "demo/fixtures/mail-mcp-1.0.1", "--mode", "live"]);
   assert.equal(blocked.code, 3, blocked.stderr);

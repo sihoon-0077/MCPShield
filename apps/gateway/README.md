@@ -1,15 +1,207 @@
 # MCPShield Gateway
 
-The Gateway accepts an artifact directory, never a caller-provided release ID, digest, tool hash, executable, or arguments. It copies regular files into a private temporary snapshot, computes the scanner-compatible artifact and tool-surface hashes from those exact bytes, validates the `.mjs` manifest entrypoint, checks admission, and starts only that snapshotted entrypoint with the current Node executable.
+## Capstone single-turn Agent bridge
+
+`node benchmarks/gateway-agent.mjs` connects the existing model-decision harness to the
+official SDK and this same stdio Gateway. It discovers the admitted read-only
+`list_messages` tool, lets the model select/validate its arguments, then sends the
+actual `tools/call`. The synthetic message subjects, redacted result, model metadata,
+request timestamps and Gateway-owned admission identity/reason are grouped in one JSON run.
+Model refusal, invalid output, infrastructure failure and explicit Gateway BLOCK remain separate.
+
+The CLI requires an operator-provisioned Linux prepared identity (`MCPSHIELD_PREPARED_IDENTITY`),
+`MCPSHIELD_API_URL`, and the signed-admission context documented below
+(`MCPSHIELD_POLICY_HASH`, `MCPSHIELD_CONTROL_RELEASE_ID`, `MCPSHIELD_TENANT_ID`,
+`MCPSHIELD_CACHE_PUBLIC_KEY`, `MCPSHIELD_CACHE_KEY_ID`, `MCPSHIELD_CHAIN_ID`,
+`MCPSHIELD_REGISTRY_CONTRACT`, `MCPSHIELD_VALIDATOR_SET_VERSION`, `MCPSHIELD_CONTROL_TOKEN`).
+After approving provider cost and synthetic-data disclosure, explicitly set
+`MCP_SHIELD_ENABLE_REMOTE_AI=true`, `MCP_SHIELD_AI_PROVIDER=openai`,
+`MCP_SHIELD_AI_MODEL` and `MCP_SHIELD_AI_TOKEN` using the operator's secret mechanism.
+The existing transport also accepts an approved custom provider using `MCP_SHIELD_AI_URL`.
+Provider tokens are not passed into the Gateway or candidate runtime.
+
+This path is strict, protected ON only, uses no admission bypass and never falls back to
+host execution or replay. It does not yet measure OFF/ON ASR, prove testnet quorum or
+independently count candidate starts. The prepared network-none runtime remains narrower
+than the observation network. `npm run test:gateway` includes a loopback fake-provider +
+real SDK/Gateway contract test limited to the two authored replay fixtures; its output is
+explicitly `LOCAL_PROVIDER_CONTRACT_TEST`, not evidence of an actual LLM or Docker run.
+Remove the AI opt-in to disable live Agent runs. Existing replay demo commands are unchanged.
+
+The supported mail schemas are the legacy empty arguments and the scoped `limit: 1..10`
+profile. The scoped tool has no annotations: the bridge does not manufacture read-only
+trust hints, and Gateway keeps its conservative signed operation classification.
+Task completion requires a bounded actual `{messages:[{id,subject}]}` response, with
+optional `total`/legacy `ok:true`, not the model's completion claim. The optional Linux test
+`apps/gateway/test/agent-prepared-docker.test.mjs` uses the same authored scoped mailbox,
+the already-provisioned builder image, actual prepared isolation/SDK calls and revocation;
+its model and signed issuer are still local synthetic contracts, not real provider/quorum proof.
+`modelEvidenceMode` independently marks loopback responses `LOCAL_CONTRACT_TEST`, including
+when the Gateway uses a real prepared image. External responses are marked
+`EXTERNAL_PROVIDER_RESPONSE_UNVERIFIED`; provider quality remains `NOT_MEASURED`.
+Run it with the same `MCPSHIELD_DOCKER_TESTS=1` and `MCPSHIELD_RUNTIME_BUILDER_IMAGE`
+settings as the prepared Docker test below. A skip is not native execution evidence.
+
+The default Gateway accepts an artifact directory, never an API caller-provided release ID, digest, tool hash, executable, or arguments. It copies regular files into a private temporary snapshot, computes the scanner-compatible artifact and tool-surface hashes from those exact bytes, validates the `.mjs` manifest entrypoint, checks admission, and starts only that snapshotted entrypoint with the current Node executable. The separate, operator-local prepared npm and OCI profiles below use committed immutable Docker images instead of this host fixture runner.
 
 The child receives only a minimal system environment. Pass an MCP-specific variable intentionally by listing its exact name in `MCPSHIELD_CHILD_ENV_ALLOWLIST`; unrelated parent secrets are not inherited. Runtime injection variables such as `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, and `DYLD_*` are always removed. Artifact code is ESM-only: `.js`, CommonJS, dynamic, absolute, package, native, and WebAssembly module loads are rejected. Loader-shaped raw source is rejected fail-closed so regex or template syntax cannot hide a dynamic import. `.mjs` code may use only an allowlist of non-network `node:` built-ins and relative `.mjs` modules captured inside its snapshot. Node's permission model prevents reads outside that snapshot, string code generation is disabled, child output is capped, and runtime network egress is not supported by this MVP.
 
 ```powershell
 npm.cmd run test:gateway
-node apps/gateway/src/index.mjs run --artifact demo/fixtures/mail-mcp-1.0.0 --mode replay --replay scripts/demo/replay.json
-node apps/gateway/src/index.mjs run --artifact demo/fixtures/mail-mcp-1.0.1 --mode replay --replay scripts/demo/replay.json
+npm.cmd run demo:mcp-e2e
 ```
 
-For MCP stdio mode set `MCPSHIELD_ARTIFACT_DIR`, `MCPSHIELD_MODE`, `MCPSHIELD_API_URL`, and optionally `MCPSHIELD_ADMISSION_TIMEOUT_MS` or `MCPSHIELD_REPLAY_FILE`. The Gateway relays newline-delimited JSON-RPC bytes while observing request IDs. It fully checks JSON-RPC batches, allows only manifest-declared `tools/call` names, and suppresses duplicate or mismatched `tools/list` responses before terminating the child fail-closed.
+The `demo:mcp-e2e` command connects the official MCP client through the Gateway. For direct MCP stdio mode set `MCPSHIELD_ARTIFACT_DIR`, `MCPSHIELD_MODE`, `MCPSHIELD_API_URL`, and optionally `MCPSHIELD_ADMISSION_TIMEOUT_MS` or `MCPSHIELD_REPLAY_FILE`, then start `node apps/gateway/src/index.mjs stdio` from an MCP client. The official SDK validates every JSON-RPC envelope; invalid versions/IDs never bypass admission. External newline-delimited frames and `_meta` remain byte-for-byte unchanged. Tool calls require either completed legacy initialization or an explicit valid `2026-07-28` stateless envelope. Before the first tool request and after a list-change notification, private Gateway requests collect the whole tools/list surface (at most 32 pages/128 tools) before client tools or calls are forwarded. Private IDs and partial pages are never exposed; duplicate tools, cursor loops, timeouts and drift fail closed.
+
+Child stderr is reduced to a byte count and coarse diagnostic category; raw stderr, which may contain secrets, is never forwarded or returned by capture mode. On stdin EOF the Gateway permits a 500ms response-drain grace, then terminates the child and escalates after another 500ms. No child descendants are permitted by the Node execution profile. `run` without MCP input is a bounded admitted diagnostic execution, not a protocol conformance result.
+
+This execution profile attests tools, not arbitrary MCP extensions. Client methods are restricted to initialize/initialized, ping, modern discovery, tools/list, tools/call and cancellation/progress notifications. Resources, prompts, unimplemented tool extensions, client response frames and all server-initiated requests (including sampling, elicitation and roots) fail closed instead of bypassing tool admission. Server output permits matching responses and tool-list-change/progress notifications only.
+
+`node apps/gateway/src/index.mjs serve` exposes `POST /mcp` over Streamable HTTP for ChatGPT and other remote MCP clients. Its read-only `list_messages` handler runs the same snapshotted stdio artifact through `runArtifact`, so `VERIFIED` is required and `REVOKED` is blocked before spawn. Set `MCPSHIELD_ARTIFACT_DIR` plus the same admission mode variables used by stdio.
 
 Symlinks, traversal entrypoints, non-JavaScript entrypoints, oversized artifacts, arbitrary commands, command arguments, shells, `npx`, and caller-supplied identity values are not accepted. Stop the Gateway service to disable spawning. REPLAY is demo-only and verifies its saved artifact identity; MOCK is display-only and always returns BLOCK in the Gateway.
+
+## Master /v1 admission and active sessions
+
+Every `tools/call` rechecks admission before forwarding its frame. Revocation therefore stops the next call in already-connected stdio clients; malformed replies and unavailable strict admission terminate the child. Requests within a JSON-RPC batch are inspected in order before the complete batch is forwarded.
+
+Set `MCPSHIELD_POLICY_HASH` to enable `/v1/admission/check`. Also configure `MCPSHIELD_CONTROL_RELEASE_ID` (the exact ID returned by `/v1/releases/resolve`), `MCPSHIELD_TENANT_ID`, `MCPSHIELD_CACHE_PUBLIC_KEY` (Ed25519 SPKI PEM), `MCPSHIELD_CACHE_KEY_ID`, `MCPSHIELD_CHAIN_ID`, `MCPSHIELD_REGISTRY_CONTRACT`, `MCPSHIELD_VALIDATOR_SET_VERSION`, and the tenant credential `MCPSHIELD_CONTROL_TOKEN`. These values are administrator-pinned trust context, never read from an untrusted response. The backend signs only complete chain-confirmed evidence; a local-demo or unsigned response cannot authorize this mode. Omitting the policy hash retains the existing legacy `/api` demo contract, which does not provide v1 policy/expiry assurance.
+
+`MCPSHIELD_ADMISSION_MODE=strict` is the default and requires fresh admission from the API or an explicitly configured fallback below. `balanced` may reuse a signed snapshot for at most its remaining 60-second validity, and only when the API is unreachable/5xx and the pinned manifest declares all applicable tools read-only and non-destructive. Writes, payments, invalid proof, explicit deny, 4xx, mismatched digest/policy/validator set, and invalid snapshots fail closed. An authentic expired snapshot is a miss, never an approval. A malformed or denied fresh response invalidates the earlier allow cache. Signed status is checked independently of unsigned display fields.
+
+`MCPSHIELD_ADMISSION_CACHE_FILE` optionally persists one wrapper's signed snapshot with restricted file permissions. Without it, a bounded in-process cache is used. Cache availability does not claim zero-delay revocation during a network partition: balanced read-only exposure is bounded by the signed expiry. Strict mode avoids that availability tradeoff. Node's permission boundary and output/import controls remain active in both modes.
+
+The signature proves which configured admission signer issued a decision, not independent blockchain execution. The backend must validate chain freshness and confirmations before signing; the Gateway validates the signed block context, exact local identity, policy, lifetime, and signer key. Test these controls with `npm run test:gateway`.
+
+The signed payload also binds tenant identity and operation class. Cache records include a one-way credential fingerprint, never the credential itself. A snapshot for public reads cannot be reused for private reads, writes, or a different account. Fresh responses are size-limited to 64 KiB, and the admission deadline covers both headers and body. Signed admission requires HTTPS except loopback or private hostnames explicitly listed in `MCPSHIELD_API_HTTP_HOSTS` (for a private Compose network: `backend`). Redirects are never followed. `notifications/tools/list_changed` suspends tool calls while the Gateway privately recollects the approved full surface.
+
+Compatibility checks cover legacy initialization for 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25, plus stateless 2026-07-28 `_meta` preservation. The HTTP matrix uses the official client in both legacy and explicitly pinned modern mode against the real Gateway handler, with allowed and revoked artifacts. This does not claim every optional MCP extension or arbitrary remote deployment is attested. See the [official 2026-07-28 release notes](https://blog.modelcontextprotocol.io/posts/2026-07-28/) for the stateless wire changes.
+
+For staged rollout, `node apps/gateway/src/index.mjs inspect --artifact <directory> --rollout observe|warn|enforce` reports `RECORD_ONLY`, `REVIEW_REQUIRED`, or the enforcement decision without starting any process. `run` and `stdio` always enforce admission; assessment is not a bypass switch or a human-approval implementation. Inspection supports the same `--mode replay --replay <file>` switches for reproducible dry-runs.
+
+Set `MCPSHIELD_TELEMETRY_ENABLED=true`, `OTEL_SERVICE_NAME=mcpshield-gateway`, and the configured OTLP collector URL to export bounded admission spans/counters/latency. W3C trace context propagates to the admission API; no credentials, request arguments, or response bodies are telemetry attributes.
+
+## Admission outage fallback (operator opt-in)
+
+The primary API is always attempted first. Only network failure, bounded timeout or HTTP 5xx starts the sequence: still-valid signed read cache → separately trusted organization indexer → direct RPC → fail closed. Strict mode skips cache. HTTP 4xx, malformed/oversized JSON, invalid signatures, identity mismatch and signed BLOCK terminate the sequence. Expired cache signatures are authenticated at their original issue time before advancing; an expired forgery is not an outage.
+
+An organization indexer is a separately operated Control API exposing the existing `POST /v1/admission/check` contract. Configure all four operator-local variables: `MCPSHIELD_ORG_INDEXER_URL` (HTTPS origin), `MCPSHIELD_ORG_INDEXER_TOKEN`, `MCPSHIELD_ORG_INDEXER_KEY_ID`, and `MCPSHIELD_ORG_INDEXER_PUBLIC_KEY` (Ed25519 SPKI PEM). The primary credential is never copied to this endpoint. Organization snapshots are verified with their own pinned key and their cache records retain the issuer. Explicit private HTTP hosts use `MCPSHIELD_API_HTTP_HOSTS`; redirects remain forbidden. No endpoint, credential or trust key is accepted from the browser or tool arguments.
+
+Direct RPC additionally requires `MCPSHIELD_RPC_URLS` (one to three operator-pinned HTTPS endpoints). `MCPSHIELD_RPC_CONFIRMATIONS` defaults to 2; `MCPSHIELD_RPC_TIMEOUT_MS` defaults to 1500 (100–1500 permitted, hard Gateway ceiling); `MCPSHIELD_RPC_HTTP_HOSTS` permits explicit private HTTP hosts. Loopback supports a local EVM. All providers share one total monotonic deadline; each remaining provider receives `remaining time / remaining provider count` as its own abort deadline. This leaves time to try a second endpoint after a stalled first one. A process-wide burst of 4 and refill of 2 admission reads/second still applies. RPC receives no API/indexer bearer credential. Quota/configuration/transport errors block normal execution; a successful RPC response never becomes an offline ALLOW cache.
+
+Complete Gateway-owned artifact, manifest and raw tool-surface digests are mandatory. Prepared identities use their verified binding; host snapshots hash the original parsed manifest using the Resolver's canonical rule. No remote digest substitutes for missing local bytes. The shared reader recomputes the exact Registry V2 release ID, compares current and confirmed attestations, pins chain/registry/policy/validator version, and re-fetches block hashes after contract queries with provider caching disabled. ALLOW needs an unchanged head, head age ≤30 seconds (future skew ≤5 seconds), local validity and matching confirmed evidence. A benign height increase with unchanged confirmed hash permits at most one complete fresh-view read inside the original total budget. Reorgs, observed negative/inconsistent states, a second moving view or budget exhaustion fail closed; the first view's ALLOW is never returned. Optimistic REVOKED remains a denial before confirmation; stale negative history never becomes ALLOW evidence.
+
+RPC allowance is limited to locally classified `READ_PUBLIC` and `READ_PRIVATE`. It does not provide tenant authorization or strong approval for writes, destructive actions or payments: those require a fresh signed organization/API decision or fail with `DIRECT_RPC_HIGH_RISK_NOT_APPROVED`. Results retain `source: LIVE` and expose `decisionSource: API | CACHE | ORG_INDEXER | DIRECT_RPC`. DIRECT_RPC is an observation from configured RPC services, **not** an API signature or light-client proof. Metadata-only `admission_path` diagnostics contain no URL, token or arguments.
+
+Observed REVOKED is terminal for the exact release/registry across tenants, policies and key rotation. With `MCPSHIELD_ADMISSION_CACHE_FILE`, a private `.revoked` sidecar retains either the historical signed issuer proof or an explicitly **unsigned local RPC denial marker**. That marker can only deny. Corrupt/mismatched journals fail closed; the final concurrency fence rejects late ALLOW after a newer revocation. Protect the directory/ACL. A cache file has exclusive `.lock` ownership, failed persistence retains the lock, and unknown crash locks require operator investigation rather than automatic reclamation. Do not share one cache file between independent wrappers or delete a revocation journal to restore availability. Cache-format changes need a fresh primary/organization response.
+
+Unset organization/RPC variables to disable these tiers without changing the public demo. Break-glass is a separate explicit emergency path below, never an automatic fallback. Tests cover synthetic failures/races plus real ephemeral Ganache contracts, two validator signatures and global revocation—not independent institutions or production performance.
+
+## Private one-call emergency authorization (development checkpoint)
+
+An administrator can deliberately authorize **one exact read-only tool call in one process session** for at most 60 seconds. This acknowledges risk; it is not a new safety verdict. Normal admission remains `BLOCK`/`REVOKED`, terminal revocation journals are untouched, and execution is separately labeled `BREAK_GLASS_OVERRIDE`. No public HTTP handler accepts this option, no environment variable silently enables it, and `run` without MCP framing cannot use it. Remove the two explicit stdio flags to disable it.
+
+The operator keeps an Ed25519 signing key offline from Gateway. Gateway receives only the separately pinned public key, grant file, and a private AES-256 audit key. The grant signs `keyId`, random `grantId`, bounded `actorId`/`reasonText` (512 UTF-8 bytes), issue/expiry milliseconds, exact release/artifact/manifest/raw-tools digests, chain/registry/policy/tenant, tool name, read operation class, and a SHA-256 digest of canonical tool arguments. Plain arguments are neither in the grant nor audit. Omitted arguments mean `{}`; otherwise final parsed arguments are hashed unchanged. A separate operator-local exact release/tool/read-class allowlist is mandatory: the candidate's read-only annotation alone never grants authority.
+
+Provision private regular files (POSIX mode 0600, real owner-only parent directory 0700; equivalent Windows ACL restricted to the operator). No ancestor may be controlled by another user; the application does not protect against privileged filesystem replacement between path checks and SQLite open. Do not use shared/network SQLite storage, upload these files, commit them, or place signing keys/reasons in process arguments. The operator config has this exact shape; paths are relative to the config directory or absolute:
+
+```json
+{
+  "schemaVersion": "mcpshield.break-glass-config.v1",
+  "keyId": "operator-1",
+  "publicKey": "<Ed25519 SPKI PEM public key>",
+  "clientInfo": { "name": "your-exact-mcp-client", "version": "1" },
+  "auditFile": "emergency.sqlite",
+  "auditKeyFile": "audit.key",
+  "allowedCalls": [{ "releaseId": "<exact 0x release ID>", "toolName": "list_messages", "operationClass": "READ_PRIVATE" }]
+}
+```
+
+`clientInfo` is an operator-pinned exact name/version: legacy initialization and modern request metadata must match it, with empty capabilities. All messages have method-specific parameter allowlists: initialized has none, ping/discover only fixed metadata, tools/list adds its verified cursor, tools/call adds name/arguments. Custom params, progress/cancellation notifications and legacy `_meta` are rejected in emergency mode; disconnect or stop the wrapper to cancel. Modern `_meta` permits only the fixed protocol revision, pinned client identity and empty capabilities; tenant/context extensions cannot change a grant's meaning. Normal, non-emergency MCP metadata compatibility is unchanged.
+
+`audit.key` contains exactly 64 lowercase hexadecimal characters from 32 cryptographically random bytes. The private issuance template contains `keyId`, `actorId`, `reasonText`, `ttlMs` (1–60000), `releaseId`, `artifactDigest`, `manifestDigest`, `toolSurfaceHash`, `chainId`, lowercase `registryContract`, `policyHash`, `tenantId`, `toolName`, and `operationClass` (`READ_PUBLIC` or `READ_PRIVATE`). Obtain identities from the exact locally verified snapshot/prepared envelope, not an untrusted tool response. A separate private arguments JSON file holds the one intended argument object. The issuance CLI fills the schema, UUID, timestamps and argument digest; output is exclusive-create and never overwrites a grant:
+
+```sh
+node apps/gateway/src/break-glass.mjs --template /private/template.json --arguments /private/arguments.json --key /private/operator.pem --out /private/grant.json
+# Use the existing signed /v1 trust variables and host artifact setting, or add --prepared-identity for Linux Docker.
+node apps/gateway/src/index.mjs stdio --break-glass-config /private/config.json --break-glass-grant /private/grant.json
+```
+
+Immediately before spawn (after actual prepared Docker configuration checks), SQLite `BEGIN IMMEDIATE` + `synchronous=FULL` records a unique grant/session ADMISSION claim. Before the one call is sent, a second unique CALL attempt is committed for that session. Concurrent processes, restarts and repeated calls cannot reuse the claim. Grant mode always limits the process to one call even if normal admission happened to be ALLOW. A failed spawn, malformed batch, transport failure or ambiguous response burns the relevant attempt; never automatically retry or reimburse it. Wall-clock and monotonic expiry are checked after audit I/O and synchronously before process start/frame forwarding. Expiry terminates the process and removes its owned prepared container. Clock synchronization remains an operator prerequisite across process restarts.
+
+The separate encrypted audit stores the **operator-signed grant plus Gateway-recorded use attempts**, including the original normal decision. AES-256-GCM authenticates/encrypts events and a SHA-256 chain links order. Use time/normal decision are **not separately signed by the operator**, and an authorized attempt does not prove execution succeeded. It is `LOCAL_ENCRYPTED_UNANCHORED`, not a chain receipt or FR407 schema change. `verifyBreakGlassAudit(configPath)` returns count/tip only. SQL updates/deletes, malformed ciphertext and hash-chain corruption fail closed; verification is bounded to 10,000 events/32 KiB ciphertext per row. Keep one durable audit file per signing-key policy across wrappers. Whole-log rollback/deletion or a compromised local administrator is not prevented without an external checkpoint; archive/rotate with a new trust key rather than erase active-key claims.
+
+This checkpoint permits valid fresh signed release-status BLOCK and **definite** API/indexer transport outage (own deadline, known connection failure or HTTP 5xx). With direct RPC configured, **every** configured provider must have actually failed with a definite transport error before an outage grant is eligible. Shared SDK failures preserve `STATUS_UNAVAILABLE` while distinguishing `TRANSPORT_UNAVAILABLE` from `TRUST_REJECTED`; endpoints/bodies/credentials are never error fields. Native provider/total deadline aborts can be transport failures; operator close, unknown cancellation and synchronously completed-but-late proofs are trust rejection. RPC 3xx/4xx, invalid JSON-RPC/ABI/identity/chain view and mixed transport-plus-negative/inconsistent evidence immediately fail closed without trying a healthier endpoint. Missing or unattempted providers cannot be called an all-provider outage. Parallel proof queries settle before classification so a fast timeout cannot hide a concurrent trust rejection.
+
+HTTP 3xx/4xx, invalid signature/identity, malformed JSON, expired proof, unknown cancellation, cache/audit errors, isolation failures and protocol failures cannot be overridden. It never enables remote sampling/elicitation/roots, undeclared tools, unlimited arguments, network access, writes/payments or weaker sandbox settings. Production emergency governance, external audit retention and high-risk human approvals are separate unfinished work.
+
+`node --test apps/gateway/test/break-glass.test.mjs` covers issuance and actual stdio execution with synthetic local keys, two OS-process claims, restart replay, private encrypted audit, exact arguments, terminal-status preservation and final expiry fences. The optional Linux prepared-image test also exercises emergency execution with unchanged Docker isolation and exact-owner cleanup; a skipped Docker test is not deployment evidence.
+
+## Private high-risk action receipts
+
+Set `MCPSHIELD_RECEIPT_DB` to a dedicated private SQLite file to record high-risk admission and call decisions before forwarding. Also set `MCPSHIELD_RECEIPT_AGENT_HASH` and `MCPSHIELD_RECEIPT_SCOPE_HASH` to administrator-computed `sha256:` hashes and configure the exact control-plane release ID and policy hash. The scope hash describes the approved authorization scope; raw scope values, tool arguments, credentials and response bodies are never accepted by the logger. Read-only decisions are not written. An enabled logger with invalid configuration or a failed append blocks high-risk execution; disabling the variable restores receipt-free behavior without bypassing normal admission.
+
+Each record includes a random receipt ID, local sequence/time, action class, ALLOW/BLOCK decision, policy/release identity, source (LIVE/REPLAY/MOCK), and previous-receipt hash. SQLite `BEGIN IMMEDIATE` serializes independent Gateway writers, `synchronous=FULL` persists each committed append, and triggers reject UPDATE/DELETE through SQL. Startup verifies the full chain; each append validates its tail; creating a batch verifies the entire chain again. Protect the parent directory and OS user/ACL in deployment; the Gateway does not claim to withstand a compromised local administrator.
+
+```powershell
+# Verify the local log; prints only the final sequence and hash.
+node apps/gateway/src/receipts.mjs --db C:/private/mcpshield/receipts.sqlite
+# Export a private batch with inclusion proofs (1 to 127 consecutive receipts).
+node apps/gateway/src/receipts.mjs --db C:/private/mcpshield/receipts.sqlite --from 1 --to 20
+```
+
+The batch reuses the scanner's domain-separated SHA-256 Merkle implementation: one `batch.json` plus up to 127 receipt leaves. `verifyReceiptBatch(bundle, trustedRoot)` verifies the root and sequence/hash linkage; `verifyEvidenceLeaf` can disclose only one receipt and its proof. Batches are explicitly `LOCAL_UNANCHORED`: exporting one does not submit a blockchain transaction. A chain anchor or independent transparency checkpoint is required to prove resistance to wholesale log replacement or tail truncation. `ledger.verify({expectedCheckpoint:{sequence,receiptHash}})` checks such an externally retained checkpoint; an untrusted local head alone cannot prove history was not replaced. Database backup/restore must include its WAL or use a SQLite-consistent backup, then verify the retained checkpoint before reuse.
+
+Tests exercise 4 independent processes appending 100 total receipts, SQL mutation rejection, corrupted-record detection, checkpoint-based truncation detection, individual inclusion proofs, and Gateway execution hooks with explicitly labeled synthetic REPLAY decisions.
+
+## Prepared immutable npm runtime (Linux operator host)
+
+An operator may download the control plane's prepared Gateway identity into a private regular JSON file and use it with a **local Linux Docker daemon**. This profile accepts only the server-generated envelope `{schemaVersion:"mcpshield.gateway-prepared.v1",releaseId,toolId,binding,tools}`. It is not an HTTP upload, image chooser, package installer, or host-path execution API. The existing public `/mcp` and `/try` fixture services are unchanged; their container images do not receive a Docker socket or arbitrary package execution capability.
+
+```sh
+# Configure the /v1 signed admission trust context above, then use this command as the MCP client's stdio server.
+node apps/gateway/src/index.mjs stdio --prepared-identity /private/mcpshield/gateway.json
+# Alternatively set MCPSHIELD_PREPARED_IDENTITY. Do not also set MCPSHIELD_ARTIFACT_DIR.
+```
+
+The shared Security helper recomputes the full descriptor, execution-policy and manifest digests; the shared Registry V2 helper recomputes the exact four-field release ID. The raw full tool list must match the committed tool-surface hash. A mutable image tag, changed source/policy/argv, unknown envelope field, mismatched configured control release ID, or a nonregular/oversized/symlinked identity file fails closed. A valid identity commitment alone does **not** authorize execution: `MCPSHIELD_MODE=live`, a configured policy and valid V2 admission are mandatory. The default requires a signed response; only the operator-enabled direct-RPC tier above may authorize locally classified reads without an API signature. Arbitrary unsigned API responses, MOCK and REPLAY approvals are rejected.
+
+Before creating the candidate container, Gateway inspects the exact Docker image config ID (`sha256:…`), Linux architecture, fixed non-root user and runtime-injection environment. It never pulls an image. It then creates without starting, checks actual Docker container configuration and rechecks signed admission before `docker start --attach --interactive`. Strict mode obtains fresh admission through configured trust tiers; balanced mode may use the documented signed, short-lived read-only cache. Every tool call reuses the same active-session admission, private full-pagination check and configured high-risk receipt mechanism.
+
+The committed `prepared-node-network-none-v1` policy uses Node arguments `--permission --allow-fs-read=/app --disallow-code-generation-from-strings`. Docker uses user `1000:1000`, read-only root, no network, no capabilities, no-new-privileges, 128 MiB memory (no additional swap), 0.5 CPU, 64 PIDs and one bounded noexec/nosuid/nodev `/tmp` tmpfs. There are no host mounts, forwarded credentials, extra executable arguments or environment overrides. Node does not allow child processes, workers, native addons, WASI or file writes. Docker is the isolation boundary; Node's permission model is defense in depth, not a proof that malicious code is safe.
+
+This execution policy is intentionally **stricter** than observation: it removes the synthetic proxy network and `/observer`/`/home/test` reads. A tool needing network or those paths may fail here even if a restricted observation completed. The profile is not a general network-capable npm MCP launcher. Arbitrary OCI runtimes and remote execution are not enabled by this path.
+
+On denial, malformed protocol, timeout, EOF, signal or Docker/start failure, cleanup resolves only the generated UUID container name, verifies its ownership label and removes that exact container with `docker rm --force`. Killing the attached CLI alone is insufficient. If the local daemon is unavailable or ownership differs, cleanup reports failure rather than deleting an unrelated container or claiming success. An abrupt host crash/SIGKILL or compromised Docker administrator still requires operator reconciliation; no process can guarantee daemon cleanup after the host stops. Stop the wrapper or remove the prepared identity setting to disable this profile.
+
+`npm run test:gateway` covers policy/identity tampering, pre-start denial, cancellation during creation, exact-owner cleanup and the existing protocol/admission/receipt regressions. The Linux-only actual-image check reuses npm closure preparation and observed two-page MCP discovery, then exercises signed synthetic admission, isolated tool calls, revocation at each stage, timeout and stdio EOF. The test issuer is ephemeral and does **not** claim real validator quorum or blockchain confirmation:
+
+```sh
+MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_RUNTIME_BUILDER_IMAGE=sha256:<verified-local-builder-id> \
+  node --test apps/gateway/test/prepared-docker.test.mjs
+```
+
+## Prepared OCI runtime (Linux operator host; development checkpoint)
+
+The same `--prepared-identity` command accepts profile `oci-container-v1` in the same private envelope. It uses the shared OCI binding validator, not the npm validator. The derived artifact is the observed descriptor hash; its manifest hashes exactly `{schemaVersion,profile,sourceReleaseId,sourceArtifactDigest,descriptorDigest,executionPolicyDigest}`. The original source is unchanged, and the exact Control ID still commits four ABI fields. Source/config/platform/rootfs/entrypoint-link chain/argv/environment/raw full tools are bound; extra host paths, flags, image tags, approval booleans or phase fields are rejected.
+
+The seven scanner trust anchors are commitments, **not self-issued approval**. Independent validators must obtain their own approved base/catalogue, Trivy database/tool and observer/sink bytes. The operator pins the exact registered OCI policy hash and signer/domain context. The first Backend policy labels AI evidence `LOCAL_CONTRACT_TEST` inside that policy hash; it does not claim production-provider quality. A valid binding, scan `COMPLETE`, observed descriptor or unsigned display status never authorizes execution.
+
+OCI uses the same V2 admission path as prepared npm before start and before every call. Strict mode skips cache; operator-configured organization/RPC fallback retains the exact-identity, current/confirmed view and terminal-revocation rules above. Direct RPC permits only locally classified reads and is not an API signature or cached ALLOW. Balanced mode may reuse an authenticated unexpired read-only snapshot only during an eligible outage; 4xx, invalid signatures, expired proof and known revocation do not become permission. npm behavior and the public fixture HTTP service remain unchanged.
+
+For all runtime profiles, each normal ALLOW lease in a JSON-RPC batch is rechecked synchronously immediately before its original bytes are forwarded. Waiting for a later call cannot extend an earlier signed/cache/RPC lease; wall-clock expiry and a monotonic deadline both apply. Expiry fails the entire frame with `MCP_ADMISSION_LEASE_EXPIRED`, without forwarding a partial batch or retrying a tool call. The separate emergency-grant expiry and one-call audit remain mandatory.
+
+The same explicit private break-glass flags permit one operator-signed read call with unchanged image/isolation/protocol gates. The grant binds the OCI-derived artifact/manifest/tools, exact arguments, policy/domain, actor/reason and at most 60 seconds. SQLite atomically claims one process and records one call before forwarding; normal BLOCK/REVOKED stays unchanged. No native-specific grant, secret, environment variable or bypass switch was introduced. Invalid local image, protocol or audit cannot be overridden. Independent OCI scan-policy/quorum integration and production emergency governance remain separate unfinished work; compatibility tests do not establish their approval quality.
+
+Before admission, local inspection checks the exact image config ID and independently exports a never-started image to recompute its bounded canonical filesystem and entrypoint proof. No image is pulled and no candidate is executed during inspection. The shared inspection budget is at most 40 seconds and 512 MiB of layer/export archive evidence; the operator host needs memory for that evidence in addition to container resources. Cleanup failure is a failure, not successful inspection. This is a local Linux host CLI requiring an already-provisioned Docker daemon; the public Railway service is not granted Docker/socket access by this feature.
+
+The OCI execution policy pins exact native argv/working directory, user `1000:1000`, read-only root, network none, dropped capabilities, no-new-privileges, disabled healthcheck, Docker's built-in default seccomp, 256 MiB memory with no additional swap, one CPU, 64 PIDs and 32 MiB noexec/nosuid/nodev `/tmp`. Gateway checks actual daemon/container settings. Only the committed inert image environment is retained, with fixed `HOME=/nonexistent` and `PYTHONDONTWRITEBYTECODE=1`; host credentials, volumes, devices and Docker socket are not forwarded. Actual container creation still precedes a fresh admission check, and the existing exact-owner cleanup handles denial, protocol errors, timeout and EOF.
+
+Native programs do **not** receive Node permission flags. This profile limits packaged data/compute, removes the observer's synthetic network/home, and is not a certification of arbitrary native code, syscalls or filesystem behavior. Tools needing network or synthetic files may fail even after a completed observation. Stop the wrapper/remove the prepared identity to disable it.
+
+`oci-prepared.test.mjs` checks synthetic identity/runtime, signed-cache, wire-RPC and private one-call audit contracts; it is not Docker or quorum evidence. The optional actual Linux test reuses the common bounded OCI source fixture: export a never-started approved local builder config ID and add only an authored BusyBox shell script, without a Docker build or mutable FROM lookup. It imports the actual OCI source, observes two-page discovery, then checks native isolation, per-call revocation, outage read cache, direct-RPC decisions, one-use emergency audit, unsigned rejection, tampered local filesystem, timeout and CLI EOF. Its admission signer/review anchors and RPC responses are explicitly synthetic; full independent OCI scan/quorum is separate. A skipped test proves nothing about native execution:
+
+```sh
+MCPSHIELD_DOCKER_TESTS=1 MCPSHIELD_RUNTIME_BUILDER_IMAGE=sha256:<verified-local-builder-id> \
+  node --test apps/gateway/test/oci-prepared-docker.test.mjs
+```
