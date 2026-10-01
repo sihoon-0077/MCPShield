@@ -1,0 +1,65 @@
+name: MCPShield CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: mcpshield-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Backend type check
+        run: npm run build:backend
+
+      - name: Backend unit tests
+        run: npm run test:backend
+
+      - name: API tests
+        run: npm run test:api
+
+      - name: Gateway tests
+        run: npm run test:gateway
+
+      - name: Dashboard build
+        run: npm run build:dashboard
+
+      - name: Validate docker-compose
+        run: npm run stack:config
+
+  full-integration:
+    if: github.ref_name == 'main' || github.ref_name == 'master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: E2E-like API smoke (no external credentials)
+        run: npm run demo:evm-smoke

@@ -1,0 +1,42 @@
+name: MCPShield Health Check
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  smoke-endpoints:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check public endpoints
+        env:
+          HEALTHCHECK_BASE: ${{ vars.MCPSHIELD_HEALTHCHECK_BASE }}
+          HEALTH_NOTIFY_WEBHOOK: ${{ secrets.MCPSHIELD_HEALTH_NOTIFY_WEBHOOK }}
+        run: |
+          BASE="${HEALTHCHECK_BASE:-https://mcpshield-judge-lab-production.up.railway.app}"
+          echo "Check base=$BASE"
+
+          check_fail=0
+
+          if ! curl -fsS "$BASE/health" > /tmp/health.json; then
+            echo "API /health failed"
+            check_fail=1
+          fi
+
+          if ! curl -fsS "$BASE/mcp" > /tmp/mcp.html; then
+            echo "Gateway /mcp failed"
+            check_fail=1
+          fi
+
+          if [ "$check_fail" -ne 0 ]; then
+            if [ -n "$HEALTH_NOTIFY_WEBHOOK" ]; then
+              curl -X POST -H "Content-Type: application/json" \
+                -d "{\"text\":\"[MCPShield] Health check failed: $BASE /health or /mcp not reachable\"}" \
+                "$HEALTH_NOTIFY_WEBHOOK"
+            fi
+            exit 1
+          fi
+
+          echo "Health check passed"
