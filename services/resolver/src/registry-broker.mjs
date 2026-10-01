@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 
 const MAX_RESPONSE = 4 * 1024 * 1024;
@@ -59,7 +60,7 @@ export async function startRegistryBroker({ host = '127.0.0.1', port = 0, token,
             headers: { accept: 'application/vnd.npm.install-v1+json' } });
           if (!upstream.ok || !upstream.body) { await upstream.body?.cancel(); throw Error('REGISTRY_UPSTREAM_FAILED'); }
           const chunks = []; let size = 0;
-          for await (const chunk of upstream.body) {
+          for await (const chunk of Readable.fromWeb(upstream.body, { signal: controller.signal })) {
             size += chunk.length;
             if (size > MAX_RESPONSE || totalBytes + size > MAX_TOTAL) { controller.abort(); throw Error('REGISTRY_RESPONSE_LIMIT'); }
             chunks.push(chunk);
