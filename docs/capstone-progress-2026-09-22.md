@@ -4,6 +4,17 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-10-01 KST 후속 — 본문 취소 정지 재현·최소 수정
+
+- `95489f5` [PR CI36810127799](https://github.com/sihoon-0077/MCPShield/actions/runs/36810127799)는 **FAILURE**로 종료했다. Node24/PG는 성공, Node22 Backend162 PASS/14 SKIP(RPC/OTLP 포함) 이후 Security의 실제 stalled metadata body 검사가15초에 cancelled됐다. Security147 PASS/19 SKIP/1 cancelled, 전체 종료312.592초다. 이 run의 뒤 build/native/audit/secret 검사는 미실행이며 과거 성공으로 대체하지 않는다. 동일 SHA의 [push CI36810124425](https://github.com/sihoon-0077/MCPShield/actions/runs/36810124425)는 해당 검사를 통과해 native 검증을 진행했다. 최신 최종 상태는 [PR 검증 현황](https://github.com/sihoon-0077/MCPShield/pull/1)에 SHA와 함께 기록한다.
+- 별도 실제 loopback HTTP + 명시적 GC에서 원본의8초 abort는 발생했으나 body iterator가 끝나지 않아12~20초 진단 상한까지502가 오지 않는 현상을 담당자와 독립 Reviewer가 각각 재현했다. 원 signal/Response 강참조만으로 해결되지 않았고 native dependent abort listener 감소가 관찰됐다. 이 결과는 본문 취소 결함의 재현이며, 원 CI에서 GC가 실제 원인이었다는 직접 증거나 과거 EVM RPC의 원인 확정은 아니다.
+- `568c318`(담당 `6f32d1c`): 기존 `for await`의 body를 표준 `Readable.fromWeb(body, { signal })`로 연결한다. production 수정은 import/연결2줄, 새 dependency·수동 reader 관리 없음.8초/총90초,4MiB/총32MiB, 인증·metadata-only·고정 오류·digest-only 증거를 유지한다. 동일 actualHTTP/GC 실험은 약8.047초에502와 정리 완료로 종료했다.
+- 새 결정적 회귀는 fetch가 signal을 body에 전파하지 않는 stalled stream에 **유효 JSON을 보내되 EOF를 주지 않는다**. 원본15초 cancelled→수정8초502, source cancel1회, 저장 증거/누적 bytes0을 확인했다. 부분 JSON이 성공/캐시로 승격되지 않는다. 기존 실제 HTTP 시험에는 `t.signal`과 upstream의 `close()`→`closeAllConnections()` 순서를 적용한다. [Node 공식 종료 순서](https://nodejs.org/api/http.html#servercloseallconnections)를 따른다.
+- 담당 Node24/공식 SHA-256 검증된 portable Node22.23.3 집중 각5 PASS, Node22 전체 Security148 PASS/20 조건부 SKIP. 독립 Reviewer는 실제 patch 집중5 PASS/0 SKIP 및 메모리에서만100ms로 단축한 테스트 취소 진단의 **338ms 자연 종료/exit1**을 확인했다. 실제 파일의15초/응답12초 기준은 그대로다. 독립 리뷰 발견사항 없음.
+- 통합 코드 **`568c318`** Windows/Node24 전체 **479 PASS/0 FAIL/38 SKIP**(Backend162/14, Security148/20, Gateway120/3, Dashboard49/1), 세 smoke·backend 타입/Next16.3.8 build·별도 built forms4 PASS/0 SKIP, 명령 exit0. lock normalizer·tracked secret/diff 검사 PASS. 이 로컬 성공은 새 builder/Linux 검증을 대신하지 않으며 새 SHA의 최종 CI 결과는 위 PR에 별도로 기록한다.
+- 과거 EVM RPC 집중 묶음은 동일 `95489f5`에서3회 모두 **8 PASS/0 FAIL/1 Docker SKIP**,37.766/37.930/37.875초였다. 직접 관측한 fullcycle/indexer RPC8,322건은 body 완료 OK/최대82ms, event-loop 최대2.818/3.005/2.929초. health의 deadline/5xx/cancel은 의도적 실패 주입이다. OTLP 내부 자식 RPC는 이 건수에 포함되지 않는다. Main의 공유 SDK body-stall+GC 점검도500ms budget에서504ms에 기대한 transport 오류를 반환했다. **역사적 간헐 RPC 원인은 미확정**이고 SDK/운영 retry/timeout은 바꾸지 않았다.
+- 공개 배포·실제 AI·테스트넷·평가 확장은 수행하지 않았다. 전체 CAP2 완료율을 올리거나 최종 반복 데모/운영 SLO를 달성한 것으로 세지 않는다.
+
 ## 2026-10-01 KST 후속 — 콘솔 중복 수정·실제 브라우저 검수
 
 사용자가 이번 범위를 화면 QA와 최신 Linux/Docker 통합·RPC 원인 확인·독립 리뷰로 한정했다. 다른 실환경 연동·평가·배포는 진행하지 않는다.

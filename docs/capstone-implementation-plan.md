@@ -42,6 +42,8 @@
 
 ## 진행 로그
 
+- 2026-10-01 제한 범위 검증 후속: `95489f5` PR CI의 metadata body timeout을 별도 actualHTTP/GC에서 재현했다. `568c318`의 표준 스트림 취소 연결2줄과 회귀로 보완하고 독립 리뷰 완료. 통합 로컬479 PASS/38SKIP·세smoke/build/forms4 PASS. 새 코드의 Linux 최종 결과는 [PR #1 최신 검증](https://github.com/sihoon-0077/MCPShield/pull/1)에 SHA별로 기록한다. 과거 EVM RPC는3회 집중 재실행에서 재현되지 않아 원인 미확정이며 이 HTTP 본문 결함과 동일시하지 않는다. 범위1·2 밖 작업/배포 없음.
+
 - 2026-10-01 제한 범위 후속: `f339e53` 콘솔 형제 key3곳 수정·실제 브라우저 QA와 독립 리뷰 완료. `f0f407e` CI36807645907에서 새 baseline2.1 API→세validator→V2→두Gateway1 PASS/0SKIP·PG baseline1 PASS/0SKIP·Compose/Grafana 성공, 최종 Fastify/grpc audit로 전체 FAILURE. `83a8597` 두 패키지 patch와 독립 리뷰 후 전체 로컬478 PASS/38SKIP·세smoke/build/forms4 PASS, production audit0. 간헐RPC는 재현되지 않아 원인 미확정이며 새 patch SHA Linux 검증은 별도 확인한다. 공개 배포·실제 AI·테스트넷 없음. [증거와 제한](capstone-progress-2026-09-22.md).
 
 - 2026-10-01 후속: `4d58923`/`743db4c` baseline API/worker/독립 validator와 `d37a929`/`565602f` UI를 통합하고 `8f01679` test setup cleanup을 보완했다. `8f01679` 전체 npm test·세 smoke·production build·built forms PASS. `1505b70`에 별도2.1 native/PG gate를 추가했다. 선행6dd의 CI36749815609는 native baseline15/0SKIP·scoped2.0 세validator1/0SKIP·Compose/Grafana·PG 성공 후 Next critical audit로 FAILURE. `3bc90db` Next16.3.8/fast-uri patch의 local production audit0; 새 CI·후속독립리뷰는 대기. 평가 계약 초안은 별도 Security worktree에 미검증 상태로 보존했다. 상세는 [진행 기록](capstone-progress-2026-09-22.md)의 최상단을 따른다.

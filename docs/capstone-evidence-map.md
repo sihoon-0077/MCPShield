@@ -42,7 +42,7 @@ R = 기존 코드 재사용, F = 기존 경로 수정, N = 필요한 작은 신�
 | CAP2-402 | R: `tests/api/control-plane.test.ts`, `preparations.test.ts` | 400/401/403/409·역할·임의 명령/키/경로 입력 거부 |
 | CAP2-403 | R: `apps/dashboard/test/control-integration.test.mts`, `workflow.test.tsx` | 판정/tx/admission 상호 로그·한국어 사용자 오류 실제 조회 |
 | CAP2-404 | R: `apps/dashboard/test/preparation-integration.test.mts` | `f339e53` 중복 key 수정 후 실제 브라우저에서 반복 새로고침1패널·비교 선택 유지/초기화·합성 요청 거부·reader 변경버튼0·재로그인 초기화·fixture 등록→worker/SSE INCONCLUSIVE/UNVERIFIED 확인. Docker/체인 증거의 브라우저 전체 조작과 응답유실 hook QA는 별도 |
-| CAP2-405 | R/F: `.github/workflows/frontend-gateway-devops.yml` | `f0f407e` CI36807645907 새2.1/native/Compose/PG 성공 후 Fastify/grpc audit FAILURE. `83a8597` 패치로 local production audit0, 독립 리뷰 통과. 패치 포함 최신 전체 Linux 성공 필요; 과거 간헐 RPC 원인 미확정 |
+| CAP2-405 | R/F: `.github/workflows/frontend-gateway-devops.yml` | `f0f407e` native 성공 후 audit FAILURE→`83a8597` 보안 패치/production audit0. `95489f5` PR CI는 metadata body timeout FAILURE→`568c318` 본문 취소2줄/회귀·독립 리뷰, 로컬479 PASS/38SKIP·build/forms4 PASS. 최종 Linux 결과는 [PR 최신 SHA별 기록](https://github.com/sihoon-0077/MCPShield/pull/1); 과거 간헐 EVM RPC 원인은 미확정 |
 | CAP2-406 | R: 기존 `repeat-demo` workflow job·Compose | 기존 반복 job은 legacy V2 Docker fullcycle. 새 scoped publisher RC의 clean Linux 10/10으로 확장·실행해야 하며 과거 성공으로 대체 금지 |
 | CAP2-407 | R: `docs/pitch/MCPShield_사업계획서_10p.html` | RC에 맞는 실제 PPTX/PDF·3분 영상·검수된 링크 필요 |
 | CAP2-501 | R/N: `demo/fixtures/`, 기존 평가 harness | 개발셋 분리 정상20/공격20·family·두 사람 label 검토 필요 |
