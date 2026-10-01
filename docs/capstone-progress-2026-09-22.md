@@ -4,6 +4,18 @@
 **전체 v2.0 완료 보고가 아니다.** 기존 50% 사용량 중단 조건은 사용자 재개 요청으로 해제했다.
 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 
+## 2026-10-01 KST — 최종 통합 검사 결과와 GitHub 보존
+
+- 기능 변경 `568c318`을 포함한 `e325e89`: [PR run36812137847](https://github.com/sihoon-0077/MCPShield/actions/runs/36812137847)와 [push run36812134822](https://github.com/sihoon-0077/MCPShield/actions/runs/36812134822) **필수 Node22/24·PostgreSQL job 모두 SUCCESS**. PR Node22 job110209298636의 완료 로그에서 scanner baseline2.1 **15 PASS/0 SKIP**, 별도 baseline2.1 API→worker→검증자3개→V2→두 Gateway **1 PASS/0 SKIP**를 확인했다. 독립 검사6회·비교 설정파일3개·Gateway2개·차단 후 create/start0건 및 정상 실행 양성 대조군을 포함한다.
+- native npm/OCI·샌드박스·prepared/scoped·Docker Compose·Grafana/collector·production audit0·tracked secret 검사도 성공했다. AI는 local stub, 체인은 local EVM, 검증자는 단일기관 별도 프로세스다. 이미지 서명·10회 반복 데모 job은 dispatch 전용 SKIP이며 이번 완료 항목이 아니다. 개발 의존성 전체 취약점0·실제 모델 품질·실제 테스트넷 성공으로 확대하지 않는다.
+- 최신 production 브라우저 추가 검수: operator의 준비/검사/등록 버튼과 관리자 전용 동작 숨김, 새로고침 시 준비 패널1개, allowlisted fixture 등록→실제 worker/SSE COMPLETED·INCONCLUSIVE·UNVERIFIED, reader의 변경 버튼0개를 확인했다. UI 검수의 합성 baseline 거부와 Linux native 성공은 별도 증거다.
+- 추가 test-only RPC 계측은 이전에 빠졌던 OTLP 내부 자식도 포함한다. 집중 fullcycle/indexer/OTLP **4 PASS/0 FAIL/1 Docker SKIP**,38.183초·exit0; 해당 세 프로세스3,798건(OTLP989건)은 body 완료 정상·최대84.9ms였다. 이어 기존 전체 backend **162 PASS/0 FAIL/14 환경 SKIP**,75.282초·exit0; 동일 세 경로3,802건(OTLP995건)은 모두 정상·최대85.0ms, event-loop 최대2.787초였다. 다른 실패 주입 테스트의 의도된 오류·자식 exit1과 구분한다.
+- 독립 Reviewer의 실제 stalled body+50ms 간격 GC에서 SDK raw/ethers는 각각5,012/5,011ms에 제한시간 오류로 자연 종료했고, 명시적 취소는17ms에 신뢰 거부로 종료했다. **과거 간헐 RPC 원인은 여전히 미확정**이다. 동기 Solidity 컴파일의 지연은 가설일 뿐 인과관계 증거가 아니며, 운영 timeout/retry/판정은 변경하지 않았다.
+- 사용자 확인용 로컬 콘솔은 기존 `scripts/demo/control-preview.mts --baseline-ui`와 production dashboard를 사용했다. 별도 임시 API/SQLite에서 정상·악성 fixture를 정적 검사해 각각 INCONCLUSIVE/FAILED를 표시하지만 두 릴리스 모두 UNVERIFIED·체인 증빙 없음이다. 화면용 SYNTHETIC_UI_ONLY 원본/실행 레코드4개는 실행 가능한 이미지나 승인 증거가 아니다. 실제 키·개인정보·외부 AI·체인 전송 없이 수행했으며 이 preview 토큰 설정을 공개 배포해서는 안 된다. 재실행 방법은 [dashboard README](../apps/dashboard/README.md)를 따른다.
+- 사용자 요청으로 지금까지의 작업을 GitHub에 보존한다. 통합본 `master/main` 외에 `capstone/backend-v2`, `capstone/frontend-v2`, `capstone/security-v2`, `capstone/broker-abort-fix`를 업로드했다. 미추적 평가 계약은 `capstone/security-v2`의 `4850f91`에 WIP로 보존했으며 `node --check`/secret 검사만 통과했다. 미통합·미검증 실험 코드이며 실제 holdout 결과가 아니다.
+- `archive/local-drafts-20261001`의 `ee746e6`은 이전 작업 폴더에 남은 수동 rescan 검수 스크립트와 CI/healthcheck 초안을 보존한다. 내용은 원본과 줄바꿈 정규화 후 일치하며 script 구문/secret/diff 검사만 수행했다. CI/healthcheck는 `drafts/disabled-workflows/*.yml.disabled`에 넣어 자동 실행·예약 알림을 활성화하지 않았다. 이전 로컬 원본은 삭제하지 않았다.
+- 이번 체크포인트는 기존 문서2개만 보강한다. 앞선 검증 결과는 정확히 `e325e89`의 증거이며 새 문서 커밋의 CI 결과는 [PR 최신 상태](https://github.com/sihoon-0077/MCPShield/pull/1)를 별도 확인한다. `main` 머지·공개 배포·실제 AI/테스트넷·평가/제출물 확장은 하지 않았고 전체 CAP2 완료 선언도 없다.
+
 ## 2026-10-01 KST 후속 — 본문 취소 정지 재현·최소 수정
 
 - `95489f5` [PR CI36810127799](https://github.com/sihoon-0077/MCPShield/actions/runs/36810127799)는 **FAILURE**로 종료했다. Node24/PG는 성공, Node22 Backend162 PASS/14 SKIP(RPC/OTLP 포함) 이후 Security의 실제 stalled metadata body 검사가15초에 cancelled됐다. Security147 PASS/19 SKIP/1 cancelled, 전체 종료312.592초다. 이 run의 뒤 build/native/audit/secret 검사는 미실행이며 과거 성공으로 대체하지 않는다. 동일 SHA의 [push CI36810124425](https://github.com/sihoon-0077/MCPShield/actions/runs/36810124425)는 해당 검사를 통과해 native 검증을 진행했다. 최신 최종 상태는 [PR 검증 현황](https://github.com/sihoon-0077/MCPShield/pull/1)에 SHA와 함께 기록한다.
