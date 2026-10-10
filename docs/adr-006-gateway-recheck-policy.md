@@ -53,16 +53,17 @@ Gateway가 보장하는 것과 보장하지 않는 것:
 
 ### 측정표 (1차 멘토링 M2 요청 3가지)
 
-환경: LOCAL_EVM(Ganache, 즉시 채굴. VERIFIED를 읽는 장면 1·2 동안만 5초마다 빈 블록), 스캐너 REPORT FIXTURE 대역, 두 회사가 같은 로컬 RPC 사용, 같은 호스트. 결과 JSON의 `environment`는 이를 `chain: LOCAL_EVM_GANACHE`, `scanner: REPORT_FIXTURE_TEST_DOUBLE`, `validators: SINGLE_INSTITUTION_DEMO`, `governance`(배포 결과 값), `validatorVerification: SIGNS_OPERATOR_TEMPLATE_NO_INDEPENDENT_RESCAN`, `rpc: ONE_SHARED_LOCAL_RPC_FOR_BOTH_COMPANIES`와 `limitations` 배열로 표시한다. 실제 수치는 깨끗한 작업 트리에서 실행한 공식 측정(`npm run evaluate:consortium-scene`, 기본 표본 50) 결과로 채운다.
+환경: LOCAL_EVM(Ganache, 즉시 채굴. VERIFIED를 읽는 장면 1·2 동안만 5초마다 빈 블록), 스캐너 REPORT FIXTURE 대역, 두 회사가 같은 로컬 RPC 사용, 같은 호스트. 결과 JSON의 `environment`는 이를 `chain: LOCAL_EVM_GANACHE`, `scanner: REPORT_FIXTURE_TEST_DOUBLE`, `validators: SINGLE_INSTITUTION_DEMO`, `governance`(배포 결과 값), `validatorVerification: SIGNS_OPERATOR_TEMPLATE_NO_INDEPENDENT_RESCAN`, `rpc: ONE_SHARED_LOCAL_RPC_FOR_BOTH_COMPANIES`와 `limitations` 배열로 표시한다. 아래 수치는 깨끗한 작업 트리에서 실행한 공식 측정(커밋 `f85f8e8`, Windows 개발 PC·Node v24.13.0, 표본 50)이다: [결과 JSON](../benchmarks/results/consortium-scene-f85f8e8-2026-10-10T18-00-42-747Z.json). 다른 하드웨어·OS(예: Linux CI)에서는 달라질 수 있다.
 
 (a) `list_messages` 도구 호출 1회 왕복 지연. 워밍업 3라운드 뒤, 세 대상(직접·A·B)을 번갈아 호출해 잰다. Gateway 경로에는 매 호출의 서명 판정(API → 체인 조회 → Ed25519 서명 → Gateway 검증)이 포함된다. 결과 필드: `measurements.toolCallLatencyMs.{direct,gatewayA,gatewayB}.{n,p50,p95,max}`.
 
 | 경로 | p50 | p95 | max |
 |---|---|---|---|
-| MCP 직접 연결 (Gateway 없음) | ⟦측정값⟧ ms | ⟦측정값⟧ ms | ⟦측정값⟧ ms |
-| Gateway A 경유 (운영사 API) | ⟦측정값⟧ ms | ⟦측정값⟧ ms | ⟦측정값⟧ ms |
-| Gateway B 경유 (회사 B API) | ⟦측정값⟧ ms | ⟦측정값⟧ ms | ⟦측정값⟧ ms |
+| MCP 직접 연결 (Gateway 없음) | 0.24 ms | 0.45 ms | 0.55 ms |
+| Gateway A 경유 (운영사 API) | 62.87 ms | 80.56 ms | 126.36 ms |
+| Gateway B 경유 (회사 B API) | 61.69 ms | 79.76 ms | 80.09 ms |
 
+- 이 환경에서 Gateway를 거치면 호출당 p50 약 62 ms가 더해진다. 이 값에는 매 호출의 API 왕복·체인 조회·서명·검증이 모두 들어 있고, 구성 요소별 분해는 측정하지 않았다. 재사용 창을 둘지는 이 비용과 폐기 노출 시간을 함께 보고 정한다.
 - stdio Gateway 기준이다. HTTP serve 모드(호출마다 재스냅샷·해싱·자식 프로세스 시작)는 측정하지 않았다.
 - 결과 JSON에는 요약값(n·p50·p95·max)과 실패 호출 수(`failedCalls`, 테스트가 0을 단언)만 남고 호출별 원자료는 남지 않는다.
 - Gateway A 경로에는 장면 전환용 로컬 프록시 1홉이 더해진다(테스트 장치). 따라서 A와 B의 차이를 운영사 비용이나 신뢰 모델의 비용으로 해석하지 않는다.
@@ -71,8 +72,8 @@ Gateway가 보장하는 것과 보장하지 않는 것:
 
 | 경로 | 결과 |
 |---|---|
-| Gateway A | ⟦측정값⟧ ms |
-| Gateway B | ⟦측정값⟧ ms |
+| Gateway A | 126 ms |
+| Gateway B | 126 ms |
 
 - (b)의 격리는 검증자가 **체인에 직접** 보낸다(운영사 관여 없음). 측정 해상도는 "폴링 간격 + 호출 1회"다.
 - 첫 거부 호출의 이유는 Gateway stderr에서 가져온 `RELEASE_QUARANTINED (QUARANTINED)`이며(`refusalReason`, 판정 상태는 `refusalAdmission`), 테스트는 거부 이유가 격리(QUARANTINED)임을 단언한다. 테스트는 또 영수증 확인 뒤에 시작한 호출이 허용된 적이 없고, 전송 전에는 예상하지 못한 실패가 없었음을 단언한다. stdio Gateway는 거부한 세션을 끝낸다.

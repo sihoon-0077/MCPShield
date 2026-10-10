@@ -55,7 +55,7 @@
 이번 변경이 한 것:
 
 - 최종 경로를 LOCAL_EVM 자동 통합 테스트로 구현했다(`9c7bc9d`). 장면이 지켜야 할 조건은 하네스의 `assertConsortiumReport` 한 곳에 있으며, 테스트는 이 함수를 표본 5로 호출한다. 이 테스트는 `npm run test:backend`(CI의 `npm test`)에 포함된다. 아직 CI 실행 결과는 없으며 PR 후 확인한다.
-- 같은 하네스와 같은 조건 함수로 더 많은 표본(기본 50)을 재는 평가 스크립트(`npm run evaluate:consortium-scene`)를 추가했다. 작업 트리가 깨끗하지 않으면 결과를 쓰지 않고(`--allow-dirty`로 실행하면 그 사실을 결과에 기록), 조건이 하나라도 깨지면 결과를 쓰지 않으며, 기존 결과 파일을 덮어쓰지 않는다(`benchmarks/results/consortium-scene-<sha7>-<timestamp>.json`. `--allow-dirty`로 실행하면 이름에 `-dirty-<소스 해시 8자리>`가 붙는다). 측정 대상 코드를 불러오기 전에 주변의 `MCPSHIELD_*`·`OTEL_*` 환경변수를 지우고 telemetry를 끈다. 결과 수치는 ⟦측정값⟧.
+- 같은 하네스와 같은 조건 함수로 더 많은 표본(기본 50)을 재는 평가 스크립트(`npm run evaluate:consortium-scene`)를 추가했다. 작업 트리가 깨끗하지 않으면 결과를 쓰지 않고(`--allow-dirty`로 실행하면 그 사실을 결과에 기록), 조건이 하나라도 깨지면 결과를 쓰지 않으며, 기존 결과 파일을 덮어쓰지 않는다(`benchmarks/results/consortium-scene-<sha7>-<timestamp>.json`. `--allow-dirty`로 실행하면 이름에 `-dirty-<소스 해시 8자리>`가 붙는다). 측정 대상 코드를 불러오기 전에 주변의 `MCPSHIELD_*`·`OTEL_*` 환경변수를 지우고 telemetry를 끈다. 공식 측정(커밋 `f85f8e8`, Windows 개발 PC·Node v24.13.0, 표본 50) 결과는 [`consortium-scene-f85f8e8-2026-10-10T18-00-42-747Z.json`](../benchmarks/results/consortium-scene-f85f8e8-2026-10-10T18-00-42-747Z.json)이고 요약은 [ADR-006](adr-006-gateway-recheck-policy.md) 측정표에 있다.
 
 다음 단계 (이번 변경 아님):
 

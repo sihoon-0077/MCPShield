@@ -28,7 +28,7 @@ MCP 서버 목록 사이트에는 비슷한 이름의 스캐너가 여럿 있습
 | 완료 | v2.1 기준 문서, ADR-003~007, 멘토링 응답 문서 | 문서·결정 기록입니다. v2.0은 보존합니다. |
 | 완료 | GitHub 기본 브랜치를 `master/main`으로 변경 | 이전 `main`은 9월 초 해커톤 상태 그대로입니다. |
 | 로컬 구현·검증 | 회사 A·B 두 Gateway 장면: 운영사 장애, 악성 업데이트 폐기(두 Gateway 모두 실행 전 거부), 운영사 admission 서명 키 탈취, 검증자 직접 긴급 격리 | Ganache 로컬 EVM(`LOCAL_EVM`)에서 실행합니다. 스캐너는 고정 보고서 대역(`REPORT FIXTURE`)이며 실제 Docker 검사는 이 장면에 포함되지 않습니다. 검증자 3명은 팀이 운영하는 테스트 키로 운영사 템플릿에 서명합니다(결과 표시 `SINGLE_INSTITUTION_DEMO`, `SIGNS_OPERATOR_TEMPLATE_NO_INDEPENDENT_RESCAN`). |
-| 로컬 구현·검증 | 실행 오버헤드 측정: Gateway 유무별 도구 호출 지연(stdio 기준), 긴급 격리 후 각 Gateway 차단까지 시간, 장애 시 읽기·쓰기 동작(5개 경우, 만료 캐시 포함) | 수치는 ⟦측정값⟧로 측정 후 채웁니다. 로컬 체인은 즉시 채굴이라 전파 시간은 하한값입니다. 2-of-3 폐기가 실행 중 세션에 전파되는 시간은 아직 재지 않았습니다. |
+| 로컬 구현·검증 | 실행 오버헤드 측정: Gateway 유무별 도구 호출 지연(stdio 기준), 긴급 격리 후 각 Gateway 차단까지 시간, 장애 시 읽기·쓰기 동작(5개 경우, 만료 캐시 포함) | 공식 측정(커밋 `f85f8e8`, Windows 개발 PC·Node v24.13.0, 표본 50): 호출 p50 직접 0.24 ms / Gateway A 62.87 ms / Gateway B 61.69 ms, 긴급 격리 후 다음 호출 거부까지 A·B 각 126 ms([결과 JSON](benchmarks/results/consortium-scene-f85f8e8-2026-10-10T18-00-42-747Z.json)). 로컬 체인은 즉시 채굴이라 전파 시간은 하한값입니다. 2-of-3 폐기가 실행 중 세션에 전파되는 시간은 아직 재지 않았습니다. |
 | 다음 단계 | `docker compose`·대시보드를 회사 2개 스택(V2 + 서명 admission)으로 이전 | 현재 Compose는 V1 + 레거시 무서명 admission입니다. |
 | 다음 단계 | Base Sepolia 배포와 실측 | 테스트넷은 블록 시간이 더해지고, 새 승인(ALLOW)에는 확정 대기도 더해집니다. |
 | 다음 단계 | 실제 외부 AI 모델 연결 | 현재는 로컬 대역입니다. |
