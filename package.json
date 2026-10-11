@@ -19,6 +19,7 @@
     "start:validator": "tsx apps/validator/src/index.ts",
     "reconcile": "tsx apps/reconciler/src/index.ts",
     "chain:local": "tsx contracts/scripts/local-chain.ts",
+    "evaluate:consortium-scene": "tsx scripts/ops/evaluate-consortium-scene.ts",
     "chain:deploy": "tsx contracts/scripts/deploy.ts",
     "build": "npm run build:backend && npm run build:dashboard",
     "build:backend": "tsc --noEmit",

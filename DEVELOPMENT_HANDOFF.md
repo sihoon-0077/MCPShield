@@ -1,5 +1,7 @@
 # MCPShield 개발 인수인계 — 여기서 시작하세요
 
+> **2026-10-11 캡스톤 v2.1 개정:** 현재 기준은 [캡스톤 최종 마스터 문서 v2.1](docs/MCPShield_캡스톤_최종_마스터문서_v2.1.md)과 [1차 멘토링(2026-10) 응답](docs/mentoring-2026-10-response.md)이다(v2.0 보존, GitHub 기본 브랜치는 `master/main`). 아래 체크포인트는 그 이전 기록이다.
+
 > **업로드 체크포인트 — 2026-10-01 KST:** 최신 기능은 `master/main`에 통합되어 있다. 기능 변경 `568c318`을 포함한 `e325e89`의 [PR CI](https://github.com/sihoon-0077/MCPShield/actions/runs/36812137847)와 [push CI](https://github.com/sihoon-0077/MCPShield/actions/runs/36812134822)는 필수 Node22/24·PostgreSQL job 모두 성공했다. 실제 Linux/Docker baseline 비교 → API/worker → 독립 검증자 3개 → local EVM → Gateway 2개 경로와 Compose/관측성·production audit·secret 검사를 확인했다. **AI는 local stub, 체인은 local EVM, 검증자는 단일기관의 별도 프로세스**이며 실제 모델 품질·Base Sepolia·최종 평가·정식 배포는 미완료다. 이 체크포인트의 추가 변경은 문서뿐이며, 아래의 이전 날짜/SHA별 상태와 구분한다.
 
 > **남은 위험과 현재 범위:** 새로고침 패널 중복 수정 및 admin/operator/reader 브라우저 검수는 완료했다. 별도 HTTP 본문 취소 정지는 재현·수정했지만, **과거 간헐 EVM RPC 실패 원인은 미확정**이다. OTLP 내부 자식까지 추가 계측한 전체 backend는162 PASS/0 FAIL/14 환경 SKIP였으며, 반복 성공을 원인 해결로 보지 않는다. 사용자가 지정한 화면 QA·통합 검증 범위 밖 개발은 승인 대기이고, `main` 머지·공개 재배포는 하지 않았다. [최신 검증 기록](docs/capstone-progress-2026-09-22.md)과 [PR #1](https://github.com/sihoon-0077/MCPShield/pull/1)을 함께 확인한다.

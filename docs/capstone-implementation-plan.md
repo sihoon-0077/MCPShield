@@ -1,4 +1,6 @@
-# MCPShield 캡스톤 v2.0 실행 계획
+# MCPShield 캡스톤 v2.1 실행 계획
+
+> **2026-10-11 기준 문서 개정:** 현재 기준은 [최종 마스터 v2.1](MCPShield_캡스톤_최종_마스터문서_v2.1.md)과 [1차 멘토링(2026-10) 응답](mentoring-2026-10-response.md)이다. [v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)은 삭제하지 않고 보존하며, 아래 2026-09-22~10-01 기록은 v2.0 기준 당시의 이력이다.
 
 2026-09-22 재개. 기준은 [최종 마스터 v2.0](MCPShield_캡스톤_최종_마스터문서_v2.0.md)의 P0 40개다.
 사용자가 과거 잔여 50% 중단 조건을 해제했다. 이전 목표·전체 감사 수치는 역사 자료다.
@@ -41,6 +43,8 @@
 - 최종 RC의 브라우저 검수·clean 재현·PPT/PDF·영상.
 
 ## 진행 로그
+
+- 2026-10-11 1차 멘토링(2026-10) 반영: 기준 문서를 [v2.1](MCPShield_캡스톤_최종_마스터문서_v2.1.md)로 개정하고(v2.0 보존) ADR-003~007(검증자=쓰는 회사 컨소시엄, 블록체인이 필요한 장면, 최종 데모 경로 V2 단일, 매 호출 재검사, owner 권한 운영)을 기록했다. 회사 A(운영사 API 신뢰)·회사 B(자체 Control API) 두 Gateway 장면을 Ganache 로컬 EVM 통합 테스트 `tests/integration/consortium-scene.test.ts`와 측정 명령 `npm run evaluate:consortium-scene`로 추가했다(`9c7bc9d`). 장면 조건은 `assertConsortiumReport` 한 곳에 있다: 정상 릴리스의 A·B 허용과 실제 MCP 호출, 운영사 중단 시 A 세션 거부·종료와 B 계속 및 읽기/쓰기 5개 경우(만료 캐시 포함), 폐기 릴리스의 A·B `run` 실행 전 거부, 운영사 서명 키 장악 시 새 A 속음(대조군)·폐기를 기록한 A 거부·B 거부, 검증자 직접 긴급 격리 후 두 실행 중 세션의 격리 사유 거부(거부 이유에 `QUARANTINED` 포함, 영수증 확인 뒤 시작한 호출 허용 0건). 테스트(표본 5)는 로컬에서 3회 통과했고, 다른 Ganache 스위트와 `--test-concurrency=4`로 함께 돌린 1회도 통과했다. CI는 이 브랜치로 PR을 열거나 master/main에 반영해야(또는 수동 실행 `workflow_dispatch`) 실행된다(브랜치 push만으로는 workflow가 돌지 않음). CI 결과는 그 뒤 SHA와 함께 기록한다. 측정 스크립트는 기본 표본 50이며, 깨끗하지 않은 작업 트리(`--allow-dirty` 없이)나 조건 실패 시 결과를 쓰지 않고 기존 파일을 덮어쓰지 않는다(`benchmarks/results/consortium-scene-<sha7>-<timestamp>.json`. `--allow-dirty`로 실행하면 이름에 `-dirty-<소스 해시 8자리>`가 붙는다). 스캐너는 `REPORT FIXTURE` 대역(실제 Docker 검사 아님), 검증자 3명은 팀 운영 테스트 키로 운영사 템플릿에 서명(`SINGLE_INSTITUTION_DEMO`, `SIGNS_OPERATOR_TEMPLATE_NO_INDEPENDENT_RESCAN`), 두 회사는 같은 로컬 RPC를 쓴다. 2-of-3 FAIL 폐기의 실행 중 세션 전파는 측정하지 않았다. 깨끗한 트리 공식 측정(커밋 `f85f8e8`, Windows 개발 PC·Node v24.13.0, 표본 50): 호출 p50 직접 0.24 ms·A 62.87 ms·B 61.69 ms, 긴급 격리 전파 A·B 각 126 ms([결과](../benchmarks/results/consortium-scene-f85f8e8-2026-10-10T18-00-42-747Z.json)). CI 결과는 push 후 확인한다. Compose·대시보드의 회사 2개 스택(V2 + 서명 admission) 이전, Base Sepolia, 실제 AI는 미완료다. GitHub 기본 브랜치는 `master/main`으로 변경되었다. [멘토링 응답](mentoring-2026-10-response.md).
 
 - 2026-10-01 제한 범위 검증 후속: `95489f5` PR CI의 metadata body timeout을 별도 actualHTTP/GC에서 재현했다. `568c318`의 표준 스트림 취소 연결2줄과 회귀로 보완하고 독립 리뷰 완료. 통합 로컬479 PASS/38SKIP·세smoke/build/forms4 PASS. 새 코드의 Linux 최종 결과는 [PR #1 최신 검증](https://github.com/sihoon-0077/MCPShield/pull/1)에 SHA별로 기록한다. 과거 EVM RPC는3회 집중 재실행에서 재현되지 않아 원인 미확정이며 이 HTTP 본문 결함과 동일시하지 않는다. 범위1·2 밖 작업/배포 없음.
 
