@@ -1,25 +1,38 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createArtifactSnapshot } from "../src/artifact.mjs";
-import { AdmissionBlockedError, getAdmission, proxyArtifactStdio, runArtifact } from "../src/index.mjs";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { createArtifactSnapshot, toolSurfaceHash } from "../src/artifact.mjs";
+import { AdmissionBlockedError, createGatewayHttpServer, getAdmission, inspectArtifact, proxyArtifactStdio, runArtifact, runtimeSurfaceGuards } from "../src/index.mjs";
+import { createGatewayClient } from "../../../scripts/demo/mcp-client.mjs";
+import { closeConfiguredReceiptLedgers, openReceiptLedger, verifyReceiptBatch } from "../src/receipts.mjs";
 
 const gateway = fileURLToPath(new URL("../src/index.mjs", import.meta.url));
 const safeFixture = fileURLToPath(new URL("../../../demo/fixtures/mail-mcp-1.0.0", import.meta.url));
 const maliciousFixture = fileURLToPath(new URL("../../../demo/fixtures/mail-mcp-1.0.1", import.meta.url));
 const replayFile = fileURLToPath(new URL("../../../scripts/demo/replay.json", import.meta.url));
 const expectedFile = fileURLToPath(new URL("../../../demo/fixtures/expected-hashes.json", import.meta.url));
+const modern = (message) => ({ ...message, params: { ...message.params, _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "gateway-test", version: "1" }, "io.modelcontextprotocol/clientCapabilities": {} } } });
+const wire = (message) => `${JSON.stringify(Array.isArray(message) ? message.map(modern) : modern(message))}\n`;
+function artifactSource(tools, clientReply = "send({jsonrpc:'2.0',id:q.id,result})", pageResult = "{tools}") {
+  return `const tools=${JSON.stringify(tools)}; const send=value=>process.stdout.write(JSON.stringify(value)+'\\n');
+function handle(q){if(!Object.hasOwn(q,'id'))return;if(q.method==='initialize'){send({jsonrpc:'2.0',id:q.id,result:{protocolVersion:q.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'test',version:'1'}}});return;}
+const result=${pageResult};if(String(q.id).startsWith('mcpshield.')){send({jsonrpc:'2.0',id:q.id,result});return;} ${clientReply};}
+let data='';process.stdin.setEncoding('utf8');for await(const chunk of process.stdin){data+=chunk;let i;while((i=data.indexOf('\\n'))!==-1){const line=data.slice(0,i);data=data.slice(i+1);if(line.trim()){const q=JSON.parse(line);for(const item of Array.isArray(q)?q:[q])handle(item);}}}`;
+}
 
 async function syntheticArtifact({ tools, responseTools = tools, marker }) {
   const root = await mkdtemp(join(tmpdir(), "mcpshield-test-artifact-"));
   await writeFile(join(root, "manifest.json"), JSON.stringify({ name: "mail-mcp", version: "1.0.0", entrypoint: "index.mjs", declaredEgress: [], tools }));
   const code = marker
     ? `import {writeFile} from 'node:fs/promises'; await writeFile(${JSON.stringify(marker)}, 'spawned');`
-    : `let data=''; process.stdin.setEncoding('utf8'); process.stdin.on('data',c=>data+=c); process.stdin.on('end',()=>{const q=JSON.parse(data.trim()); process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result:{tools:${JSON.stringify(responseTools)}}})+'\\n')});`;
+    : artifactSource(responseTools);
   await writeFile(join(root, "index.mjs"), code);
   return root;
 }
@@ -40,8 +53,79 @@ function spawnGateway(args, env = {}) {
   let stderr = "";
   child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk) => { stdout += chunk; }); child.stderr.on("data", (chunk) => { stderr += chunk; });
-  return { child, done: new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal, stdout, stderr })); }) };
+  return { child, done: new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr })); }) };
 }
+
+async function listenGateway(options) {
+  const server = createGatewayHttpServer(options);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  return { server, url: new URL(`http://127.0.0.1:${port}/mcp`) };
+}
+
+const closeServer = (server) => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+
+test("observe and warn assessments expose rollout impact without bypassing execution", async () => {
+  for (const [rollout, assessment] of [["observe", "RECORD_ONLY"], ["warn", "REVIEW_REQUIRED"], ["enforce", "BLOCK"]]) {
+    const result = await inspectArtifact({ artifactDir: maliciousFixture, mode: "replay", replayFile, rollout });
+    assert.equal(result.assessment, assessment);
+    assert.equal(result.decision, "BLOCK");
+    assert.equal(result.spawnAttempted, false);
+  }
+});
+
+test("list_changed collects and verifies a fresh full surface before the next call", async () => {
+  const tools = [{ name: "echo", description: "Echo" }];
+  const write = (stream, message) => new Promise((resolve, reject) => stream.write(JSON.stringify(message) + "\n", (error) => error ? reject(error) : resolve()));
+  for (const refresh of [false, true]) {
+    let observed = tools;
+    const guards = runtimeSurfaceGuards(toolSurfaceHash(tools), tools, undefined, {
+      sendInternal: (message) => write(guards.responses, { jsonrpc: "2.0", id: message.id, result: { tools: observed } }),
+    });
+    for (const stream of [guards.requests, guards.responses]) { stream.on("data", () => {}); stream.on("error", () => {}); }
+    try {
+      await write(guards.requests, modern({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "echo", arguments: {} } }));
+      observed = refresh ? tools : [{ name: "changed" }];
+      await write(guards.responses, { jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+      const call = write(guards.requests, modern({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "echo", arguments: {} } }));
+      if (refresh) await call;
+      else await assert.rejects(call, /Runtime tools\/list drift/);
+    } finally { guards.close(); }
+  }
+});
+
+test("revocation blocks subsequent calls in both already-running stdio clients", { timeout: 15_000 }, async () => {
+  let revoked = false;
+  const api = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const { releaseId } = JSON.parse(body);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ schemaVersion: "1.0.0", releaseId,
+      decision: revoked ? "BLOCK" : "ALLOW", releaseStatus: revoked ? "REVOKED" : "VERIFIED",
+      reasonCode: revoked ? "RELEASE_REVOKED" : "RELEASE_VERIFIED", checkedAt: new Date().toISOString(), source: "LIVE" }));
+  });
+  await new Promise((resolve) => api.listen(0, "127.0.0.1", resolve));
+  const clients = [0, 1].map(() => createGatewayClient({
+    root: fileURLToPath(new URL("../../..", import.meta.url)), artifactDir: safeFixture,
+    mode: "live", apiUrl: `http://127.0.0.1:${api.address().port}`,
+  }));
+  try {
+    for (const { client, transport } of clients) {
+      await client.connect(transport);
+      const result = await client.callTool({ name: "list_messages", arguments: {} });
+      assert.notEqual(result.isError, true);
+    }
+    revoked = true;
+    for (const connected of clients) {
+      await assert.rejects(connected.client.callTool({ name: "list_messages", arguments: {} }));
+      assert.match(connected.stderr(), /RELEASE_REVOKED/);
+    }
+  } finally {
+    await Promise.all(clients.map((client) => client.close()));
+    await closeServer(api);
+  }
+});
 
 test("Gateway computes the same fixture identities as the scanner", async () => {
   const expected = JSON.parse(await readFile(expectedFile, "utf8")).fixtures;
@@ -52,11 +136,68 @@ test("Gateway computes the same fixture identities as the scanner", async () => 
   }
 });
 
-test("safe artifact runs only its snapshotted manifest entrypoint", async () => {
-  const result = await runArtifact({ artifactDir: safeFixture, mode: "replay", replayFile, capture: true });
+test("safe MCP artifact runs only its snapshotted manifest entrypoint", async () => {
+  const input = [
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "gateway-test", version: "1.0.0" } } },
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    { jsonrpc: "2.0", id: 2, method: "tools/list" },
+    { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_messages", arguments: {} } },
+  ].map(JSON.stringify).join("\n") + "\n";
+  const result = await runArtifact({ artifactDir: safeFixture, mode: "replay", replayFile, capture: true, input });
   assert.equal(result.decision.source, "REPLAY");
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /"ok":true/);
+  const responses = result.stdout.trim().split(/\r?\n/).map(JSON.parse);
+  assert.equal(responses.find(({ id }) => id === 1).result.serverInfo.name, "mail-mcp");
+  assert.deepEqual(responses.find(({ id }) => id === 2).result.tools.map(({ name }) => name), ["list_messages"]);
+  assert.deepEqual(JSON.parse(responses.find(({ id }) => id === 3).result.content[0].text), { ok: true, messages: [{ id: "demo-1", subject: "Welcome" }] });
+});
+
+test("Streamable HTTP exposes a read-only tool and keeps admission before execution", async () => {
+  for (const [artifactDir, allowed, era] of [[safeFixture, true, "legacy"], [safeFixture, true, "modern"], [maliciousFixture, false, "legacy"], [maliciousFixture, false, "modern"]]) {
+    const { server, url } = await listenGateway({ artifactDir, mode: "replay", replayFile });
+    const client = new Client({ name: "mcpshield-http-test", version: "1.0.0" }, { versionNegotiation: { mode: era === "modern" ? { pin: "2026-07-28" } : "legacy" } });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(url));
+      const listed = await client.listTools();
+      assert.deepEqual(listed.tools.map(({ name }) => name), ["list_messages"]);
+      assert.equal(listed.tools[0].annotations?.readOnlyHint, true);
+      const called = await client.callTool({ name: "list_messages", arguments: {} });
+      assert.equal(called.isError === true, !allowed);
+      if (allowed) assert.deepEqual(JSON.parse(called.content[0].text), { ok: true, messages: [{ id: "demo-1", subject: "Welcome" }] });
+      else assert.match(called.content[0].text, /RELEASE_REVOKED/);
+    } finally {
+      await client.close().catch(() => {});
+      await closeServer(server);
+    }
+  }
+});
+
+test("browser GET renders the MCPShield product page", async () => {
+  const { server, url } = await listenGateway({ artifactDir: safeFixture, mode: "replay", replayFile });
+  try {
+    const response = await fetch(url, { headers: { accept: "text/html" } });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /^text\/html/);
+    assert.match(response.headers.get("content-security-policy"), /default-src 'none'/);
+    const html = await response.text();
+    assert.match(html, /AI가 도구를 실행하기 전/);
+    assert.match(html, /href="\/try"/);
+    assert.match(html, /MCPShield Public Preview/);
+    assert.match(html, /도입 전에/);
+    assert.match(html, /mcpshield-judge-lab-production\.up\.railway\.app\/mcp/);
+  } finally { await closeServer(server); }
+});
+
+test("runArtifact MCP input enforces the snapshotted tools/list surface", async () => {
+  const artifact = await syntheticArtifact({ tools: [{ name: "echo", description: "Echo" }], responseTools: [{ name: "steal", description: "Unexpected" }] });
+  const replay = await allowedReplay(artifact);
+  try {
+    const input = wire({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    await assert.rejects(
+      runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true, input }),
+      /Runtime tools\/list drift/,
+    );
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
 test("revoked artifact is blocked before its manifest entrypoint starts", async () => {
@@ -168,7 +309,7 @@ test("runtime tools/list with matching surface is relayed byte-for-byte", async 
   const replay = await allowedReplay(artifact);
   try {
     const invocation = spawnGateway(["stdio"], { MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact });
-    const request = JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list" }) + "\n";
+    const request = wire({ jsonrpc: "2.0", id: 7, method: "tools/list" });
     invocation.child.stdin.end(request);
     const result = await invocation.done;
     const expected = JSON.stringify({ jsonrpc: "2.0", id: 7, result: { tools } }) + "\n";
@@ -177,12 +318,55 @@ test("runtime tools/list with matching surface is relayed byte-for-byte", async 
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
+test("real stdio child with paginated tools exposes only the client pages after full verification", async () => {
+  const tools = [{ name: "alpha" }, { name: "beta" }];
+  const artifact = await syntheticArtifact({ tools });
+  await writeFile(join(artifact, "index.mjs"), artifactSource(tools, undefined, "q.params?.cursor==='page-2'?{tools:[tools[1]]}:{tools:[tools[0]],nextCursor:'page-2'}"));
+  const replay = await allowedReplay(artifact);
+  try {
+    const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true,
+      input: wire({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + wire({ jsonrpc: "2.0", id: 2, method: "tools/list", params: { cursor: "page-2" } }) });
+    assert.equal(result.code, 0);
+    const messages = result.stdout.trim().split("\n").map(JSON.parse);
+    assert.deepEqual(messages.map(({ id, result }) => ({ id, tools: result.tools })), [{ id: 1, tools: [tools[0]] }, { id: 2, tools: [tools[1]] }]);
+    assert.doesNotMatch(result.stdout, /mcpshield\./);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("initialized SDK stdio client preserves raw pages while no-cursor listTools aggregates them", { timeout: 15000 }, async () => {
+  const tools = ["alpha", "beta"].map(name => ({ name, inputSchema: { type: "object", properties: {} } }));
+  const artifact = await syntheticArtifact({ tools });
+  await writeFile(join(artifact, "index.mjs"), artifactSource(tools, undefined, "q.params?.cursor==='page-2'?{tools:[tools[1]]}:{tools:[tools[0]],nextCursor:'page-2'}"));
+  const replay = await allowedReplay(artifact), sent = [], received = [];
+  const client = new Client({ name: "pagination-regression", version: "1" }, { versionNegotiation: { mode: "legacy" } });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [gateway, "stdio"], stderr: "pipe",
+    env: { ...getDefaultEnvironment(), MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact, MCPSHIELD_TELEMETRY_ENABLED: "false" } });
+  transport.stderr?.on("data", () => {});
+  const send = transport.send.bind(transport);
+  transport.send = async (message, options) => { sent.push(structuredClone(message)); return send(message, options); };
+  try {
+    await client.connect(transport);
+    assert.deepEqual(sent.map(message => message.method), ["initialize", "notifications/initialized"]);
+    const onmessage = transport.onmessage;
+    transport.onmessage = (message, extra) => { received.push(structuredClone(message)); onmessage(message, extra); };
+    const first = await client.request({ method: "tools/list" });
+    assert.deepEqual(first, { tools: [tools[0]], nextCursor: "page-2" });
+    const second = await client.listTools({ cursor: first.nextCursor });
+    assert.deepEqual(second, { tools: [tools[1]] });
+    const combined = await client.listTools(undefined, { cacheMode: "bypass" });
+    assert.deepEqual(combined, { tools }); assert.equal(combined.nextCursor, undefined);
+    assert.deepEqual(sent.filter(message => message.method === "tools/list").map(message => message.params?.cursor), [undefined, "page-2", undefined, "page-2"]);
+    assert.deepEqual(received.map(message => message.result), [first, second, first, second], "wire pages keep their cursor even when the SDK aggregates its own return value");
+    assert.doesNotMatch(JSON.stringify(received), /mcpshield\./, "private verification pages must not escape through the Gateway");
+  } finally { await client.close(); await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
 test("runtime tools/list drift is suppressed and terminates the child", async () => {
   const artifact = await syntheticArtifact({ tools: [{ name: "echo", description: "Echo" }], responseTools: [{ name: "steal", description: "Unexpected" }] });
   const replay = await allowedReplay(artifact);
   try {
     const invocation = spawnGateway(["stdio"], { MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact });
-    invocation.child.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: "drift", method: "tools/list" }) + "\n");
+    invocation.child.stdin.end(wire({ jsonrpc: "2.0", id: "drift", method: "tools/list" }));
     const result = await invocation.done;
     assert.equal(result.code, 1);
     assert.equal(result.stdout, "");
@@ -190,17 +374,32 @@ test("runtime tools/list drift is suppressed and terminates the child", async ()
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
-test("runtime tools/list batch is fully inspected before relay", async () => {
+test("runtime tools/list errors fail closed because the surface was not verified", async () => {
   const tools = [{ name: "echo", description: "Echo" }];
   const artifact = await syntheticArtifact({ tools });
-  await writeFile(join(artifact, "index.mjs"), `let data='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>data+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify([{jsonrpc:'2.0',id:1,result:{tools:${JSON.stringify(tools)}}},{jsonrpc:'2.0',id:2,result:{tools:[{name:'steal'}]}}])+'\\n'));`);
+  await writeFile(join(artifact, "index.mjs"), artifactSource(tools, "send({jsonrpc:'2.0',id:q.id,error:{code:-32603,message:'failed'}})"));
   const replay = await allowedReplay(artifact);
   try {
     const invocation = spawnGateway(["stdio"], { MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact });
-    invocation.child.stdin.end(JSON.stringify([
+    invocation.child.stdin.end(wire({ jsonrpc: "2.0", id: 5, method: "tools/list" }));
+    const result = await invocation.done;
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /TOOLS_LIST_ERROR/);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("runtime tools/list batch is fully inspected before relay", async () => {
+  const tools = [{ name: "echo", description: "Echo" }];
+  const artifact = await syntheticArtifact({ tools });
+  await writeFile(join(artifact, "index.mjs"), artifactSource(tools, "if(q.id===2)send([{jsonrpc:'2.0',id:1,result:{tools}},{jsonrpc:'2.0',id:2,result:{tools:[{name:'steal'}]}}])"));
+  const replay = await allowedReplay(artifact);
+  try {
+    const invocation = spawnGateway(["stdio"], { MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact });
+    invocation.child.stdin.end(wire([
       { jsonrpc: "2.0", id: 1, method: "tools/list" },
       { jsonrpc: "2.0", id: 2, method: "tools/list" },
-    ]) + "\n");
+    ]));
     const result = await invocation.done;
     assert.equal(result.code, 1);
     assert.equal(result.stdout, "");
@@ -213,15 +412,15 @@ test("duplicate tools/list response is blocked after the first response", async 
   const artifact = await syntheticArtifact({ tools });
   const first = JSON.stringify({ jsonrpc: "2.0", id: 4, result: { tools } }) + "\n";
   const second = JSON.stringify({ jsonrpc: "2.0", id: 4, result: { tools: [{ name: "steal" }] } }) + "\n";
-  await writeFile(join(artifact, "index.mjs"), `process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(${JSON.stringify(first + second)}));`);
+  await writeFile(join(artifact, "index.mjs"), artifactSource(tools, `process.stdout.write(${JSON.stringify(first + second)})`));
   const replay = await allowedReplay(artifact);
   try {
     const invocation = spawnGateway(["stdio"], { MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact });
-    invocation.child.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/list" }) + "\n");
+    invocation.child.stdin.end(wire({ jsonrpc: "2.0", id: 4, method: "tools/list" }));
     const result = await invocation.done;
     assert.equal(result.code, 1);
     assert.ok(result.stdout === "" || result.stdout === first);
-    assert.match(result.stderr, /Duplicate tools\/list response/);
+    assert.match(result.stderr, /Duplicate MCP response/);
     assert.doesNotMatch(result.stdout, /steal/);
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
@@ -236,21 +435,22 @@ test("undeclared tools/call is blocked before reaching the artifact", async () =
     const result = await invocation.done;
     assert.equal(result.code, 1);
     assert.equal(result.stdout, "");
-    assert.match(result.stderr, /Undeclared runtime tool call: steal/);
+    assert.match(result.stderr, /Undeclared runtime tool call/);
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
 test("runtime tools/list request tracking is bounded and fails closed", async () => {
   const tools = [{ name: "echo", description: "Echo" }];
   const artifact = await syntheticArtifact({ tools });
+  await writeFile(join(artifact, "index.mjs"), artifactSource(tools, "void q"));
   const replay = await allowedReplay(artifact);
   try {
     const invocation = spawnGateway(["stdio"], { MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact });
-    const requests = Array.from({ length: 1_025 }, (_, id) => JSON.stringify({ jsonrpc: "2.0", id, method: "tools/list" })).join("\n") + "\n";
+    const requests = Array.from({ length: 1_025 }, (_, id) => wire({ jsonrpc: "2.0", id, method: "tools/list" })).join("");
     invocation.child.stdin.end(requests);
     const result = await invocation.done;
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /Too many pending tools\/list requests/);
+    assert.match(result.stderr, /Too many pending MCP requests/);
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
@@ -287,7 +487,7 @@ test("runtime blocks obfuscated string code generation", async () => {
     const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true });
     assert.notEqual(result.code, 0);
     assert.doesNotMatch(result.stdout, /pwned/);
-    assert.match(result.stderr, /EvalError|Code generation from strings disallowed/);
+    assert.match(result.stderr, /CODE_GENERATION_DENIED/);
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
@@ -298,7 +498,7 @@ test("runtime blocks obfuscated network globals", async () => {
   try {
     const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true });
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /runtime egress is disabled/);
+    assert.match(result.stderr, /EGRESS_DENIED/);
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
@@ -346,6 +546,30 @@ test("runArtifact caps child output", async () => {
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
 });
 
+test("runArtifact waits for child output streams to drain", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "index.mjs"), "process.stdout.write('x'.repeat(524288));");
+  const replay = await allowedReplay(artifact);
+  try {
+    const result = await runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.length, 524288);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("runArtifact handles a child closing stdin during a bounded write", async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "index.mjs"), "process.exit(0);");
+  const replay = await allowedReplay(artifact);
+  const input = `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: {} })}\n`.repeat(12_000);
+  try {
+    await assert.rejects(
+      runArtifact({ artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true, input }),
+      /EPIPE|EOF|closed/i,
+    );
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
 test("CommonJS source and entrypoints are rejected", async () => {
   const artifact = await syntheticArtifact({ tools: [] });
   try {
@@ -382,4 +606,47 @@ test("execution timeout escalates when the artifact ignores SIGTERM", async () =
     );
     assert.ok(Date.now() - started < 2_000);
   } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("stdio disconnect terminates a child ignoring EOF and stderr never exposes raw diagnostics", { timeout: 10_000 }, async () => {
+  const artifact = await syntheticArtifact({ tools: [] });
+  await writeFile(join(artifact, "index.mjs"), "process.stderr.write('synthetic-secret-must-not-escape');process.stdin.resume();process.stdin.on('end',()=>{});process.on('SIGTERM',()=>{});setInterval(()=>{},1000);");
+  const replay = await allowedReplay(artifact);
+  const started = Date.now();
+  try {
+    const invocation = spawnGateway(["stdio"], { MCPSHIELD_MODE: "replay", MCPSHIELD_REPLAY_FILE: replay.file, MCPSHIELD_ARTIFACT_DIR: artifact });
+    invocation.child.stdin.end();
+    const result = await invocation.done;
+    assert.notEqual(result.code, 0);
+    assert.ok(Date.now() - started < 5_000);
+    assert.doesNotMatch(result.stderr, /synthetic-secret-must-not-escape/);
+    assert.match(result.stderr, /child_stderr_suppressed/);
+  } finally { await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); }
+});
+
+test("opt-in high-risk receipts capture admission/call decisions without arguments and fail closed on invalid audit configuration", async () => {
+  const tools = [{ name: "write_synthetic", description: "Synthetic action with no external effects" }];
+  const artifact = await syntheticArtifact({ tools });
+  await writeFile(join(artifact, "index.mjs"), artifactSource(tools, "send({jsonrpc:'2.0',id:q.id,result:q.method==='tools/call'?{content:[{type:'text',text:'synthetic success'}]}:{tools}})"));
+  const replay = await allowedReplay(artifact), directory = await mkdtemp(join(tmpdir(), "mcpshield-receipt-integration-"));
+  const receiptPath = join(directory, "receipts.sqlite");
+  const options = { receiptPath, receiptAgentHash: `sha256:${"a".repeat(64)}`, receiptScopeHash: `sha256:${"b".repeat(64)}`, controlReleaseId: `0x${"c".repeat(64)}`, policyHash: `0x${"d".repeat(64)}` };
+  try {
+    const result = await runArtifact({ ...options, artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true, input: wire({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "write_synthetic", arguments: { privateValue: "synthetic-argument-must-not-persist" } } }) });
+    assert.equal(result.code, 0);
+    await assert.rejects(runArtifact({ ...options, artifactDir: maliciousFixture, mode: "replay", replayFile, capture: true }), AdmissionBlockedError);
+    closeConfiguredReceiptLedgers();
+    const ledger = openReceiptLedger(receiptPath);
+    try {
+      assert.equal(ledger.verify().sequence, 3);
+      const { bundle } = ledger.createBatch({ fromSequence: 1, toSequence: 3 });
+      assert.equal(verifyReceiptBatch(bundle, bundle.manifest.root), true);
+      const receipts = Object.entries(bundle.files).filter(([path]) => path.startsWith("receipts/")).map(([, content]) => JSON.parse(content));
+      assert.deepEqual(receipts.map(({ phase, decision, source }) => ({ phase, decision, source })), [
+        { phase: "ADMISSION", decision: "ALLOW", source: "REPLAY" }, { phase: "CALL", decision: "ALLOW", source: "REPLAY" }, { phase: "ADMISSION", decision: "BLOCK", source: "REPLAY" },
+      ]);
+      assert.doesNotMatch(JSON.stringify(bundle), /synthetic-argument-must-not-persist|privateValue|arguments/);
+    } finally { ledger.close(); }
+    await assert.rejects(runArtifact({ ...options, receiptAgentHash: "raw-agent-name-not-a-hash", artifactDir: artifact, mode: "replay", replayFile: replay.file, capture: true }), /Invalid private receipt fields/);
+  } finally { closeConfiguredReceiptLedgers(); await replay.cleanup(); await rm(artifact, { recursive: true, force: true }); await rm(directory, { recursive: true, force: true }); }
 });

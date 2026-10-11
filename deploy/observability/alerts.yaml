@@ -1,0 +1,25 @@
+groups:
+  - name: mcpshield
+    rules:
+      - alert: MCPShieldCollectorUnavailable
+        expr: up{job="mcpshield"} == 0
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "MCPShield telemetry collector is unreachable"
+          runbook_url: "https://github.com/sihoon-0077/MCPShield/blob/master/main/docs/operations-runbook.md"
+      - alert: MCPShieldAdmissionLatency
+        expr: histogram_quantile(0.95, sum by (le) (rate(mcpshield_admission_latency_seconds_bucket{source="LIVE"}[5m]))) > 0.5
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "Live admission p95 exceeded the 500 ms target"
+      - alert: MCPShieldStageErrors
+        expr: sum by (stage) (increase(mcpshield_scan_stages_total{result="error"}[5m])) > 5
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "Repeated MCPShield stage failures; inspect trace IDs before retrying"
