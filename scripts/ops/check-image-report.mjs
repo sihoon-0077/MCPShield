@@ -16,8 +16,10 @@ export function checkImageReport(report, expectedImageId, revision, profile = 'r
   const path = profile === 'release' ? /^app\/(?:.*\/)?node_modules\// : /^usr\/local\/lib\/node_modules\/npm\//;
   for (const name of names) assert.ok(packages.some(p => p.Name === name && path.test(p.FilePath ?? '')), `Missing application dependency coverage: ${name}`);
   if (profile === 'runtime-builder') assert.ok(packages.some(p => p.Name === 'npm' && p.Version === '12.0.2'), 'Wrong trusted npm version');
-  const severe = report.Results.flatMap(r => r.Vulnerabilities ?? []).filter(v => ['HIGH', 'CRITICAL'].includes(v.Severity));
-  assert.equal(severe.length, 0, `Image HIGH/CRITICAL vulnerability gate failed: ${severe.length}`);
+  const severe = report.Results.flatMap(r => (r.Vulnerabilities ?? []).map(v => ({ ...v, Target: r.Target }))).filter(v => ['HIGH', 'CRITICAL'].includes(v.Severity));
+  // Name each finding so remediation does not depend on the short-lived failure artifact.
+  const detail = severe.map(v => `${v.Severity} ${v.VulnerabilityID ?? '?'} ${v.PkgName ?? '?'}@${v.InstalledVersion ?? '?'} fixed=${v.FixedVersion || 'none'} at ${v.PkgPath ?? v.Target ?? '?'}`).join('; ');
+  assert.equal(severe.length, 0, `Image HIGH/CRITICAL vulnerability gate failed: ${severe.length}${detail ? ` (${detail})` : ''}`);
   return { imageId: expectedImageId, revision, profile, applicationPackages: packages.length, highCritical: 0 };
 }
 export function checkImageSbom(sbom) {
