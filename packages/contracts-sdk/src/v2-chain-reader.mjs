@@ -6,9 +6,10 @@ import { checkedServiceUrl, v2RpcRequest, TransportUnavailableError } from "./tr
 const states = ["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED", "EXPIRED"];
 const hash = /^0x[0-9a-f]{64}$/i;
 const FRESH_VIEW = Symbol("CHAIN_HEAD_ADVANCED");
-// ADR-009: on 2-second-block chains the head almost always grows during one read. A view stays usable
-// while the blocks it was read at are still canonical and the head has grown by at most this many blocks.
-export const MAX_HEAD_ADVANCE = 3;
+// ADR-009: on fast chains (Base Sepolia measured ~5 blocks/s) the head always grows during one read. A view
+// stays usable while the blocks it was read at are still canonical and the newest head is at most this many
+// seconds of block time ahead. Time, not block count, so the bound means the same on any block interval.
+export const MAX_HEAD_ADVANCE_SECONDS = 6;
 export class V2ChainUnavailableError extends Error {
   constructor(failureKind = "TRUST_REJECTED") { super("STATUS_UNAVAILABLE"); this.name = "V2ChainUnavailableError"; this.failureKind = failureKind; }
 }
@@ -99,7 +100,7 @@ export function v2ChainReader(config) {
             }
             // ADR-009 canonicality check: re-read the exact blocks this view used, by number and uncached.
             // A different hash at either height is a reorg and fails closed. A head that merely grew by up to
-            // MAX_HEAD_ADVANCE blocks keeps the view; a missing block (lagging RPC backend) or a larger jump gets
+            // MAX_HEAD_ADVANCE_SECONDS of block time keeps the view; a missing block (lagging RPC backend) or a larger jump gets
             // at most one complete fresh read when the view would allow, never an old-view ALLOW otherwise.
             const [afterHead, afterConfirmed, afterLatest] = await completeReads([provider.getBlock(head.number).then(value => {
               if (value && (value.number !== head.number || value.hash !== head.hash)) throw new Error("CHAIN_VIEW_CHANGED");
@@ -108,7 +109,8 @@ export function v2ChainReader(config) {
               if (value?.hash !== block.hash || value?.number !== confirmedNumber) throw new Error("CHAIN_VIEW_CHANGED"); return value;
             }), provider.getBlock("latest").then(value => {
               if (value?.number === head.number && value.hash !== head.hash) throw new Error("CHAIN_VIEW_CHANGED");
-              if (!value || !Number.isSafeInteger(value.number) || value.number < head.number || value.number > head.number + MAX_HEAD_ADVANCE) viewChangeSeen = true; return value;
+              if (!value || !Number.isSafeInteger(value.number) || value.number < head.number
+                || !Number.isSafeInteger(value.timestamp) || value.timestamp - head.timestamp > MAX_HEAD_ADVANCE_SECONDS) viewChangeSeen = true; return value;
             }),
             // Optimistic denial still wins over a grown head: an ALLOW also needs the provider's newest view to say
             // VERIFIED. Anything else re-reads the whole view once, which then returns the denial at its own head.

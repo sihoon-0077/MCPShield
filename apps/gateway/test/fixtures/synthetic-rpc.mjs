@@ -15,7 +15,7 @@ export async function syntheticRpc(name = "reader-test") {
   const blockHash = number => number < 10 ? h(String(number)) : `0x${number.toString(16).padStart(64, "a")}`;
   const block = (number, mode = state.mode) => ({ number: `0x${number.toString(16)}`, hash: blockHash(number), parentHash: blockHash(number - 1), nonce: "0x0000000000000000",
     sha3Uncles: h("0"), logsBloom: "0x" + "00".repeat(256), transactionsRoot: h("0"), stateRoot: h("0"), receiptsRoot: h("0"), miner: registry,
-    difficulty: "0x0", totalDifficulty: "0x0", extraData: "0x", gasLimit: "0x1c9c380", gasUsed: "0x0", timestamp: `0x${(now + (mode.startsWith("stale-head") ? -31 : mode === "future-head" ? 10 : 0)).toString(16)}`, transactions: [], uncles: [] });
+    difficulty: "0x0", totalDifficulty: "0x0", extraData: "0x", gasLimit: "0x1c9c380", gasUsed: "0x0", timestamp: `0x${(now + (number - 3) * 2 + (mode.startsWith("stale-head") ? -31 : mode === "future-head" ? 10 : 0)).toString(16)}`, transactions: [], uncles: [] });
   const server = createServer(async (request, response) => {
     const chunks = []; for await (const chunk of request) chunks.push(chunk);
     const call = JSON.parse(Buffer.concat(chunks).toString("utf8")); requests.push({ method: call.method, path: request.url, params: structuredClone(call.params), authorization: request.headers.authorization });
