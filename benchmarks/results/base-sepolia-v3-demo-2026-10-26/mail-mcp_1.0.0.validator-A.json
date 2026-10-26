@@ -1,0 +1,14 @@
+{
+  "validator": "0x1567c3Df4bd6FEa5Ef82A49c99e8465bF42A4486",
+  "report": {
+    "schemaVersion": "1.0.0",
+    "scanId": "48ea29a1-243a-44bb-b4e0-e99f7e3675ce",
+    "releaseId": "mail-mcp@1.0.0",
+    "artifactDigest": "sha256:a345d325671967586298ff058ad4d65a2e65a1a5cb40070289234c58cd77f422",
+    "toolSurfaceHash": "0xb7014044a72759a20257de22b14714d588f1cda7a68d6a0caa16f1b5d4c0d020",
+    "scanStatus": "PASSED",
+    "findings": [],
+    "evidenceHash": "0x4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "source": "LIVE"
+  }
+}
