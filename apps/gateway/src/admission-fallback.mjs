@@ -30,7 +30,8 @@ export function fallbackConfiguration({ indexer, rpc }, { chainId, registryContr
   };
   if (rpc) {
     rpc = { rpcUrls: Array.isArray(rpc.rpcUrls) ? [...rpc.rpcUrls] : rpc.rpcUrls, confirmations: rpc.confirmations ?? 2, timeoutMs: rpc.timeoutMs ?? 1500, allowedHttpHosts: [...(rpc.allowedHttpHosts ?? [])], chainId, registryContract };
-    if (!Number.isSafeInteger(rpc.timeoutMs) || rpc.timeoutMs < 100 || rpc.timeoutMs > 1500) fail("DIRECT_RPC_TOTAL_BUDGET_INVALID");
+    // ADR-009: 3000 ms ceiling. A public Base RPC needs 1-2.5 s for one complete canonical view from Korea.
+    if (!Number.isSafeInteger(rpc.timeoutMs) || rpc.timeoutMs < 100 || rpc.timeoutMs > 3000) fail("DIRECT_RPC_TOTAL_BUDGET_INVALID");
     const checked = v2ChainReader(rpc); checked.close(); // Validate operator configuration before sending any credential.
   }
   return { indexer, rpc, fingerprint: createHash("sha256").update(JSON.stringify({ indexer, rpc })).digest("hex") };

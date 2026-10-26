@@ -108,7 +108,7 @@ export async function readLedger(config: LedgerConfig = defaultLedgerConfig()): 
         await new Promise((resolve) => setTimeout(resolve, 550));
         try {
           const { snapshot, state } = await directRpcAdmission(identity, { operationClass: "READ_PUBLIC", policyHash, chainId: config.chainId, registryContract: config.registry,
-            validatorSetVersion: version }, { rpcUrls: [company.rpcUrl], confirmations: 2, timeoutMs: 1500, chainId: config.chainId, registryContract: config.registry,
+            validatorSetVersion: version }, { rpcUrls: [company.rpcUrl], confirmations: 2, timeoutMs: 3000, chainId: config.chainId, registryContract: config.registry,
             allowedHttpHosts: config.allowedHttpHosts ?? [] });
           release.admission.push({ company: company.name, decision: snapshot.decision, reasonCode: snapshot.reasonCode, observedBlock: state.observedBlock });
         } catch (error: any) {

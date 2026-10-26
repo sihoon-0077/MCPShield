@@ -177,14 +177,14 @@ test("a cross-tenant indexer or RPC revocation wins against an already in-flight
   }
 });
 
-test("Gateway rejects explicit and environment RPC budgets above 1500ms before any request", async () => {
+test("Gateway rejects explicit and environment RPC budgets above 3000ms before any request", async () => {
   const options = setup("rpc-budget"); let fetched = false;
   const fetchImpl = async () => { fetched = true; throw new TypeError("synthetic offline"); };
-  for (const timeoutMs of [99, 1501, 5000]) await assert.rejects(getSignedAdmission({ ...options, fetchImpl,
+  for (const timeoutMs of [99, 3001, 5000]) await assert.rejects(getSignedAdmission({ ...options, fetchImpl,
     rpc: { rpcUrls: ["http://127.0.0.1:1"], timeoutMs } }), /DIRECT_RPC_TOTAL_BUDGET_INVALID/);
   const names = ["MCPSHIELD_RPC_URLS", "MCPSHIELD_RPC_TIMEOUT_MS"], previous = names.map(name => process.env[name]);
   try {
-    process.env.MCPSHIELD_RPC_URLS = "http://127.0.0.1:1"; process.env.MCPSHIELD_RPC_TIMEOUT_MS = "1501";
+    process.env.MCPSHIELD_RPC_URLS = "http://127.0.0.1:1"; process.env.MCPSHIELD_RPC_TIMEOUT_MS = "3001";
     await assert.rejects(getSignedAdmission({ ...options, rpc: undefined, fetchImpl }), /DIRECT_RPC_TOTAL_BUDGET_INVALID/);
   } finally { names.forEach((name, index) => { if (previous[index] === undefined) delete process.env[name]; else process.env[name] = previous[index]; }); }
   assert.equal(fetched, false);

@@ -6,6 +6,9 @@ import { checkedServiceUrl, v2RpcRequest, TransportUnavailableError } from "./tr
 const states = ["UNVERIFIED", "VERIFIED", "QUARANTINED", "REVOKED", "EXPIRED"];
 const hash = /^0x[0-9a-f]{64}$/i;
 const FRESH_VIEW = Symbol("CHAIN_HEAD_ADVANCED");
+// ADR-009: on 2-second-block chains the head almost always grows during one read. A view stays usable
+// while the blocks it was read at are still canonical and the head has grown by at most this many blocks.
+export const MAX_HEAD_ADVANCE = 3;
 export class V2ChainUnavailableError extends Error {
   constructor(failureKind = "TRUST_REJECTED") { super("STATUS_UNAVAILABLE"); this.name = "V2ChainUnavailableError"; this.failureKind = failureKind; }
 }
@@ -40,7 +43,7 @@ export function v2ChainReader(config) {
     const policyHash = policy.policyHash;
     const controller = new AbortController(); running.add(controller);
     const deadline = performance.now() + timeoutMs, timer = setTimeout(() => controller.abort(new TransportUnavailableError()), timeoutMs);
-    let freshViewRetries = 1, transportFailures = 0;
+    let freshViewRetries = 1, transportFailures = 0, newerDenialSeen = false; // A denial seen anywhere in this read is never forgotten.
     try {
       for (const [index, url] of urls.entries()) {
         if (controller.signal.aborted) break;
@@ -94,17 +97,32 @@ export function v2ChainReader(config) {
                 return { status: "UNVERIFIED", source: "EVM", unavailable: true };
               decision = confirmed; observed = block;
             }
-            // A benign extension may get one complete fresh read, never an old-view ALLOW.
-            // Reorgs, negative/inconsistent states and all other errors do not use this retry.
-            const [afterHead, afterConfirmed] = await completeReads([provider.getBlock("latest").then(value => {
-              if (value?.number !== head.number || value?.hash !== head.hash) viewChangeSeen = true; return value;
+            // ADR-009 canonicality check: re-read the exact blocks this view used, by number and uncached.
+            // A different hash at either height is a reorg and fails closed. A head that merely grew by up to
+            // MAX_HEAD_ADVANCE blocks keeps the view; a missing block (lagging RPC backend) or a larger jump gets
+            // at most one complete fresh read when the view would allow, never an old-view ALLOW otherwise.
+            const [afterHead, afterConfirmed, afterLatest] = await completeReads([provider.getBlock(head.number).then(value => {
+              if (value && (value.number !== head.number || value.hash !== head.hash)) throw new Error("CHAIN_VIEW_CHANGED");
+              if (!value) viewChangeSeen = true; return value;
             }), provider.getBlock(confirmedNumber).then(value => {
               if (value?.hash !== block.hash || value?.number !== confirmedNumber) throw new Error("CHAIN_VIEW_CHANGED"); return value;
-            })]);
+            }), provider.getBlock("latest").then(value => {
+              if (value?.number === head.number && value.hash !== head.hash) throw new Error("CHAIN_VIEW_CHANGED");
+              if (!value || !Number.isSafeInteger(value.number) || value.number < head.number || value.number > head.number + MAX_HEAD_ADVANCE) viewChangeSeen = true; return value;
+            }),
+            // Optimistic denial still wins over a grown head: an ALLOW also needs the provider's newest view to say
+            // VERIFIED. Anything else re-reads the whole view once, which then returns the denial at its own head.
+            currentStatus === "VERIFIED" ? registry.getDecision(release.releaseId, policyHash, { blockTag: "latest" }).then(value => {
+              if (!states[Number(value.status)]) throw new Error("INCONSISTENT_CHAIN_STATUS");
+              if (Number(value.status) !== 1) viewChangeSeen = newerDenialSeen = true; return value;
+            }) : null]);
             if (signal.aborted) throw signal.reason;
-            if (afterHead?.number !== head.number || afterHead?.hash !== head.hash || afterConfirmed?.hash !== block.hash) {
-              if (currentStatus === "VERIFIED" && Number.isSafeInteger(afterHead?.number) && afterHead.number > head.number
-                && hash.test(afterHead.hash ?? "") && !/^0x0+$/.test(afterHead.hash) && afterConfirmed?.hash === block.hash)
+            // A denial from a view with no reorg evidence stands even if a lagging backend or a grown head left the
+            // canonicality check incomplete: a wrong denial fails closed, a wrong allow does not.
+            const noReorgEvidence = afterConfirmed?.hash === block.hash && (!afterHead || afterHead.hash === head.hash);
+            if ((afterHead?.hash !== head.hash || afterConfirmed?.hash !== block.hash || viewChangeSeen) && !(currentStatus !== "VERIFIED" && noReorgEvidence)) {
+              if (currentStatus === "VERIFIED" && noReorgEvidence
+                && (!afterLatest || Number.isSafeInteger(afterLatest.number) && afterLatest.number >= head.number && hash.test(afterLatest.hash ?? "") && !/^0x0+$/.test(afterLatest.hash)))
                 throw FRESH_VIEW;
               throw new Error("CHAIN_VIEW_CHANGED");
             }
@@ -113,7 +131,7 @@ export function v2ChainReader(config) {
               validatorSetVersion: version, chainId, registryContract, observedBlock: observed.number, blockHash: observed.hash,
               headBlock: head.number, headBlockHash: head.hash, headTimestamp: new Date(head.timestamp * 1000).toISOString() };
             if (signal.aborted) throw signal.reason;
-            if (result.status === "VERIFIED") freshAllow(decision, head);
+            if (result.status === "VERIFIED") { if (newerDenialSeen) throw new V2ChainUnavailableError(); freshAllow(decision, head); }
             // Timer callbacks may be delayed while synchronous decoding runs.
             // A late completed proof is rejected, not called a native I/O outage.
             if (performance.now() >= deadline || performance.now() >= providerDeadline) throw new V2ChainUnavailableError();
@@ -124,7 +142,7 @@ export function v2ChainReader(config) {
               if (freshViewRetries-- > 0 && !signal.aborted) continue;
               throw new V2ChainUnavailableError();
             }
-            if (negativeViewSeen || viewChangeSeen || staleHeadSeen || !(error instanceof TransportUnavailableError)) throw new V2ChainUnavailableError();
+            if (newerDenialSeen || negativeViewSeen || viewChangeSeen || staleHeadSeen || !(error instanceof TransportUnavailableError)) throw new V2ChainUnavailableError();
             transportFailures++; break;
           }
         }
