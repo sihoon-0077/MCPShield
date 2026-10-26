@@ -47,6 +47,27 @@ const samples = SAMPLE_LABELS.filter((s) => !values.only || values.only.split(',
 const prior = new Map((previous?.records ?? []).map((r) => [r.id, r]));
 const stopped = new Set(), records = [], notRun = [];
 const started = Date.now();
+const executionStart = new Date(started).toISOString();
+
+// A run whose critic call failed (execution REVIEW_REQUIRED) right before its model hit a quota/auth stop most likely lost
+// that critic call to the same quota, so its verdict is not the model's. It is dropped (a later --append runs it again)
+// and listed. Only runs of the execution that stopped are considered.
+function dropCriticVictim(rows, model, since) {
+  let last = null;
+  for (const row of rows) for (const [i, run] of row.aiRuns.entries())
+    if (run.model === model && run.at && run.at >= since && (!last || run.at > last.run.at)) last = { row, i, run };
+  if (last?.run.execution !== 'REVIEW_REQUIRED') return null;
+  last.row.aiRuns.splice(last.i, 1);
+  if (last.row.groups) last.row.groups = groupsFor(last.row.deterministic, last.row.sandboxComplete, last.row.aiRuns);
+  return last.row.id;
+}
+const redone = [...(previous?.redone ?? [])];
+for (const x of previous?.notRun ?? []) if (String(x.error).startsWith('CRITIC_LOST')) redone.push({ id: x.id, model: x.model, reason: x.error });
+for (const model of previous?.stopped ?? []) {
+  if ((previous.notRun ?? []).some((x) => x.model === model && String(x.error).startsWith('CRITIC_LOST'))) continue;
+  const id = dropCriticVictim(previous.records, model, new Date(Date.parse(previous.ranAt) - previous.durationMs).toISOString());
+  if (id) redone.push({ id, model, reason: 'CRITIC_LOST_TO_QUOTA' });
+}
 
 async function aiRun(dir, model, repeat) {
   const t1 = performance.now();
@@ -101,7 +122,10 @@ for (const [index, sample] of samples.entries()) {
       if (run.status !== 'NOT_RUN') { aiRuns.push(run); continue; }
       notRun.push({ id: sample.id, model, error: run.error });
       if (SKIP.test(run.error)) { console.log(`skip ${sample.id} ${model}: ${run.error} (input over the provider limit)`); break; }
-      stopped.add(model); console.log(`stop ${model}: ${run.error} (quota/auth); later runs of this model are not attempted`); break;
+      stopped.add(model); console.log(`stop ${model}: ${run.error} (quota/auth); later runs of this model are not attempted`);
+      const victim = dropCriticVictim([...records, { id: sample.id, aiRuns }], model, executionStart);
+      if (victim) { notRun.push({ id: victim, model, error: 'CRITIC_LOST_TO_QUOTA' }); console.log(`drop ${victim} ${model}: its critic call likely hit the same quota`); }
+      break;
     }
   }
   const groups = groupsFor(deterministic, sandboxComplete, aiRuns);
@@ -156,7 +180,7 @@ for (const r of malicious) {
 }
 
 const result = { benchmark: 'eval40-v1', ranAt: new Date().toISOString(), durationMs: Date.now() - started, appendedTo: previous ? previous.ranAt : null,
-  labels: labels.labeling, reviewers: labels.reviewers, models, repeatsTarget: repeats, notRun, stopped: [...stopped], modelLabels: Object.fromEntries(models.map((m) => [m, MODEL_LABEL[m] ?? m])),
+  labels: labels.labeling, reviewers: labels.reviewers, models, repeatsTarget: repeats, notRun, redone, stopped: [...stopped], modelLabels: Object.fromEntries(models.map((m) => [m, MODEL_LABEL[m] ?? m])),
   sandbox: 'LOCAL_PROCESS (Node permission model, no MCP tool-call probes)', verdictRule: 'apps/validator/src/v3.ts verdictFromFindings',
   suspicionRule: 'a COMPLETED AI run with a HIGH/CRITICAL AI finding (the validator then signs ABSTAIN)', lock, aggregate, perModel, categories, records };
 await mkdir(outDir, { recursive: true });
@@ -180,7 +204,8 @@ const lines = [
   '| 모델 | 전체 비교군, AI 성공 실행만: 정상 PASS / 보류 / FAIL | 공격 PASS / 보류 / FAIL | AI 오류를 보류로 셀 때 정상 보류 |', '|---|---|---|---|',
   ...models.map((m) => { const p = perModel[m], held = p.fullErrorsHeld.BENIGN, n = held.PASS + held.ABSTAIN + held.FAIL; return `| ${p.label} | ${fmt(p.fullCompleted.BENIGN)} | ${fmt(p.fullCompleted.MALICIOUS)} | ${pct(held.ABSTAIN, n)} |`; }), '',
   ...models.map((m) => { const p = perModel[m]; return `- ${p.label}: 오류 사유 ${p.errorReasons.map(([k, v]) => `${k} ${v}회`).join(', ') || '없음'}. 놓친 공격 중 의심을 낸 표본: ${p.flaggedMissed.map((x) => `${x.id} ${x.flagged}/${x.completed}`).join(', ') || '없음'}.${p.criticUnavailable ? ` 2차 확인(critic) 호출이 실패해 보류된 실행 ${p.criticUnavailable}회.` : ''}`; }),
-  ...[...new Set(notRun.map((x) => x.model))].map((m) => { const rows = notRun.filter((x) => x.model === m); return `- ${MODEL_LABEL[m] ?? m}: 이번 실행에서 못 돌린 호출 ${rows.length}건(${[...new Set(rows.map((x) => x.error))].join(', ')}: ${rows.map((x) => x.id).join(', ')}). 성능 수에서 뺐습니다.`; }), '',
+  ...[...new Set(notRun.map((x) => x.model))].map((m) => { const rows = notRun.filter((x) => x.model === m); return `- ${MODEL_LABEL[m] ?? m}: 이번 실행에서 못 돌린 호출 ${rows.length}건(${[...new Set(rows.map((x) => x.error))].join(', ')}: ${rows.map((x) => x.id).join(', ')}). 성능 수에서 뺐습니다.`; }),
+  ...redone.map((x) => `- 다시 돌린 실행: ${x.id} (${MODEL_LABEL[x.model] ?? x.model}). 2차 확인(critic) 호출이 무료 한도에 걸린 것으로 보여 그 결과를 빼고 다음 실행에서 다시 돌렸습니다.`), '',
   '## 공격 종류별', '', `| 종류 | 표본 | 규칙 FAIL | ${models.map((m) => `${perModel[m].label} 의심/성공`).join(' | ')} |`, `|---|---|---|${models.map(() => '---').join('|')}|`,
   ...Object.entries(categories).map(([c, v]) => `| ${c} | ${v.samples} | ${v.rulesFail} | ${models.map((m) => `${v.models[m].suspicious}/${v.models[m].completed}`).join(' | ')} |`), '',
   '## 표본별', '', `| id | 정답 | 종류 | 정적 | 샌드박스 | 정적+샌드박스 | ${models.map((m) => `${perModel[m].label} (AI만)`).join(' | ')} |`, `|---|---|---|---|---|---|${models.map(() => '---').join('|')}|`,
