@@ -11,8 +11,8 @@ export interface CompiledContract {
 
 export function compileReleaseRegistry(contractName = "ReleaseRegistry"): CompiledContract {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const sourceName = ["ReleaseRegistry", "ReceiptAnchorRegistry"].includes(contractName) ? `${contractName}.sol` : "ReleaseRegistryV2.sol";
-  if (!["ReleaseRegistry", "ReleaseRegistryV2", "ValidatorRegistry", "PolicyRegistry", "ReceiptAnchorRegistry"].includes(contractName)) throw new Error("Unknown contract");
+  const sourceName = ["ReleaseRegistry", "ReceiptAnchorRegistry", "ReleaseRegistryV3"].includes(contractName) ? `${contractName}.sol` : "ReleaseRegistryV2.sol";
+  if (!["ReleaseRegistry", "ReleaseRegistryV2", "ReleaseRegistryV3", "ValidatorRegistry", "PolicyRegistry", "ReceiptAnchorRegistry"].includes(contractName)) throw new Error("Unknown contract");
   const sourcePath = path.resolve(here, "../src", sourceName);
   const source = fs.readFileSync(sourcePath, "utf8");
   const input = {
@@ -25,7 +25,10 @@ export function compileReleaseRegistry(contractName = "ReleaseRegistry"): Compil
       outputSelection: { "*": { "*": ["abi", "evm.bytecode.object"] } },
     },
   };
-  const output = JSON.parse(solc.compile(JSON.stringify(input)));
+  // Only sibling sources in contracts/src may be imported (V3 imports the V2 registries).
+  const findImports = (importPath: string) => /^[A-Za-z0-9]+\.sol$/.test(importPath)
+    ? { contents: fs.readFileSync(path.resolve(here, "../src", importPath), "utf8") } : { error: "IMPORT_NOT_ALLOWED" };
+  const output = JSON.parse(solc.compile(JSON.stringify(input), { import: findImports }));
   const errors = (output.errors ?? []).filter(
     (entry: { severity: string }) => entry.severity === "error",
   );

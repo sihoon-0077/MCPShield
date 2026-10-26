@@ -2,10 +2,10 @@
 //
 // Every test titled "known gap (ADR-008 pending)" asserts a weakness that the UNMODIFIED
 // contracts/src/ReleaseRegistryV2.sol shows today. These assertions do not say the behaviour
-// is wanted. They pin it, so the planned ADR-008 contract fix has to flip each one on purpose:
-// update the affected assertion in the same PR as the fix, never in a separate PR.
-// ADR-008 is not written yet. It will sit next to docs/adr-007-registry-owner-governance.md as
-// docs/adr-008-*.md; until then the titles and comments in this file are the list of gaps it must cover.
+// is wanted. They pin it. ADR-008 (docs/adr-008-independent-evidence-and-dissent.md) fixes the gaps
+// in a new contract, ReleaseRegistryV3, and leaves V2 unchanged for the stack still built on it, so
+// these assertions stay true for V2. tests/contracts/release-registry-v3.test.ts replays each scenario
+// by the same letter against V3; keep the letters in step when either file changes.
 // A part of a gap test that no contract change can flip is marked "inherent" where it is asserted.
 // The "guard:" tests pin exact revert reasons (strings as written in contracts/src) for behaviour
 // that no listed gap targets, so the fix is expected to leave them green. A check that a gap fix
