@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
-import { createEvalAiAdapter } from '../../benchmarks/eval40/ai-adapter.mjs';
+import { createEvalAiAdapter, toChatCompletions } from '../../benchmarks/eval40/ai-adapter.mjs';
 import { requestAiJson } from '../../services/scanner/src/ai-transport.mjs';
 import { semanticOutputSchema } from '../../services/scanner/src/semantic.mjs';
 
@@ -67,4 +67,13 @@ test('eval40 adapter: unchanged scanner transport reaches a chat-completions ups
     assert.equal(seen.length, before);
     assert.ok(!JSON.stringify(stats).includes('UPSTREAM-SECRET-KEY'), 'stats never hold the key');
   } finally { await close(server); await close(upstream); }
+});
+
+test('eval40 adapter: provider schema relaxation drops keywords, never property names', () => {
+  const schema = { type: 'object', additionalProperties: false, required: ['minimum', 'items'], properties: {
+    minimum: { type: 'integer', minimum: 1 }, items: { type: 'array', maxItems: 2, items: { type: 'string', maxLength: 5, enum: ['a', 'b'] } } } };
+  const body = toChatCompletions({ instructions: 's', input: [{ role: 'user', content: 'u' }], text: { format: { type: 'json_schema', name: 'n', strict: true, schema } } },
+    { model: 'm', stripSchemaKeys: ['minimum', 'maxLength', 'maxItems'] });
+  assert.deepEqual(body.response_format.json_schema.schema, { type: 'object', additionalProperties: false, required: ['minimum', 'items'], properties: {
+    minimum: { type: 'integer' }, items: { type: 'array', items: { type: 'string', enum: ['a', 'b'] } } } });
 });

@@ -4,7 +4,7 @@
 //
 // One scan without AI gives the STATIC and SANDBOX findings. Each (model, repeat) scan adds the AI findings of a
 // real model call through an OpenAI-compatible /v1/responses endpoint (local Ollama, or benchmarks/eval40/ai-adapter.mjs
-// for free-tier GitHub Models / Gemini; the bearer token comes from EVAL40_AI_TOKEN). A run whose AI call failed and
+// for the free-tier Gemini API; the bearer token comes from EVAL40_AI_TOKEN). A run whose AI call failed and
 // fell back to the local rule is AI_ERROR, never an AI result. Refusals that say nothing about the model are NOT_RUN
 // and left out of every count: quota, auth and unknown-model refusals (HTTP 401/403/404/429/503) also stop that model
 // for the rest of the execution; an input over the provider's per-request limit (HTTP 413) skips only that sample.
@@ -38,7 +38,7 @@ if (await treeHash(baselineDir) !== lock.baseline) throw new Error('EVAL40_BASEL
 if (previous && JSON.stringify(previous.lock) !== JSON.stringify(lock)) throw new Error('EVAL40_APPEND_LOCK_MISMATCH');
 
 const MODEL_LABEL = { 'mcpshield-qwen2.5-coder-7b-16k': '로컬 qwen2.5-coder 7B (Ollama)', 'mcpshield-gemma4-e2b-16k': '로컬 gemma4 e2b (Ollama)',
-  'github-gpt-4.1-mini': 'GPT-4.1 mini (GitHub Models 무료)', 'gemini-flash': `Gemini Flash (Gemini API 무료, ${process.env.EVAL40_GEMINI_MODEL ?? 'gemini-2.5-flash'})` };
+  'gemini-2.5-flash': 'Gemini 2.5 Flash (Gemini API 무료)', 'gemini-3.5-flash': 'Gemini 3.5 Flash (Gemini API 무료)' };
 const GROUPS = { static: ['STATIC'], ai: ['AI'], sandbox: ['SANDBOX'], static_sandbox: ['STATIC', 'SANDBOX'], full: ['STATIC', 'AI', 'SANDBOX'] };
 const STOP = /^AI_HTTP_(401|403|404|429|503)$/, SKIP = /^AI_HTTP_413$/;
 const slim = (f) => ({ code: f.code, severity: f.severity, stage: f.stage, deterministic: f.deterministic });

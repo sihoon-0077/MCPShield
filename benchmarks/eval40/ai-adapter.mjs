@@ -1,11 +1,11 @@
 // Loopback adapter for eval40: lets the unchanged scanner (OpenAI Responses API, strict json_schema) talk to
-// free-tier chat-completions providers. The scanner only accepts the official OpenAI endpoint or a loopback
+// free-tier chat-completions providers (the Gemini API free tier; GitHub Models was retired on 2026-07-30). The scanner only accepts the official OpenAI endpoint or a loopback
 // URL, and model names without "/", so the adapter maps a model alias to one upstream and translates
 // Responses <-> Chat Completions. It never edits model output: the text the provider returns is passed back
 // as is, so a format failure stays a format failure.
 //
 // Keys live in MCPSHIELD_SECRETS_DIR, outside the repository and OneDrive: either one env file `eval40.env`
-// (GITHUB_MODELS_TOKEN=..., GEMINI_API_KEY=...) or one file per key (github-models.key, gemini.key). They are never
+// (GEMINI_API_KEY=...) or one file per key (gemini.key). They are never
 // logged or returned. Requests need the per-run EVAL40_ADAPTER_TOKEN. Each upstream is paced (one request at a time, minimum interval) so a free tier's
 // per-minute limit is not hit by the evaluation itself; a daily-quota 429 is passed back as HTTP 429.
 //
@@ -18,17 +18,25 @@ import { timingSafeEqual } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
+// Gemini refuses the scanner's full schema ("too many states for serving"), so length, number, pattern and array-size
+// limits are not sent to it. The scanner still validates every answer against its full schema, so a reply that breaks
+// one of those limits is still a format failure (AI_RESPONSE_INVALID).
+const GEMINI = { provider: 'gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+  envKey: 'GEMINI_API_KEY', keyFile: 'gemini.key', minIntervalMs: 13000, minOutputTokens: 16384, headers: {},
+  stripSchemaKeys: ['$schema', 'pattern', 'minLength', 'maxLength', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'minItems', 'maxItems'] };
+// One alias per model: free-tier limits are counted per model, so each gets its own paced lane.
 export const DEFAULT_UPSTREAMS = {
-  'github-gpt-4.1-mini': { provider: 'github-models', url: 'https://models.github.ai/inference/chat/completions', model: 'openai/gpt-4.1-mini',
-    envKey: 'GITHUB_MODELS_TOKEN', keyFile: 'github-models.key', minIntervalMs: 4500, maxOutputTokens: 4000, headers: { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' } },
-  'gemini-flash': { provider: 'gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', model: 'gemini-2.5-flash',
-    envKey: 'GEMINI_API_KEY', keyFile: 'gemini.key', minIntervalMs: 13000, minOutputTokens: 16384, headers: {} },
+  'gemini-2.5-flash': { ...GEMINI, model: 'gemini-2.5-flash' },
+  'gemini-3.5-flash': { ...GEMINI, model: 'gemini-3.5-flash' },
 };
 const MAX_BODY = 512 * 1024;
 const RATE_HEADERS = /^x-ratelimit-|^retry-after$/i;
 
-const stripKeys = (value, keys) => Array.isArray(value) ? value.map((item) => stripKeys(item, keys))
-  : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter(([k]) => !keys.includes(k)).map(([k, v]) => [k, stripKeys(v, keys)])) : value;
+// Drops schema keywords, never property names: entries of `properties` are walked as schemas, not filtered.
+const stripKeys = (schema, keys) => Array.isArray(schema) ? schema.map((item) => stripKeys(item, keys))
+  : schema && typeof schema === 'object' ? Object.fromEntries(Object.entries(schema).filter(([k]) => !keys.includes(k)).map(([k, v]) =>
+    [k, k === 'properties' && v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([name, sub]) => [name, stripKeys(sub, keys)])) : stripKeys(v, keys)]))
+  : schema;
 
 /** Responses API request (as built by services/scanner/src/ai-transport.mjs) -> Chat Completions body. */
 export function toChatCompletions(body, upstream) {
@@ -37,7 +45,7 @@ export function toChatCompletions(body, upstream) {
     || typeof body.input[0].content !== 'string' || format?.type !== 'json_schema' || !format.schema) throw new Error('UNSUPPORTED_REQUEST');
   return { model: upstream.model, messages: [{ role: 'system', content: body.instructions }, { role: 'user', content: body.input[0].content }],
     response_format: { type: 'json_schema', json_schema: { name: format.name, strict: format.strict === true, schema: stripKeys(format.schema, upstream.stripSchemaKeys ?? ['$schema']) } },
-    // Free-tier ceilings (GitHub: 4000 output tokens per request) and thinking room (Gemini counts thinking tokens).
+    // Per-upstream output ceiling (maxOutputTokens) and thinking room (Gemini counts thinking tokens in max_tokens).
     max_tokens: Math.min(Math.max(body.max_output_tokens ?? 4096, upstream.minOutputTokens ?? 0), upstream.maxOutputTokens ?? Infinity), ...(upstream.extraBody ?? {}) };
 }
 
@@ -114,8 +122,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const secrets = process.env.MCPSHIELD_SECRETS_DIR;
   if (!secrets) throw new Error('MCPSHIELD_SECRETS_DIR_REQUIRED');
   const upstreams = structuredClone(DEFAULT_UPSTREAMS);
-  if (process.env.EVAL40_GITHUB_MODEL) upstreams['github-gpt-4.1-mini'].model = process.env.EVAL40_GITHUB_MODEL;
-  if (process.env.EVAL40_GEMINI_MODEL) upstreams['gemini-flash'].model = process.env.EVAL40_GEMINI_MODEL;
   try { process.loadEnvFile(join(secrets, 'eval40.env')); } catch { /* optional; per-key files are the other way */ }
   const keys = {}, keySource = {};
   for (const [alias, upstream] of Object.entries(upstreams)) {
