@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import ganache from "ganache";
 import { Contract, JsonRpcProvider, NonceManager, Wallet } from "ethers";
+import { compileReleaseRegistry } from "../../../contracts/scripts/compile.js";
 import { deployV2 } from "../../../contracts/scripts/deploy-v2.js";
 import { defaultPolicy } from "../../api/src/control-policy.js";
 import { hash } from "../../api/src/control-plane.js";
@@ -18,6 +19,8 @@ const repo = resolve(import.meta.dirname, "../../..");
 const SAFE = join(repo, "demo/fixtures/mail-mcp-1.0.0"), MALICIOUS = join(repo, "demo/fixtures/mail-mcp-1.0.1");
 
 test("ledger reads V3 from chain receipts only, shows dissent, and both companies' Gateways allow 1.0.0 and block revoked 1.0.1", { timeout: 120000 }, async () => {
+  // Compile before the in-process chain starts: a multi-second solc stall during chain traffic times out RPC requests.
+  for (const name of ["ValidatorRegistry", "PolicyRegistry", "ReleaseRegistryV3"]) compileReleaseRegistry(name);
   const chain: any = ganache.server({ logging: { quiet: true }, wallet: { deterministic: true, totalAccounts: 5 } });
   const evidenceDir = await mkdtemp(join(tmpdir(), "mcpshield-ledger-"));
   let provider: JsonRpcProvider | undefined;
