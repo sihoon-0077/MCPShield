@@ -4,8 +4,9 @@
 // Responses <-> Chat Completions. It never edits model output: the text the provider returns is passed back
 // as is, so a format failure stays a format failure.
 //
-// Keys are read from MCPSHIELD_SECRETS_DIR files and never logged or returned. Requests need the per-run
-// EVAL40_ADAPTER_TOKEN. Each upstream is paced (one request at a time, minimum interval) so a free tier's
+// Keys live in MCPSHIELD_SECRETS_DIR, outside the repository and OneDrive: either one env file `eval40.env`
+// (GITHUB_MODELS_TOKEN=..., GEMINI_API_KEY=...) or one file per key (github-models.key, gemini.key). They are never
+// logged or returned. Requests need the per-run EVAL40_ADAPTER_TOKEN. Each upstream is paced (one request at a time, minimum interval) so a free tier's
 // per-minute limit is not hit by the evaluation itself; a daily-quota 429 is passed back as HTTP 429.
 //
 //   EVAL40_ADAPTER_TOKEN=... MCPSHIELD_SECRETS_DIR=... node benchmarks/eval40/ai-adapter.mjs [--port 11500]
@@ -19,9 +20,9 @@ import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_UPSTREAMS = {
   'github-gpt-4.1-mini': { provider: 'github-models', url: 'https://models.github.ai/inference/chat/completions', model: 'openai/gpt-4.1-mini',
-    keyFile: 'github-models.key', minIntervalMs: 4500, maxOutputTokens: 4000, headers: { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' } },
+    envKey: 'GITHUB_MODELS_TOKEN', keyFile: 'github-models.key', minIntervalMs: 4500, maxOutputTokens: 4000, headers: { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' } },
   'gemini-flash': { provider: 'gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', model: 'gemini-2.5-flash',
-    keyFile: 'gemini.key', minIntervalMs: 13000, minOutputTokens: 16384, headers: {} },
+    envKey: 'GEMINI_API_KEY', keyFile: 'gemini.key', minIntervalMs: 13000, minOutputTokens: 16384, headers: {} },
 };
 const MAX_BODY = 512 * 1024;
 const RATE_HEADERS = /^x-ratelimit-|^retry-after$/i;
@@ -115,9 +116,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const upstreams = structuredClone(DEFAULT_UPSTREAMS);
   if (process.env.EVAL40_GITHUB_MODEL) upstreams['github-gpt-4.1-mini'].model = process.env.EVAL40_GITHUB_MODEL;
   if (process.env.EVAL40_GEMINI_MODEL) upstreams['gemini-flash'].model = process.env.EVAL40_GEMINI_MODEL;
-  const keys = {};
-  for (const [alias, upstream] of Object.entries(upstreams)) { try { keys[alias] = readFileSync(join(secrets, upstream.keyFile), 'utf8').trim(); } catch { /* missing key -> 503 for that alias */ } }
+  try { process.loadEnvFile(join(secrets, 'eval40.env')); } catch { /* optional; per-key files are the other way */ }
+  const keys = {}, keySource = {};
+  for (const [alias, upstream] of Object.entries(upstreams)) {
+    const fromEnv = process.env[upstream.envKey]?.trim();
+    if (fromEnv) { keys[alias] = fromEnv; keySource[alias] = upstream.envKey; continue; }
+    try { keys[alias] = readFileSync(join(secrets, upstream.keyFile), 'utf8').trim(); keySource[alias] = upstream.keyFile; } catch { /* missing key -> 503 for that alias */ }
+  }
   const { server } = createEvalAiAdapter({ token: process.env.EVAL40_ADAPTER_TOKEN, upstreams, keys, statsFile: values.stats });
   server.listen(Number(values.port), '127.0.0.1', () => console.log(JSON.stringify({ listening: `http://127.0.0.1:${values.port}/v1/responses`,
-    aliases: Object.fromEntries(Object.entries(upstreams).map(([alias, u]) => [alias, { model: u.model, keyLoaded: Boolean(keys[alias]), minIntervalMs: u.minIntervalMs }])) })));
+    aliases: Object.fromEntries(Object.entries(upstreams).map(([alias, u]) => [alias, { model: u.model, keyLoaded: Boolean(keys[alias]), keyFrom: keySource[alias] ?? null, minIntervalMs: u.minIntervalMs }])) })));
 }
