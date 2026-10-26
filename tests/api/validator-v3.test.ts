@@ -27,6 +27,10 @@ test("verdict rule: deterministic non-AI HIGH is FAIL, AI-only or medium finding
   assert.equal(verdictFromReport({ scanStatus: "FAILED", findings: [f("TOOL_SURFACE_CHANGED", "MEDIUM", "STATIC")] }).verdict, "ABSTAIN");
   assert.equal(verdictFromReport({ scanStatus: "FAILED", findings: [f("UNDECLARED_EGRESS", "HIGH", "STATIC", false)] }).verdict, "ABSTAIN", "non-deterministic never fails alone");
   assert.equal(verdictFromReport({}).verdict, "ABSTAIN", "a malformed report is not a PASS");
+  assert.equal(verdictFromReport({ scanStatus: "INCONCLUSIVE", findings: [] }).verdict, "ABSTAIN", "an incomplete sandbox is not a PASS");
+  assert.deepEqual(verdictFromReport({ scanStatus: "PASSED", findings: [f("SEMANTIC_BEHAVIOR_MISMATCH", "HIGH", "AI", false)] }),
+    { verdict: "ABSTAIN", basis: ["SEMANTIC_BEHAVIOR_MISMATCH"] }, "an AI suspicion on a passed scan holds the release");
+  assert.equal(verdictFromReport({ scanStatus: "PASSED", findings: [f("SEMANTIC_BEHAVIOR_MISMATCH", "MEDIUM", "STATIC", false)] }).verdict, "PASS", "a medium metadata signal is recorded, not blocking");
   assert.equal(quarantineReason({ findings: [f("CANARY_EXFILTRATION", "CRITICAL", "SANDBOX")] }), "CANARY_EXFILTRATION");
   assert.equal(quarantineReason({ findings: [f("CANARY_EXFILTRATION", "CRITICAL", "AI")] }), null);
 });

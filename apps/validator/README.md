@@ -74,8 +74,8 @@ sign the operator's report. For one release it:
 1. reads the release identity from chain and checks that its **own copy** of the
    artifact resolves to exactly those digests (`ARTIFACT_IDENTITY_MISMATCH` otherwise);
 2. scans that copy itself and derives its own verdict: a deterministic non-AI
-   HIGH/CRITICAL finding is FAIL, a failed scan with only AI or lower findings is
-   ABSTAIN (ADR-002), a passed scan is PASS;
+   HIGH/CRITICAL finding is FAIL; otherwise an AI (non-deterministic) HIGH/CRITICAL
+   suspicion or an incomplete scan is ABSTAIN (ADR-002); everything else is PASS;
 3. writes its own evidence file (report + validator address + identity) and signs
    the sha256 of that file as `evidenceHash`;
 4. with `--quarantine`, sends a direct emergency quarantine from its own key when

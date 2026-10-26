@@ -20,15 +20,25 @@ const QUARANTINE_REASONS = ["CANARY_EXFILTRATION", "HOST_ESCAPE_ATTEMPT", "DIGES
 export const MAX_ROUND_SECONDS = 86_400;
 
 /**
- * ADR-002 on one report: a deterministic non-AI HIGH/CRITICAL finding is a FAIL; a failed scan whose only
- * blocking findings come from AI (or are below HIGH) is ABSTAIN, because AI is a witness, never the judge.
+ * ADR-002 on a set of findings. A deterministic non-AI HIGH/CRITICAL finding is FAIL. Otherwise any
+ * non-deterministic HIGH/CRITICAL finding (an AI suspicion) or an incomplete scan is ABSTAIN: AI is a
+ * witness that can hold a release for review, never the judge that revokes it. Everything else is PASS.
  */
+export function verdictFromFindings(findings: any[], complete = true): { verdict: V3Verdict; basis: string[] } {
+  const codes = (list: any[]) => [...new Set(list.map((f) => f.code as string))];
+  const blocking = (f: any) => ["HIGH", "CRITICAL"].includes(f.severity);
+  const hard = findings.filter((f) => f.deterministic === true && f.stage !== "AI" && blocking(f));
+  if (hard.length) return { verdict: "FAIL", basis: codes(hard) };
+  const suspicion = findings.filter((f) => (f.stage === "AI" || f.deterministic !== true) && blocking(f));
+  if (suspicion.length || !complete) return { verdict: "ABSTAIN", basis: codes(suspicion.length ? suspicion : findings) };
+  return { verdict: "PASS", basis: [] };
+}
+
 export function verdictFromReport(report: any): { verdict: V3Verdict; basis: string[] } {
-  if (report?.scanStatus === "PASSED" && Array.isArray(report.findings)) return { verdict: "PASS", basis: [] };
-  const findings: any[] = Array.isArray(report?.findings) ? report.findings : [];
-  const hard = findings.filter((f) => f.deterministic === true && f.stage !== "AI" && ["HIGH", "CRITICAL"].includes(f.severity));
-  if (hard.length) return { verdict: "FAIL", basis: [...new Set(hard.map((f) => f.code as string))] };
-  return { verdict: "ABSTAIN", basis: [...new Set(findings.map((f) => f.code as string))] };
+  if (!Array.isArray(report?.findings) || !["PASSED", "FAILED"].includes(report?.scanStatus)) return { verdict: "ABSTAIN", basis: ["SCAN_INCOMPLETE"] };
+  const result = verdictFromFindings(report.findings, true);
+  // A scanner that calls its own result FAILED without a FAIL-grade finding is inconsistent, so never PASS it.
+  return report.scanStatus === "FAILED" && result.verdict === "PASS" ? { verdict: "ABSTAIN", basis: ["SCAN_STATUS_INCONSISTENT"] } : result;
 }
 
 /** The deterministic sandbox finding that allows a one-validator emergency quarantine, if any. */
