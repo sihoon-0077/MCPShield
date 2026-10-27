@@ -19,6 +19,13 @@ COPY apps/gateway/src/artifact.mjs ./apps/gateway/src/artifact.mjs
 COPY services/scanner/src/prepared-binding.mjs services/scanner/src/oci-binding.mjs services/scanner/src/snapshot.mjs services/scanner/src/evidence.mjs ./services/scanner/src/
 COPY services/scanner/src/scoped-policy.mjs services/scanner/src/canonical-json.mjs ./services/scanner/src/
 COPY services/resolver/src/runtime-descriptor.mjs services/resolver/src/oci-runtime-descriptor.mjs ./services/resolver/src/
+# The chain-only /ledger view (ADR-008) reads ReleaseRegistryV3 with the Gateway's own direct-RPC reader,
+# using the recorded Base Sepolia deployment and demo transaction list.
+COPY packages/contracts-sdk/src/v3-registry.mjs packages/contracts-sdk/src/v3-registry.d.mts packages/contracts-sdk/src/v2-registry.mjs packages/contracts-sdk/src/v2-registry.d.mts ./packages/contracts-sdk/src/
+COPY packages/contracts-sdk/src/v2-chain-reader.mjs packages/contracts-sdk/src/v2-chain-reader.d.mts packages/contracts-sdk/src/transport.mjs packages/contracts-sdk/src/transport.d.mts ./packages/contracts-sdk/src/
+COPY apps/gateway/src/admission-fallback.mjs ./apps/gateway/src/admission-fallback.mjs
+COPY deployments/base-sepolia-v3.json ./deployments/base-sepolia-v3.json
+COPY benchmarks/results/base-sepolia-v3-demo-2026-10-26/transactions.json ./benchmarks/results/base-sepolia-v3-demo-2026-10-26/transactions.json
 RUN npm run build --workspace @mcpshield/dashboard
 
 FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runner
