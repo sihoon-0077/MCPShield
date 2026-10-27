@@ -28,6 +28,10 @@ const GEMINI = { provider: 'gemini', url: 'https://generativelanguage.googleapis
 export const DEFAULT_UPSTREAMS = {
   'gemini-2.5-flash': { ...GEMINI, model: 'gemini-2.5-flash' },
   'gemini-3.5-flash': { ...GEMINI, model: 'gemini-3.5-flash' },
+  'gemini-3.5-flash-lite': { ...GEMINI, model: 'gemini-3.5-flash-lite' },
+  'gemini-3.1-flash-lite': { ...GEMINI, model: 'gemini-3.1-flash-lite' },
+  'gemma-4-26b-a4b-it': { ...GEMINI, model: 'gemma-4-26b-a4b-it' },
+  'gemma-4-31b-it': { ...GEMINI, model: 'gemma-4-31b-it' },
 };
 const MAX_BODY = 512 * 1024;
 const RATE_HEADERS = /^x-ratelimit-|^retry-after$/i;

@@ -38,7 +38,9 @@ if (await treeHash(baselineDir) !== lock.baseline) throw new Error('EVAL40_BASEL
 if (previous && JSON.stringify(previous.lock) !== JSON.stringify(lock)) throw new Error('EVAL40_APPEND_LOCK_MISMATCH');
 
 const MODEL_LABEL = { 'mcpshield-qwen2.5-coder-7b-16k': '로컬 qwen2.5-coder 7B (Ollama)', 'mcpshield-gemma4-e2b-16k': '로컬 gemma4 e2b (Ollama)',
-  'gemini-2.5-flash': 'Gemini 2.5 Flash (Gemini API 무료)', 'gemini-3.5-flash': 'Gemini 3.5 Flash (Gemini API 무료)' };
+  'gemini-2.5-flash': 'Gemini 2.5 Flash (Gemini API 무료)', 'gemini-3.5-flash': 'Gemini 3.5 Flash (Gemini API 무료)',
+  'gemini-3.5-flash-lite': 'Gemini 3.5 Flash-Lite (Gemini API 무료)', 'gemini-3.1-flash-lite': 'Gemini 3.1 Flash-Lite (Gemini API 무료)',
+  'gemma-4-26b-a4b-it': 'Gemma 4 26B A4B (공개 모델, Gemini API 무료)', 'gemma-4-31b-it': 'Gemma 4 31B (공개 모델, Gemini API 무료)' };
 const GROUPS = { static: ['STATIC'], ai: ['AI'], sandbox: ['SANDBOX'], static_sandbox: ['STATIC', 'SANDBOX'], full: ['STATIC', 'AI', 'SANDBOX'] };
 const STOP = /^AI_HTTP_(401|403|404|429|503)$/, SKIP = /^AI_HTTP_413$/;
 const slim = (f) => ({ code: f.code, severity: f.severity, stage: f.stage, deterministic: f.deterministic });
