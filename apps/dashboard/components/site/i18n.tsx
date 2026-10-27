@@ -96,7 +96,7 @@ const pairs: [string, string][] = [
   ['All checks passed', '모든 검사 통과'],
   ['All analysis stages passed', '모든 분석 단계 통과'],
   ['In progress', '분석 중'],
-  ['1.0.1 · candidate', '1.0.1 · 후보'], ['1.0.0 · baseline', '1.0.0 · 기준'], ['LOCAL_DEMO ledger · not a testnet', 'LOCAL_DEMO ledger · 테스트넷 아님'],
+  ['1.0.1 · candidate', '1.0.1 · 후보'], ['1.0.0 · baseline', '1.0.0 · 기준'], ['LOCAL_DEMO ledger · not a testnet', 'LOCAL_DEMO ledger · 테스트넷 아님'], ['Operations console', '운영 콘솔'],
 ]
 
 const enToKo = new Map(pairs)

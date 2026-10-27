@@ -15,12 +15,13 @@ Roll back by selecting MOCK/REPLAY or stopping the dashboard container.
 
 ## Product site (Figma design)
 
-The whole dashboard uses the Figma Make design under the `app/(site)` root layout (`site.css`, components in `components/site/`). `/console` keeps its own layout and styles under `app/(control)`.
+The whole dashboard uses the Figma Make design under the `app/(site)` root layout (`site.css`, components in `components/site/`).
 
 - `/` — product landing page.
 - `/security-scan` → `/scan-progress` → `/scan-results` — runs the judge demo session through `/api/judge` (Backend `/api/demo`, enabled with `MCPSHIELD_JUDGE_DEMO_ENABLED=true`). Only the fixed synthetic `mail-mcp@1.0.0` / `1.0.1` fixtures are scanned; checking 1.0.1 first verifies the 1.0.0 baseline. Every stage, finding, validator signature, Gateway decision and event shown comes from the session response; the ledger is `LOCAL_DEMO`, not a testnet.
 - `/history` — scans started in this browser (localStorage, last 20). Sessions expire after 15 minutes on the Backend, so each record keeps its last session snapshot; `/scan-results` falls back to the Backend session when the record is missing.
 - `/overview` — the former Control Room (MOCK / LIVE / REPLAY evidence with the same explicit fallback rules).
+- `/console` (sidebar `Settings`) — the tenant operations console below, rendered unchanged inside the workspace shell; `console.css` restyles its existing `ops-*` markup and the console text is excluded from the KR/EN translator so API states stay verbatim.
 - `/dashboard` and `/try` redirect to `/overview` and `/security-scan`.
 
 ## Tenant operations console
