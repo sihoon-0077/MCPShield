@@ -1,101 +1,105 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { LanguageSwitcher } from './i18n'
+import { Icon, Sidebar } from './workspace'
+import { ACTIONS, PLAN, STAGES, ScanApiError, clock, errorText, findRecord, getSession, runAction, saveRecord, short, stageStatuses, statusOf, wait, type DemoSession, type ScanRecord, type StageStatus, type Target } from './scan-session'
 
 type ScanState = 'initializing' | 'scanning' | 'waiting' | 'completed' | 'failed'
-type IconName = 'grid' | 'scan' | 'result' | 'logs' | 'history' | 'settings' | 'check' | 'alert' | 'chevron' | 'arrow'
 
-function Icon({ name }: { name: IconName }) {
-  const paths: Record<IconName, React.ReactNode> = {
-    grid: <><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /></>,
-    scan: <><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" /><circle cx="12" cy="12" r="3" /></>,
-    result: <><path d="M5 3h14v18H5z" /><path d="m8.5 12 2.2 2.2 4.8-5" /></>,
-    logs: <><path d="M7 5h14M7 12h14M7 19h14" /><circle cx="3" cy="5" r=".5" fill="currentColor" /></>,
-    history: <><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5M12 7v5l3 2" /></>,
-    settings: <><circle cx="12" cy="12" r="3" /><path d="M5 5l2 2m10-2-2 2m2 10-2-2M5 19l2-2M12 2v3m0 14v3M2 12h3m14 0h3" /></>,
-    check: <path d="m5 12 4 4L19 6" />,
-    alert: <><path d="M12 3 2.8 20h18.4L12 3Z" /><path d="M12 9v5M12 17h.01" /></>,
-    chevron: <path d="m9 18 6-6-6-6" />,
-    arrow: <path d="m5 12 6-6m-6 6 6 6M5 12h14" />,
-  }
-  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
-}
+// Pause between backend steps so each stage stays readable; every step is a real API call.
+const STEP_DELAY_MS = 700
 
-const nav: [IconName, string, string][] = [
-  ['grid', 'Overview', '#'], ['scan', 'Security Scan', '/security-scan'], ['result', 'Scan Results', '/scan-results'],
-  ['logs', 'Validation Logs', '#'], ['history', 'History', '#'], ['settings', 'Settings', '#'],
-]
-
-const stages = [
-  ['Artifact Fetch', '패키지 정보 수집'],
-  ['Static Analysis', '정적 보안 분석'],
-  ['AI Analysis', 'AI 위험 분석'],
-  ['Sandbox Check', '격리 환경 검사'],
-  ['Validator Review', '검증자 판정'],
-  ['Final Decision', '최종 실행 결정'],
-]
-
+const baselineCopy: [string, string] = ['기준 버전을 먼저 검증하고 있습니다.', '기준 버전 mail-mcp@1.0.0을 스캔 · 서명 · 실행해 비교 기준을 만듭니다.']
 const stateCopy: Record<ScanState, [string, string]> = {
   initializing: ['검사 환경을 준비하고 있습니다.', '도구 정보와 분석 정책을 확인하는 중입니다.'],
-  scanning: ['AI 위험 분석', '도구의 선언된 기능과 실제 동작 패턴을 비교하고 있습니다.'],
-  waiting: ['검증자 판정 대기', '독립 검증자의 분석 결과를 기다리고 있습니다.'],
+  scanning: ['보안 스캔을 진행하고 있습니다.', '정적 분석 · AI 분석 · 샌드박스 검사로 선언된 기능과 실제 동작을 비교합니다.'],
+  waiting: ['검증자 판정 대기', '독립 검증자의 EIP-712 서명을 수집하고 있습니다.'],
   completed: ['검사가 완료되었습니다.', '모든 분석 단계와 검증자 판정이 완료되었습니다.'],
   failed: ['검사를 완료하지 못했습니다.', '분석 환경에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.'],
 }
 
-function Sidebar() {
-  return <aside className="ws-sidebar progress-sidebar">
-    <a className="ws-brand" href="/"><svg viewBox="0 0 28 28"><path d="M3 21 9.5 7l4.5 9 4.5-9L25 21M6 17h16" /></svg><span>MCP<b>SHIELD</b></span></a>
-    <div className="ws-environment"><i /> Demo Environment <Icon name="chevron" /></div>
-    <nav aria-label="Workspace navigation"><small>WORKSPACE</small>
-      {nav.slice(0, 4).map(([icon, label, href]) => <a className={label === 'Security Scan' ? 'active' : ''} href={href} key={label}><Icon name={icon} /><span>{label}</span></a>)}
-      <small>MANAGE</small>{nav.slice(4).map(([icon, label, href]) => <a href={href} key={label}><Icon name={icon} /><span>{label}</span></a>)}
-    </nav>
-    <div className="ws-system"><span><i /> System Operational</span><small>Validators 3 / 3 online</small></div>
-    <div className="ws-profile"><span>MK</span><div><b>Minjun Kim</b><small>Developer workspace</small></div><button aria-label="Profile menu">•••</button></div>
-  </aside>
+function stateOf(session: DemoSession | null, target: Target, failed: boolean): ScanState {
+  if (failed) return 'failed'
+  const plan = PLAN[target]
+  if (!session || session.step < plan.scan) return 'initializing'
+  if (session.step >= plan.total) return 'completed'
+  return session.step >= plan.votes[0] && session.step <= plan.votes[1] ? 'waiting' : 'scanning'
 }
 
-export function ScanProgress({ scanId, tool, version }: { scanId: string; tool: string; version: string }) {
-  const [state, setState] = useState<ScanState>('scanning')
-  const [stage, setStage] = useState(2)
+export function ScanProgress({ sessionId, target }: { sessionId: string | null; target: Target }) {
+  const [session, setSession] = useState<DemoSession | null>(null)
+  const [error, setError] = useState<{ message: string; expired: boolean } | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  const total = PLAN[target].total
 
-  const advance = () => {
-    if (stage < 4) { const next = stage + 1; setStage(next); setState(next === 4 ? 'waiting' : 'scanning') }
-    else { setStage(5); setState('completed') }
-  }
-  const retry = () => { setStage(0); setState('initializing') }
-  const statusFor = (index: number) => state === 'failed' && index === stage ? 'failed' : index < stage ? 'complete' : index === stage ? (state === 'completed' ? 'complete' : 'running') : 'pending'
+  useEffect(() => {
+    if (!sessionId) return
+    let alive = true
+    ;(async () => {
+      let record: ScanRecord | undefined = findRecord(sessionId)
+      try {
+        let current = await getSession(sessionId)
+        const now = new Date().toISOString()
+        record ??= { sessionId, target, status: 'RUNNING', startedAt: current.createdAt, updatedAt: now, baselineFindingCount: null, session: current }
+        if (alive) setSession(current)
+        while (alive && current.step < total) {
+          const [action] = ACTIONS[current.step]
+          await wait(STEP_DELAY_MS)
+          if (!alive) return
+          current = await runAction(sessionId, action)
+          record = { ...record, session: current, updatedAt: new Date().toISOString(), status: current.step < total ? 'RUNNING' : statusOf(current, target), error: undefined }
+          if (action === 'SCAN_SAFE') record.baselineFindingCount = current.findings.length
+          saveRecord(record)
+          if (alive) setSession(current)
+        }
+      } catch (cause) {
+        if (record) saveRecord({ ...record, status: 'FAILED', updatedAt: new Date().toISOString(), error: errorText(cause) })
+        if (alive) setError({ message: errorText(cause), expired: cause instanceof ScanApiError && cause.status === 404 })
+      }
+    })()
+    return () => { alive = false }
+  }, [sessionId, target, total, attempt])
+
+  const state = stateOf(session, target, Boolean(error))
+  const step = session?.step ?? 0
+  const [title, description] = !sessionId ? ['진행 중인 검사가 없습니다.', '보안 검사 화면에서 새 검사를 시작해 주세요.']
+    : state === 'failed' ? [stateCopy.failed[0], error?.message ?? stateCopy.failed[1]]
+    : state === 'initializing' && session ? baselineCopy : stateCopy[state]
+  const statuses = session ? stageStatuses(step, target, Boolean(error)) : STAGES.map((_, index): StageStatus => error && index === 0 ? 'failed' : 'pending')
+  const activeStage = Math.max(0, statuses.findIndex((status) => status === 'running' || status === 'failed'))
+  const doneStages = statuses.filter((status) => status === 'complete').length
+  const task = state === 'completed' ? '모든 단계 완료' : ACTIONS[step]?.[1] ?? '세션 확인'
+  const running = Boolean(sessionId) && state !== 'completed' && state !== 'failed'
   const events = [
-    ['14:32:04', 'Package metadata retrieved', 'complete'],
-    ['14:32:05', 'Artifact integrity checked', 'complete'],
-    ...(stage >= 2 ? [['14:32:07', 'Static analysis completed', 'complete']] : []),
-    ...(state === 'waiting' || state === 'completed' ? [['Pending', 'Validator review requested', 'waiting']] : []),
+    ...(session?.events ?? []).map(({ at, type, detail }) => [clock(at), detail, type, 'complete']),
+    ...(running && session ? [['···', task, ACTIONS[step]?.[0] ?? '', 'waiting']] : []),
   ]
+  const retry = () => { setError(null); setAttempt((value) => value + 1) }
 
   return <div className="workspace progress-workspace">
-    <Sidebar />
+    <Sidebar active="Security Scan" className="progress-sidebar" />
     <main className="ws-main">
-      <header className="ws-topbar"><div className="ws-breadcrumb"><span>MCPShield</span><b>/</b> Security Scan <b>/</b> Scan Progress</div><div className="ws-topbar-actions"><a className="ws-button quiet" href="/security-scan"><Icon name="arrow" /> 검사 화면으로 돌아가기</a><LanguageSwitcher /></div></header>
+      <header className="ws-topbar"><div className="ws-breadcrumb"><span>MCPShield</span><b>/</b> Security Scan <b>/</b> Scan Progress</div><div className="ws-topbar-actions"><Link className="ws-button quiet" href="/security-scan"><Icon name="arrow" /> 검사 화면으로 돌아가기</Link><LanguageSwitcher /></div></header>
       <div className="ws-content progress-content">
-        <div className="progress-heading"><div><div className="live-label"><i /> LIVE SECURITY ANALYSIS <span>DEMO MODE</span></div><h1>보안 검사를 진행하고 있습니다.</h1><p>AI 도구의 위험 요소를 분석하고 검증 결과를 확인하고 있습니다.</p></div><div className="scan-meta"><span><small>MCP TOOL</small><b>{tool}</b></span><span><small>VERSION</small><b>{version}</b></span><span><small>SCAN ID</small><b>{scanId}</b></span><span><small>STATUS</small><b className={state}>{state.toUpperCase()}</b></span></div></div>
+        <div className="progress-heading"><div><div className="live-label"><i /> LIVE SECURITY ANALYSIS <span>LIVE DEMO</span></div><h1>{state === 'completed' ? '보안 검사가 완료되었습니다.' : '보안 검사를 진행하고 있습니다.'}</h1><p>고정된 합성 fixture를 실제 Scanner · 검증자 서명 · Gateway로 검사합니다.</p></div><div className="scan-meta"><span><small>MCP TOOL</small><b>mail-mcp</b></span><span><small>VERSION</small><b>{target}</b></span><span><small>SCAN ID</small><b>{sessionId ? short(sessionId) : '—'}</b></span><span><small>STATUS</small><b className={state}>{state.toUpperCase()}</b></span></div></div>
 
         <section className={`pipeline-panel panel ${state === 'failed' ? 'has-failed' : ''}`}>
-          <div className="pipeline-top"><div><small>STAGE-BASED PROGRESS</small><h2>{stateCopy[state][0]}</h2><p>{stateCopy[state][1]}</p></div><div className="stage-count"><b>{Math.min(stage + 1, 6)}</b><span>/ 6 stages</span></div></div>
-          <div className="stage-progress"><i style={{ width: `${state === 'completed' ? 100 : (stage / 5) * 100}%` }} /></div>
-          <div className="pipeline">{stages.map(([name, korean], index) => <div className={`pipeline-stage ${statusFor(index)}`} key={name}><div className="pipeline-node">{statusFor(index) === 'complete' ? <Icon name="check" /> : statusFor(index) === 'failed' ? <Icon name="alert" /> : <span>{String(index + 1).padStart(2, '0')}</span>}</div><b>{name}</b><small>{korean}</small><em>{statusFor(index) === 'running' ? 'IN PROGRESS' : statusFor(index).toUpperCase()}</em></div>)}</div>
-          <div className="demo-controls"><span>실제 백엔드 연결 없이 단계별 UI를 확인하는 데모입니다.</span><div>{state !== 'failed' && state !== 'completed' && <button className="ws-button quiet fail-demo" onClick={() => setState('failed')}>실패 상태 보기</button>}{state === 'failed' ? <button className="ws-button primary" onClick={retry}>다시 시도</button> : state === 'completed' ? <a className="ws-button primary" href={`/scan-results?scanId=${scanId}`}>검사 결과 확인하기 <span>↗</span></a> : <button className="ws-button primary" onClick={advance}>다음 데모 단계</button>}</div></div>
+          <div className="pipeline-top"><div><small>STAGE-BASED PROGRESS</small><h2>{title}</h2><p>{description}</p></div><div className="stage-count"><b>{Math.min(doneStages + (state === 'completed' ? 0 : 1), 6)}</b><span>/ 6 stages</span></div></div>
+          <div className="stage-progress"><i style={{ width: `${state === 'completed' ? 100 : (step / total) * 100}%` }} /></div>
+          <div className="pipeline">{STAGES.map(([name, korean], index) => <div className={`pipeline-stage ${statuses[index]}`} key={name}><div className="pipeline-node">{statuses[index] === 'complete' ? <Icon name="check" /> : statuses[index] === 'failed' ? <Icon name="alert" /> : <span>{String(index + 1).padStart(2, '0')}</span>}</div><b>{name}</b><small>{korean}</small><em>{statuses[index] === 'running' ? 'IN PROGRESS' : statuses[index].toUpperCase()}</em></div>)}</div>
+          <div className="demo-controls"><span>LOCAL_DEMO 원장을 사용합니다. 테스트넷 트랜잭션이 아닙니다.</span><div>{!sessionId ? <Link className="ws-button primary" href="/security-scan">보안 검사 시작</Link> : state === 'failed' ? (error?.expired ? <Link className="ws-button primary" href="/security-scan">새 검사 시작</Link> : <button className="ws-button primary" onClick={retry}>다시 시도</button>) : state === 'completed' ? <Link className="ws-button primary" href={`/scan-results?session=${sessionId}`}>검사 결과 확인하기 <span>↗</span></Link> : <button className="ws-button primary" disabled>검사 진행 중…</button>}</div></div>
         </section>
 
         <section className="live-grid">
-          <article className="current-analysis panel"><div className="live-panel-head"><div><small>CURRENT ANALYSIS</small><h2>{stateCopy[state][0]}</h2></div><span className={state}><i /> {state}</span></div>
-            <div className="analysis-body"><div className="analysis-orb"><span>{state === 'failed' ? <Icon name="alert" /> : <Icon name="scan" />}</span><i /><i /></div><div className="task-copy"><small>CURRENT TASK</small><h3>{stages[stage][1]}</h3><p>{stateCopy[state][1]}</p><div><span><small>PACKAGE</small><b>{tool}@{version}</b></span><span><small>POLICY</small><b>Standard v3.2</b></span><span><small>ENVIRONMENT</small><b>Isolated sandbox</b></span></div></div></div>
-            <div className="inspection-strip"><span><i /> Manifest inspection</span><span><i /> Permission mapping</span><span className={stage >= 2 ? 'active' : ''}><i /> Behavior analysis</span></div>
+          <article className="current-analysis panel"><div className="live-panel-head"><div><small>CURRENT ANALYSIS</small><h2>{title}</h2></div><span className={state}><i /> {state}</span></div>
+            <div className="analysis-body"><div className="analysis-orb"><span>{state === 'failed' ? <Icon name="alert" /> : <Icon name="scan" />}</span><i /><i /></div><div className="task-copy"><small>CURRENT TASK</small><h3>{state === 'failed' ? STAGES[activeStage][1] : task}</h3><p>{description}</p><div><span><small>PACKAGE</small><b>mail-mcp@{target}</b></span><span><small>POLICY</small><b>Static · AI · Sandbox</b></span><span><small>ENVIRONMENT</small><b>Local sandbox</b></span></div></div></div>
+            <div className="inspection-strip"><span className={statuses[0] === 'complete' ? 'active' : ''}><i /> Manifest inspection</span><span className={statuses[1] === 'complete' ? 'active' : ''}><i /> Permission mapping</span><span className={statuses[3] === 'complete' ? 'active' : ''}><i /> Behavior analysis</span></div>
           </article>
-          <aside className="security-events panel"><div className="live-panel-head"><div><small>SECURITY EVENTS</small><h2>Analysis activity</h2></div><span>{events.length} events</span></div>
-            <div className="event-list">{events.map(([time, title, status], index) => <div className={`event ${status}`} key={`${title}-${index}`}><i>{status === 'complete' ? <Icon name="check" /> : '···'}</i><div><b>{title}</b><small>Demo scan activity</small></div><time>{time}</time></div>)}</div>
-            <div className="events-note"><i /> 이벤트는 데모 단계가 진행될 때만 추가됩니다.</div>
+          <aside className="security-events panel"><div className="live-panel-head"><div><small>SECURITY EVENTS</small><h2>Analysis activity</h2></div><span>{session?.events.length ?? 0} events</span></div>
+            <div className="event-list">{events.map(([time, detail, type, status], index) => <div className={`event ${status}`} key={`${type}-${index}`}><i>{status === 'complete' ? <Icon name="check" /> : '···'}</i><div><b>{detail}</b><small>{type}</small></div><time>{time}</time></div>)}</div>
+            <div className="events-note"><i /> 이벤트는 백엔드 검사 세션에서 받은 실제 기록입니다.</div>
           </aside>
         </section>
       </div>

@@ -141,3 +141,20 @@ body{background:var(--bg)}
 @media(max-width:1200px){.workspace .analysis-grid{grid-template-columns:minmax(0,1fr)}.workspace .metric-row{grid-template-columns:repeat(2,minmax(0,1fr))}.workspace .investigation-detail{grid-template-columns:minmax(210px,.8fr) minmax(0,1fr) minmax(240px,1fr)}}
 @media(max-width:900px){.workspace{grid-template-columns:180px minmax(0,1fr)}.workspace .ws-content{padding-inline:20px}.workspace .metric-row{grid-template-columns:minmax(0,1fr)}.workspace .investigation-detail{display:block}.workspace .finding{grid-template-columns:68px minmax(0,1fr) 20px}.workspace .finding>small{grid-column:2}.workspace .flow-canvas{grid-template-columns:repeat(6,150px);min-width:1020px}.workspace .flow-line{right:55px}.workspace .language-switcher{margin-left:0}}
 @media(max-width:768px){.workspace{grid-template-columns:168px minmax(0,1fr)}.workspace .ws-topbar{padding-inline:16px}.workspace .ws-breadcrumb{max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.workspace .ws-topbar>div:last-child .ws-button{display:none}.workspace .ws-sidebar{padding-inline:10px}.workspace .ws-sidebar nav a{font-size:13px;padding-inline:9px}}
+
+/* Live scan states layered on the Figma design: allowed verdicts, per-validator dots, version select, request errors. */
+.validator-dots i.fail,.mini-validators i.fail{background:#ff5a5a}.validator-dots i.pass,.mini-validators i.pass{background:#7cff88}.validator-dots i.none,.mini-validators i.none{background:#333a34}
+.metric-card.verdict.allowed strong,.metric-card.verdict.allowed svg,.risk-block strong.none{color:#7cff88}
+.decision-block.allowed,.final-decision.allowed{background:linear-gradient(135deg,rgba(40,82,27,.2),transparent)}.decision-block.allowed strong,.final-decision.allowed strong{color:#7cff88}.decision-block.allowed>div span,.final-decision.allowed>div span{color:#7cff88;border-color:#34452e}
+.tool-identity em.none,.severity.low{color:#90bd79;border-color:#34452e}
+.form-grid select{width:100%;height:37px;border:1px solid #2b312c;background:#0a0d0b;color:#cdd2cc;padding:0 11px;font:400 10px 'Sora','IBM Plex Sans KR',sans-serif;outline:none}.form-grid select:focus{border-color:#768e62;box-shadow:0 0 0 2px rgba(198,255,46,.04)}.workspace .form-grid select{height:42px;font-size:14px}
+.form-grid input[readonly]{color:#8f968f}
+.scan-error{margin:12px 20px 0;color:#ff6868;font:400 12px 'IBM Plex Sans KR',sans-serif}
+.ws-button:disabled{opacity:.55;cursor:default}
+a.view-raw,a.result-link{display:flex;align-items:center;justify-content:space-between}
+@media(max-width:1100px){a.result-link{display:none}}
+.metric-card.verdict.neutral strong,.metric-card.verdict.neutral svg{color:#cdd2cc}
+.ws-heading span.danger-text{color:#ff6868}
+.overview-footnote{margin-top:16px;color:#59605a;font:400 12px 'IBM Plex Sans KR',sans-serif}
+.signal-card.none{border-color:#2b3a29;background:#0e130e}.signal-card.none small{color:#7c9a6e}.signal-card.none b{color:#c4d1bf}
+.reason-card.none{background:#0f120f;border-left-color:#7cff88}.reason-card.none small{color:#6e8a66}

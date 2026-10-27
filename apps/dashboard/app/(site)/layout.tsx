@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 // Separate root layout so the Figma design CSS never mixes with the Control Room styles.
 export default function SiteLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="ko">
+    <html lang="ko" data-scroll-behavior="smooth">
       <body><LanguageProvider>{children}</LanguageProvider></body>
     </html>
   );

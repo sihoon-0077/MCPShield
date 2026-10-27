@@ -50,6 +50,53 @@ const pairs: [string, string][] = [
   ['An unauthorized outbound access attempt was detected.', '허용되지 않은 외부 접근 시도가 감지되었습니다.'],
   ['No scan history has been saved yet.', '아직 저장된 검사 기록이 없습니다.'], ['Complete a security scan to view its result here.', '보안 검사를 완료하면 이곳에서 결과 기록을 확인할 수 있습니다.'],
   ['Security scan history for this workspace.', '이 워크스페이스에서 실행한 보안 검사 기록입니다.'],
+  ['Choose a version. The public demo only runs reviewed, fixed fixtures.', '검사할 버전을 선택하세요. 공개 데모는 검토된 고정 fixture만 실행합니다.'],
+  ['Preparing session…', '세션 준비 중…'],
+  ['Results appear once a scan completes.', '검사를 시작하면 결과가 표시됩니다.'],
+  ['Blocked safely before execution.', '실행 전에 안전하게 차단되었습니다.'],
+  ['Only the verified release ran in the Gateway.', '검증된 릴리스만 Gateway에서 실행되었습니다.'],
+  ['No completed scans yet.', '아직 완료된 검사가 없습니다.'],
+  ['Verifying the baseline release first.', '기준 버전을 먼저 검증하고 있습니다.'],
+  ['Scanning, signing and running mail-mcp@1.0.0 to build the comparison baseline.', '기준 버전 mail-mcp@1.0.0을 스캔 · 서명 · 실행해 비교 기준을 만듭니다.'],
+  ['Running the security scan.', '보안 스캔을 진행하고 있습니다.'],
+  ['Static, AI and sandbox checks compare declared capabilities with actual behavior.', '정적 분석 · AI 분석 · 샌드박스 검사로 선언된 기능과 실제 동작을 비교합니다.'],
+  ['Collecting EIP-712 signatures from independent validators.', '독립 검증자의 EIP-712 서명을 수집하고 있습니다.'],
+  ['Security scan complete.', '보안 검사가 완료되었습니다.'],
+  ['Checks a fixed synthetic fixture with the real Scanner, validator signatures and Gateway.', '고정된 합성 fixture를 실제 Scanner · 검증자 서명 · Gateway로 검사합니다.'],
+  ['Uses the LOCAL_DEMO ledger. These are not testnet transactions.', 'LOCAL_DEMO 원장을 사용합니다. 테스트넷 트랜잭션이 아닙니다.'],
+  ['Scan in progress…', '검사 진행 중…'],
+  ['Start new scan', '새 검사 시작'],
+  ['All stages complete', '모든 단계 완료'],
+  ['Events are the records received from the backend scan session.', '이벤트는 백엔드 검사 세션에서 받은 실제 기록입니다.'],
+  ['No scan in progress.', '진행 중인 검사가 없습니다.'],
+  ['Start a new scan from the Security Scan screen.', '보안 검사 화면에서 새 검사를 시작해 주세요.'],
+  ['Awaiting votes', '판정 대기'],
+  ['Execution approved', '실행 승인'],
+  ['No security issues detected.', '탐지된 보안 문제가 없습니다.'],
+  ['Loading scan results.', '검사 결과를 불러오는 중입니다.'],
+  ['No scan results to show.', '표시할 검사 결과가 없습니다.'],
+  ['Complete a security scan to see the result here.', '보안 검사를 완료하면 이곳에서 결과를 확인할 수 있습니다.'],
+  ['Security scans run in this browser.', '이 브라우저에서 실행한 보안 검사 기록입니다.'],
+  ['Loading scan history.', '검사 기록을 불러오는 중입니다.'],
+  ['Running', '실행 중'],
+  ['Failed', '중단됨'],
+  ['No findings', '탐지 없음'],
+  ['Executed in Gateway', 'Gateway 실행됨'],
+  ['Digest & tool surface computed', '다이제스트 · 도구 표면 계산'],
+  ['Digest computed', '다이제스트 계산'],
+  ['No suspicious behavior detected', '의심 동작 없음'],
+  ['validators approved', '검증자 승인'],
+  ['validators recommend blocking', '검증자가 차단 권고'],
+  ['View full scan report', '전체 보고서 보기'],
+  ['HIGHEST SEVERITY', '최고 심각도'],
+  ['RELEASE REGISTRY', '릴리스 레지스트리'],
+  ['Not run', '미실행'],
+  ['Interrupted', '중단'],
+  ['No anomalous behavior', '이상 동작 없음'],
+  ['All checks passed', '모든 검사 통과'],
+  ['All analysis stages passed', '모든 분석 단계 통과'],
+  ['In progress', '분석 중'],
+  ['1.0.1 · candidate', '1.0.1 · 후보'], ['1.0.0 · baseline', '1.0.0 · 기준'], ['LOCAL_DEMO ledger · not a testnet', 'LOCAL_DEMO ledger · 테스트넷 아님'],
 ]
 
 const enToKo = new Map(pairs)
@@ -79,7 +126,7 @@ function translateWorkspace(language: Language) {
   let node = walker.nextNode()
   while (node) {
     const element = node.parentElement
-    if (element && !element.closest('.mono, .log-list, code, pre')) {
+    if (element && !element.closest('.mono, .log-list, code, pre, [data-raw]')) {
       const current = node.textContent || ''
       const translated = translateText(current, language)
       if (translated !== current) node.textContent = translated
