@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { JudgeDemo } from "../../components/judge-demo";
+import { JudgeDemo } from "../../../components/judge-demo";
 
 export const metadata: Metadata = {
   title: "Try MCPShield",

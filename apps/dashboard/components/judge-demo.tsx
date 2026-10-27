@@ -86,7 +86,7 @@ export function JudgeDemo() {
 
   return (
     <main className="judge-shell">
-      <nav className="judge-nav"><a href="/">← Control Room</a><span>MCPShield · Judge Lab</span><b>SYNTHETIC DEMO</b></nav>
+      <nav className="judge-nav"><a href="/dashboard">← Control Room</a><span>MCPShield · Judge Lab</span><b>SYNTHETIC DEMO</b></nav>
       <header className="judge-hero">
         <div><span className="judge-kicker">NO LOGIN · NO WALLET · 15 MIN SESSION</span><h1>직접 깨뜨려 보세요.<br /><em>실행 전에 막습니다.</em></h1><p>고정된 정상·악성 fixture만 사용하는 격리형 체험입니다. 실제 Scanner, EIP-712 데모 서명, Gateway 실행 경로를 단계별로 확인하세요.</p></div>
         <div className="judge-controls">
