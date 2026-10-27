@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 
-type Language = 'KR' | 'EN'
+export type Language = 'KR' | 'EN'
 const LanguageContext = createContext<{ language: Language; setLanguage: (language: Language) => void } | null>(null)
 
 const pairs: [string, string][] = [
@@ -156,6 +156,10 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
     return () => observer.disconnect()
   }, [language])
   return <LanguageContext.Provider value={{ language, setLanguage }}>{children}</LanguageContext.Provider>
+}
+
+export function useLanguage(): Language {
+  return useContext(LanguageContext)?.language ?? 'KR'
 }
 
 export function LanguageSwitcher() {

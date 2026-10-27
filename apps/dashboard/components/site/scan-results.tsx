@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { LanguageSwitcher } from './i18n'
+import { LanguageSwitcher, useLanguage } from './i18n'
+import { localize, localizeEvent } from './backend-text'
 import { Icon, Sidebar } from './workspace'
 import { STAGES, clock, findRecord, getSession, loadHistory, recordFromSession, reportOf, short, stageName, type ScanRecord } from './scan-session'
 
@@ -28,6 +29,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 
 function Report({ record }: { record: ScanRecord }) {
   const { session, sessionId, target } = record
+  const language = useLanguage()
   const report = reportOf(record)
   const { execution, findings, votes, failVotes, release, severity, stages } = report
   const blocked = execution?.decision === 'BLOCK'
@@ -89,7 +91,7 @@ function Report({ record }: { record: ScanRecord }) {
           <div className="report-panel-head"><div><small>SCAN SUBJECT</small><h2>Result details</h2></div></div>
           <div className="tool-identity"><span>M</span><div><b>mail-mcp</b><small>Version {target}</small></div><em className={report.severityLevel ? '' : 'none'}>{report.severityLevel ? `${severity} RISK` : 'NO FINDINGS'}</em></div>
           <dl><div><dt>Scan ID</dt><dd>{sessionId}</dd></div><div><dt>Repository</dt><dd>demo/fixtures/mail-mcp-{target}</dd></div><div><dt>Severity</dt><dd className={report.severityLevel >= 3 ? 'danger-text' : ''}>{severity} · {findings.length} findings</dd></div><div><dt>Validator notes</dt><dd>{votes.length ? `${failVotes || votes.length} of 3 validators marked this release as ${failVotes ? 'unsafe' : 'safe'} (${votes.map((vote) => vote.validator.replace('Demo Validator ', '')).join(', ')}) → ${release?.status}.` : 'No validator signatures yet.'}</dd></div></dl>
-          <div className={`reason-card ${top ? '' : 'none'}`}><small>PRIMARY REASON</small><p>{top?.message ?? '탐지된 보안 문제가 없습니다.'}</p><span>{top ? `Detected during ${stageName(top.stage)}` : 'All analysis stages passed'}</span></div>
+          <div className={`reason-card ${top ? '' : 'none'}`}><small>PRIMARY REASON</small><p>{top ? localize(top.message, language) : '탐지된 보안 문제가 없습니다.'}</p><span>{top ? `Detected during ${stageName(top.stage)}` : 'All analysis stages passed'}</span></div>
           <div className={`final-decision ${execution && !blocked ? 'allowed' : ''}`}><small>EXECUTION DECISION</small><div><span><Icon name={execution && !blocked ? 'check' : 'alert'} /></span><strong>{verdict}</strong></div><p>{blocked ? `Gateway rejected the release before spawn (${execution?.reasonCode}).` : execution ? 'Gateway executed the verified release.' : record.error ?? 'Waiting for the execution decision.'}</p></div>
         </aside>
       </section>
@@ -97,13 +99,13 @@ function Report({ record }: { record: ScanRecord }) {
       <section className="lower-results">
         <article className="findings-panel panel">
           <div className="report-panel-head"><div><small>DETECTED ISSUES</small><h2>Findings</h2></div><button>{findings.length} total <span>↗</span></button></div>
-          <div className="finding-list">{findings.length ? findings.map((finding, index) => <div className="finding" key={`${finding.code}-${finding.stage}-${index}`}><span className={`severity ${finding.severity.toLowerCase()}`}>{finding.severity}</span><div><b>{finding.code}</b><p>{finding.message}</p></div><small>{stageName(finding.stage)}</small><button aria-label={`Open finding ${index + 1}`}><Icon name="chevron" /></button></div>) : <div className="finding"><span className="severity low">NONE</span><div><b>No findings</b><p>Static · AI · Sandbox 검사에서 탐지된 문제가 없습니다.</p></div></div>}</div>
+          <div className="finding-list">{findings.length ? findings.map((finding, index) => <div className="finding" key={`${finding.code}-${finding.stage}-${index}`}><span className={`severity ${finding.severity.toLowerCase()}`}>{finding.severity}</span><div><b>{finding.code}</b><p>{localize(finding.message, language)}</p></div><small>{stageName(finding.stage)}</small><button aria-label={`Open finding ${index + 1}`}><Icon name="chevron" /></button></div>) : <div className="finding"><span className="severity low">NONE</span><div><b>No findings</b><p>Static · AI · Sandbox 검사에서 탐지된 문제가 없습니다.</p></div></div>}</div>
         </article>
         <article className="evidence-panel panel" id="evidence">
           <div className="report-panel-head"><div><small>TRACE EVIDENCE</small><h2>Evidence & logs</h2></div><span>{timezone()}</span></div>
           <div className="log-list">{session.events.map(({ at, type, detail }, index) => {
             const [level, rowClass, spanClass] = logLevel(type, detail)
-            return <div className={rowClass} key={`${at}-${index}`}><time>{clock(at)}</time><span className={spanClass}>{level}</span><p>{detail} <b>{type}</b></p></div>
+            return <div className={rowClass} key={`${at}-${index}`}><time>{clock(at)}</time><span className={spanClass}>{level}</span><p>{localizeEvent(detail, language)} <b>{type}</b></p></div>
           })}</div>
           <a className="view-raw" href={`/api/judge/sessions/${sessionId}`} target="_blank" rel="noreferrer">View raw validation logs <span>↗</span></a>
         </article>

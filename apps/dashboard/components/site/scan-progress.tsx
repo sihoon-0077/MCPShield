@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { LanguageSwitcher } from './i18n'
+import { LanguageSwitcher, useLanguage } from './i18n'
+import { localizeEvent } from './backend-text'
 import { Icon, Sidebar } from './workspace'
 import { ACTIONS, PLAN, STAGES, ScanApiError, clock, errorText, findRecord, getSession, runAction, saveRecord, short, stageStatuses, statusOf, wait, type DemoSession, type ScanRecord, type StageStatus, type Target } from './scan-session'
 
@@ -35,6 +36,7 @@ export function ScanProgress({ sessionId, target }: { sessionId: string | null; 
   const [error, setError] = useState<{ message: string; expired: boolean } | null>(null)
   const [attempt, setAttempt] = useState(0)
   const [shown, setShown] = useState(0)
+  const language = useLanguage()
   const shownRef = useRef(0)
   const total = PLAN[target].total
   const step = session?.step ?? 0
@@ -91,7 +93,7 @@ export function ScanProgress({ sessionId, target }: { sessionId: string | null; 
   const task = error ? STAGES[active][1] : finished ? '모든 단계 완료' : shown < realDone ? STAGES[active][1] : ACTIONS[step]?.[1] ?? STAGES[active][1]
   const running = Boolean(sessionId) && state !== 'completed' && state !== 'failed'
   const events = [
-    ...(session?.events ?? []).map(({ at, type, detail }) => [clock(at), detail, type, 'complete']),
+    ...(session?.events ?? []).map(({ at, type, detail }) => [clock(at), localizeEvent(detail, language), type, 'complete']),
     ...(running && session ? [['···', task, ACTIONS[step]?.[0] ?? '', 'waiting']] : []),
   ]
   const retry = () => { setError(null); setAttempt((value) => value + 1) }

@@ -1,7 +1,8 @@
 'use client'
 
 import { useState } from 'react'
-import { LanguageSwitcher } from './i18n'
+import { LanguageSwitcher, useLanguage } from './i18n'
+import { localize } from './backend-text'
 import { Icon, Sidebar } from './workspace'
 import { mockSnapshot, unavailableSnapshot } from '../../lib/demo-data'
 import type { Snapshot, Source } from '../../lib/types'
@@ -13,6 +14,7 @@ const eventLevel = (level: string): [string, string] => level === 'CRITICAL' ? [
 
 // Same MOCK / LIVE / REPLAY source rules as the original Control Room: LIVE falls back to an explicitly labeled REPLAY.
 export function Overview() {
+  const language = useLanguage()
   const [snapshot, setSnapshot] = useState<Snapshot>(mockSnapshot)
   const [loading, setLoading] = useState(false)
   const [notice, setNotice] = useState('Mock mode uses deterministic, local demo data.')
@@ -105,14 +107,14 @@ export function Overview() {
           <article className="findings-panel panel">
             <div className="report-panel-head"><div><small>SCAN PIPELINE</small><h2>Static · AI · Sandbox</h2></div></div>
             <div className="finding-list" data-raw>
-              {snapshot.pipeline.map((item) => <div className="finding" key={item.stage}><span className={`severity ${pipelineTone(item.status)}`}>{item.status}</span><div><b>{item.stage}</b><p>{item.detail}</p></div></div>)}
+              {snapshot.pipeline.map((item) => <div className="finding" key={item.stage}><span className={`severity ${pipelineTone(item.status)}`}>{item.status}</span><div><b>{item.stage}</b><p>{localize(item.detail, language)}</p></div></div>)}
               {snapshot.pipeline.length === 0 && <div className="finding"><span className="severity low">NONE</span><div><b>No scan pipeline evidence is available.</b></div></div>}
             </div>
           </article>
           <article className="evidence-panel panel">
             <div className="report-panel-head"><div><small>SANDBOX TIMELINE</small><h2>Runtime events</h2></div><span>{snapshot.sandboxEvents.length} events</span></div>
             <div className="log-list">
-              {snapshot.sandboxEvents.map((event) => { const [row, span] = eventLevel(event.level); return <div className={row} key={`${event.time}-${event.type}`}><time>{event.time}</time><span className={span}>{event.level}</span><p>{event.detail} <b>{event.type}</b></p></div> })}
+              {snapshot.sandboxEvents.map((event) => { const [row, span] = eventLevel(event.level); return <div className={row} key={`${event.time}-${event.type}`}><time>{event.time}</time><span className={span}>{event.level}</span><p>{localize(event.detail, language)} <b>{event.type}</b></p></div> })}
               {snapshot.sandboxEvents.length === 0 && <div><time>—</time><span /><p>No sandbox events are available from this source.</p></div>}
             </div>
           </article>

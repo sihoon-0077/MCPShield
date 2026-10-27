@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { LanguageSwitcher } from './i18n'
+import { LanguageSwitcher, useLanguage } from './i18n'
+import { localize } from './backend-text'
 import { Icon, Sidebar } from './workspace'
 import { PLAN, STAGES, ago, createSession, errorText, loadHistory, reportOf, saveRecord, severityClass, short, type ScanRecord, type ScanStatus, type Target } from './scan-session'
 
@@ -37,6 +38,7 @@ export function ScanTable({ records }: { records: ScanRecord[] }) {
 
 export function SecurityScan() {
   const router = useRouter()
+  const language = useLanguage()
   const [target, setTarget] = useState<Target>('1.0.1')
   const [history, setHistory] = useState<ScanRecord[]>([])
   const [starting, setStarting] = useState(false)
@@ -93,7 +95,7 @@ export function SecurityScan() {
           <aside className="result-summary panel">
             <div className="panel-head"><div><span className="panel-index">03</span><h2>Result summary</h2></div></div>
             <div className="risk-block"><small>RISK LEVEL</small><strong className={report?.severityLevel ? '' : 'none'}>{report ? report.severity : '—'}</strong><span>{report?.findings.length ?? 0} <i>findings</i></span><div><b style={{ width: `${(report?.severityLevel ?? 0) * 25}%` }} /></div></div>
-            <div className="summary-item"><small>SUSPICIOUS BEHAVIOR</small><p>{report?.findings[0]?.message ?? (report ? 'No suspicious behavior detected' : '검사를 시작하면 결과가 표시됩니다.')}</p>{report?.findings[0] && <span className="danger-tag">{report.findings[0].code}</span>}</div>
+            <div className="summary-item"><small>SUSPICIOUS BEHAVIOR</small><p>{report?.findings[0] ? localize(report.findings[0].message, language) : (report ? 'No suspicious behavior detected' : '검사를 시작하면 결과가 표시됩니다.')}</p>{report?.findings[0] && <span className="danger-tag">{report.findings[0].code}</span>}</div>
             <div className="summary-item"><small>VALIDATOR AGREEMENT</small><p><b>{report ? (report.failVotes || report.votes.length) : 0} / 3</b> {report?.failVotes ? 'validators recommend blocking' : 'validators approved'}</p><div className="validator-dots">{[0, 1, 2].map((index) => <i key={index} className={report?.votes[index] ? (report.votes[index].decision === 'FAIL' ? 'fail' : 'pass') : 'none'} />)}</div></div>
             <div className={`decision-block ${report && !blocked ? 'allowed' : ''}`}><small>FINAL EXECUTION DECISION</small><div><span><Icon name={report && !blocked ? 'check' : 'alert'} /></span><strong>{report ? (blocked ? 'BLOCKED' : 'ALLOWED') : 'WAITING'}</strong></div><p>{report ? (blocked ? '실행 전에 안전하게 차단되었습니다.' : '검증된 릴리스만 Gateway에서 실행되었습니다.') : '아직 완료된 검사가 없습니다.'}</p></div>
             {latest && <Link className="result-link" href={`/scan-results?session=${latest.sessionId}`}>View full scan report <span>↗</span></Link>}
