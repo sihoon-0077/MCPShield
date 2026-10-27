@@ -158,3 +158,5 @@ a.view-raw,a.result-link{display:flex;align-items:center;justify-content:space-b
 .overview-footnote{margin-top:16px;color:#59605a;font:400 12px 'IBM Plex Sans KR',sans-serif}
 .signal-card.none{border-color:#2b3a29;background:#0e130e}.signal-card.none small{color:#7c9a6e}.signal-card.none b{color:#c4d1bf}
 .reason-card.none{background:#0f120f;border-left-color:#7cff88}.reason-card.none small{color:#6e8a66}
+/* Stage-by-stage reveal on /scan-progress: the active box, check and bar ease into place. */
+.stage-progress i{transition:width .6s ease}.pipeline-stage,.pipeline-node,.pipeline-stage em{transition:border-color .35s ease,background-color .35s ease,color .35s ease,box-shadow .35s ease}

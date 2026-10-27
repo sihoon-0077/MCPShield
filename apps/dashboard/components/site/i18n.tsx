@@ -58,8 +58,6 @@ const pairs: [string, string][] = [
   ['No completed scans yet.', '아직 완료된 검사가 없습니다.'],
   ['Verifying the baseline release first.', '기준 버전을 먼저 검증하고 있습니다.'],
   ['Scanning, signing and running mail-mcp@1.0.0 to build the comparison baseline.', '기준 버전 mail-mcp@1.0.0을 스캔 · 서명 · 실행해 비교 기준을 만듭니다.'],
-  ['Running the security scan.', '보안 스캔을 진행하고 있습니다.'],
-  ['Static, AI and sandbox checks compare declared capabilities with actual behavior.', '정적 분석 · AI 분석 · 샌드박스 검사로 선언된 기능과 실제 동작을 비교합니다.'],
   ['Collecting EIP-712 signatures from independent validators.', '독립 검증자의 EIP-712 서명을 수집하고 있습니다.'],
   ['Security scan complete.', '보안 검사가 완료되었습니다.'],
   ['Checks a fixed synthetic fixture with the real Scanner, validator signatures and Gateway.', '고정된 합성 fixture를 실제 Scanner · 검증자 서명 · Gateway로 검사합니다.'],
@@ -97,6 +95,13 @@ const pairs: [string, string][] = [
   ['All analysis stages passed', '모든 분석 단계 통과'],
   ['In progress', '분석 중'],
   ['1.0.1 · candidate', '1.0.1 · 후보'], ['1.0.0 · baseline', '1.0.0 · 기준'], ['LOCAL_DEMO ledger · not a testnet', 'LOCAL_DEMO ledger · 테스트넷 아님'], ['Operations console', '운영 콘솔'],
+  ['Fetching the artifact.', '아티팩트를 수집하고 있습니다.'],
+  ['Fetching the package and computing its artifact digest and tool surface.', '패키지를 가져와 artifact digest와 tool surface를 계산합니다.'],
+  ['Running static analysis.', '정적 분석을 진행하고 있습니다.'],
+  ['Looking for sensitive file reads, undeclared network access and tool surface changes in the code.', '민감 파일 접근 · 선언되지 않은 네트워크 · 도구 표면 변경을 코드에서 찾습니다.'],
+  ['Running the sandbox check.', '샌드박스 검사를 진행하고 있습니다.'],
+  ['Running it in isolation to watch for canary leaks and outbound connections.', '격리 환경에서 실행해 canary 유출과 외부 연결을 관찰합니다.'],
+  ['The Gateway allows or blocks execution based on the verification result.', 'Gateway가 검증 결과로 실행 허용 또는 차단을 결정합니다.'],
 ]
 
 const enToKo = new Map(pairs)
