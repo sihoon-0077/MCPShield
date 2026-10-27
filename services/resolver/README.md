@@ -108,8 +108,8 @@ the official npm tarball SRI. Candidate input is never present during this
 network-enabled trusted builder build. CI must vulnerability-scan the resulting
 builder ID before approving it; no clean vulnerability result is implied here.
 The toolchain additionally replaces npm's vulnerable bundled brace-expansion,
-ip-address, tar and undici with SRI-verified 5.0.11, 10.3.1, 7.5.22 and 6.28.1 archives. Only native
-tar extraction runs for these four replacements: no dependency solver, lifecycle
+http-cache-semantics, ip-address, tar and undici with SRI-verified 5.0.11, 4.3.0, 10.3.1, 7.5.22 and 6.29.1 archives. Only native
+tar extraction runs for these five replacements: no dependency solver, lifecycle
 script or dev/audit install. The patch-set label and installed versions are checked
 before candidate preparation; an unpatched npm 12.0.2 image is refused.
 

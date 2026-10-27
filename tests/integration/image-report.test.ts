@@ -36,6 +36,9 @@ test('runtime builder scans require the trusted global toolchain rather than rel
   assert.equal(checkImageReport(builder, imageId, revision, 'runtime-builder').highCritical, 0);
   for (const Severity of ['HIGH', 'CRITICAL']) assert.throws(() => checkImageReport({ ...builder,
     Results: [...builder.Results, { Vulnerabilities: [{ Severity }] }] }, imageId, revision, 'runtime-builder'), /vulnerability gate/);
+  assert.throws(() => checkImageReport({ ...builder, Results: [...builder.Results, { Target: 'Node.js', Vulnerabilities: [{ Severity: 'HIGH',
+    VulnerabilityID: 'CVE-2026-0001', PkgName: 'tar', InstalledVersion: '7.5.22', FixedVersion: '7.5.23', PkgPath: 'usr/local/lib/node_modules/npm/node_modules/tar/package.json' }] }] },
+  imageId, revision, 'runtime-builder'), /failed: 1 \(HIGH CVE-2026-0001 tar@7\.5\.22 fixed=7\.5\.23 at usr\/local\/lib\/node_modules\/npm\/node_modules\/tar\/package\.json\)/);
   assert.throws(() => checkImageReport(builder, imageId, revision), /application dependency coverage/);
   npmPackage.Version = '0.0.0';
   assert.throws(() => checkImageReport(builder, imageId, revision, 'runtime-builder'), /Wrong trusted npm/);
