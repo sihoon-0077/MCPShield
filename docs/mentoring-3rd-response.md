@@ -2,15 +2,15 @@
 
 | 항목 | 내용 |
 |---|---|
-| 작성일 | 2026-10-26 |
-| 작업 브랜치 | `capstone/adr-008-validator-evidence` ([PR #3](https://github.com/sihoon-0077/MCPShield/pull/3) `capstone/poc-tests-ci-green` 위에 쌓음) |
+| 작성일 | 2026-10-26 (10-27: Gemini 3.5 Flash-Lite 결과 추가) |
+| 작업 브랜치 | `capstone/adr-008-validator-evidence` ([PR #4](https://github.com/sihoon-0077/MCPShield/pull/4), [PR #3](https://github.com/sihoon-0077/MCPShield/pull/3) `capstone/poc-tests-ci-green` 위에 쌓음) |
 | 이 문서의 역할 | 3차 의견에서 꼭 보여 달라고 하신 세 가지를 무엇으로 했는지, 설치 없이 어디서 확인하는지 정리 |
 
 **요약.** 세 가지 모두 실제 Base Sepolia 체인과 실제 모델 호출로 돌렸습니다.
 
 - **① 승인·폐기·두 회사 차단:** 아래 거래 10건과 체인만 읽는 화면으로 확인할 수 있습니다.
 - **③ 검증자 독립 검사·자기 증거 서명·반대표 기록:** 이를 위해 새 컨트랙트 ReleaseRegistryV3([ADR-008](adr-008-independent-evidence-and-dissent.md))를 만들어 배포한 뒤, 그 위에서 거래를 만들었습니다.
-- **② AI 비교:** 고정 40개 표본에서 로컬 소형 모델 두 개는 탐지를 거의 더하지 못했습니다. 이 결과를 그대로 보고합니다. 지금은 무료 Gemini 두 모델(2.5 Flash, 3.5 Flash)로 같은 표본을 다시 돌리는 중이고, 결과는 다음 커밋으로 더합니다.
+- **② AI 비교:** 고정 40개 표본으로 실제 모델을 호출했습니다. 로컬 소형 모델 두 개는 탐지를 거의 더하지 못했습니다. 무료 Gemini 3.5 Flash-Lite는 규칙을 통과한 정상을 한 번도 의심하지 않았고(47회 중 0회), 규칙이 놓친 공격은 성공한 7회 중 4회 의심했습니다. 다만 120회 중 42회가 응답 형식 오류였습니다. 두 결과 모두 그대로 보고합니다. Gemini 2.5 Flash와 3.5 Flash는 하루 20회 한도 때문에 나눠 돌리는 중입니다.
 
 ---
 
@@ -74,16 +74,18 @@ Windows PowerShell에서는 `Get-FileHash -Algorithm SHA256 benchmarks\results\b
 
 ## 4. 고정 40개 표본 평가
 
-- [결과 요약](../benchmarks/results/eval40-2026-10-26/summary.md)
+- 로컬 모델: [결과 요약](../benchmarks/results/eval40-2026-10-26/summary.md), [원자료](../benchmarks/results/eval40-2026-10-26/results.json)
+- Gemini 3.5 Flash-Lite: [결과 요약](../benchmarks/results/eval40-gemini-3.5-flash-lite-2026-10-27/summary.md), [원자료](../benchmarks/results/eval40-gemini-3.5-flash-lite-2026-10-27/results.json)
 - [표본·정답](../benchmarks/eval40/)
-- [원자료](../benchmarks/results/eval40-2026-10-26/results.json)
 
 평가 조건:
 
 - **표본:** 정상 20개(어려운 정상 10개 포함)와 공격 20개입니다. 해시로 고정했습니다(`samples.lock.json`).
 - **비교군 5개:** 정적 규칙만, AI만, 샌드박스만, 정적+샌드박스, 전체입니다.
 - **판정 규칙:** V3 검증자와 같습니다. 규칙 위반이 확정되면 FAIL, AI의 HIGH 이상 의심이나 검사 미완료는 ABSTAIN입니다.
-- **AI:** 로컬 모델 2개(qwen2.5-coder 7B, gemma4 e2b)로 표본 40개를 각 3회씩, 실제 호출 240회를 했습니다.
+- **AI:** 로컬 모델 2개(qwen2.5-coder 7B, gemma4 e2b)로 표본 40개를 각 3회씩, 실제 호출 240회를 했습니다(2026-10-26). 무료 Gemini 3.5 Flash-Lite로도 40개를 3회씩 검사했습니다(2026-10-27, 검사 120회, API 요청 143회, 한도 초과·인증 오류 0회).
+
+### 로컬 모델 2개 (2026-10-26)
 
 | 결과 | 수치 |
 |---|---|
@@ -94,8 +96,23 @@ Windows PowerShell에서는 `Get-FileHash -Algorithm SHA256 benchmarks\results\b
 | 성공한 AI 호출 중, 규칙을 통과한 정상에서 AI가 잘못 의심한 경우 | 43회 중 2회 |
 | AI 실패를 보류로 처리할 때 사람 검토로 가는 정상 업데이트 | 120회 중 67회 (56%) |
 
-- **결론:** 이 소형 로컬 모델로는 "AI가 규칙이 놓친 공격을 잡는다"고 말할 수 없습니다. 그래서 발표에서 이 주장은 빼고, 무료 Gemini 2.5 Flash와 3.5 Flash로 같은 표본을 다시 돌려 판단합니다.
-- **재실행 진행 중:** 연결용 중계기([ai-adapter.mjs](../benchmarks/eval40/ai-adapter.mjs))로 2026-10-26에 시작했습니다. Gemini 무료 한도가 모델당 하루 20회라 여러 날에 나눠 돌리고, 한도 때문에 생긴 실패는 성능 수에서 뺀 뒤 다음 날 다시 돌립니다.
+### 무료 Gemini 3.5 Flash-Lite (2026-10-27)
+
+| 결과 | 수치 |
+|---|---|
+| AI 응답 형식 오류 | 120회 중 42회 (정상 9회, 공격 33회) |
+| 성공한 AI 실행 중, 규칙이 놓친 공격 9개에서 AI가 HIGH 이상 의심을 낸 경우 | 7회 중 4회 (m05, m08, m10) |
+| 성공한 AI 실행 중, 규칙을 통과한 정상에서 AI가 잘못 의심한 경우 | 47회 중 0회 |
+| 규칙+AI에서 통과한 공격 (AI 오류는 보류로 셈) | 60회 중 3회, 모두 m07 (규칙만이면 27회) |
+| 규칙+AI에서 사람 검토로 가는 정상 (AI 오류는 보류로 셈) | 60회 중 7회 (12%), 모두 AI 오류 |
+| 3회 반복 결과가 모두 같은 표본 | 40개 중 29개 |
+
+- **줄어든 공격의 대부분은 AI 오류를 보류로 처리한 결과입니다.** 통과한 공격이 27회에서 3회로 줄었지만, 그중 20회는 AI가 잡은 것이 아니라 AI 오류가 보류로 처리된 것입니다. AI가 실제로 의심을 낸 것은 4회입니다.
+- **규칙과 AI가 서로 다른 공격을 잡습니다.** m11(자식 프로세스 실행)과 m17(설치 스크립트)은 AI가 3회 모두 놓쳤지만 규칙이 FAIL로 잡았습니다. 반대로 m05, m08, m10은 규칙이 놓쳤고 AI가 의심했습니다.
+- **형식 오류는 공격 표본에 몰렸습니다(42회 중 33회).** 원인은 아직 확인하지 못했습니다. 고정 표본을 보고 프롬프트를 고치면 결과가 유리해지므로, 고친다면 새 표본으로 따로 확인합니다.
+
+- **결론:** 소형 로컬 모델로는 "AI가 규칙이 놓친 공격을 잡는다"고 말할 수 없습니다. Gemini 3.5 Flash-Lite는 오탐 없이 일부를 의심했지만 표본이 작고 형식 오류가 많아, 이것도 탐지력 주장으로 쓰지 않습니다. 발표에서는 "AI 의심은 보류 신호로만 쓰고, AI가 실패해도 통과시키지 않는다"를 이 결과와 함께 보입니다.
+- **Gemini 2.5 Flash·3.5 Flash 진행 중:** 연결용 중계기([ai-adapter.mjs](../benchmarks/eval40/ai-adapter.mjs))로 2026-10-26에 시작했습니다. 무료 한도가 모델당 하루 20회라 여러 날에 나눠 돌리고, 한도 때문에 생긴 실패는 성능 수에서 뺀 뒤 다음 날 다시 돌립니다. 3.5 Flash-Lite는 한도에 걸리지 않아 하루에 끝냈습니다.
 - **GPT를 뺀 이유:** 무료로 GPT를 쓰려던 GitHub Models가 2026-07-30에 종료되었습니다.
 - **MCPTox:** 외부 공개 공격 485건 결과는 이번 표와 섞지 않습니다. 기존 결과(정적 메타데이터 규칙 탐지율 25.98%)로 따로 보고합니다.
 
@@ -113,21 +130,22 @@ npm run start --workspace @mcpshield/dashboard -- -p 3100
 
 - **컨트랙트 테스트**(V3 19개 포함, 로컬 EVM): `npm run test:contracts`
 - **Gateway 테스트:** `npm run test:gateway`
-- **40개 평가 숫자 다시 계산**(AI 호출 없이, 저장된 결과로): `node --import tsx benchmarks/eval40/run.mjs --append benchmarks/results/eval40-2026-10-26/results.json --repeats 0 --out ./eval40-check`
+- **40개 평가 숫자 다시 계산**(AI 호출 없이, 저장된 결과로): `node --import tsx benchmarks/eval40/run.mjs --append benchmarks/results/eval40-2026-10-26/results.json --repeats 0 --out ./eval40-check`. Gemini 결과는 경로만 `benchmarks/results/eval40-gemini-3.5-flash-lite-2026-10-27/results.json`으로 바꿉니다.
 
 ## 3차 의견별 반영표
 
 | 의견 | 한 일 | 상태 |
 |---|---|---|
 | ① Base Sepolia에서 승인·폐기·두 회사 차단을 거래 링크로 | V3를 배포하고 거래 10건을 만들었습니다. 두 회사 Gateway가 체인만 읽고 1.0.0은 허용, 1.0.1은 차단합니다. | 완료 |
-| ② 고정 40개 표본, 실제 AI 호출, AI 있음/없음 비교, 반복 실행, MCPTox는 따로 | 비교군 5개, 로컬 모델 2개를 각 3회 반복했습니다. MCPTox는 따로 적었습니다. | 로컬 모델 완료. 무료 Gemini 두 모델 재실행 진행 중(하루 20회 한도). 정답의 2인 검토 대기 |
+| ② 고정 40개 표본, 실제 AI 호출, AI 있음/없음 비교, 반복 실행, MCPTox는 따로 | 비교군 5개, 로컬 모델 2개와 무료 Gemini 3.5 Flash-Lite를 각 3회 반복했습니다. MCPTox는 따로 적었습니다. | 로컬 모델 2개, Gemini 3.5 Flash-Lite 완료. Gemini 2.5 Flash·3.5 Flash 진행 중(하루 20회 한도). 정답의 2인 검토 대기 |
 | ③ 검증자 독립 검사, 자기 증거 해시 서명, FAIL·ABSTAIN 반대 기록, 배포 전에 반영 | ReleaseRegistryV3를 배포 전에 만들었습니다. 표마다 검증자 자신의 `evidenceHash`를 서명하고, 결정 뒤에 온 표도 기록합니다. V3 검증자 앱은 자기 사본을 직접 검사해 자기 증거 파일을 만듭니다. | 완료 (검증자 키 3개는 팀이 운영) |
 | 갈린 표는 사람 검토로 | 3표가 모였는데 2표 합의가 없으면 SPLIT으로 둡니다. 상태는 UNVERIFIED(실행 차단)이고 `ReviewRequired` 이벤트를 남깁니다. | 완료 |
 | 기능을 더 늘리지 말 것 | 위 세 가지에 필요한 것만 더했습니다. | — |
 
 ## 아직 안 된 것
 
-- 무료 Gemini 두 모델로 40개 평가를 다시 돌리는 일. 2026-10-26에 시작했고, 하루 20회 한도 때문에 며칠에 나눠 돌립니다.
+- Gemini 2.5 Flash와 3.5 Flash로 40개 평가를 마치는 일. 2026-10-26에 시작했고, 하루 20회 한도 때문에 며칠에 나눠 돌립니다.
+- Gemini 3.5 Flash-Lite 응답 형식 오류(42회 중 33회가 공격 표본)의 원인 확인.
 - 표본 정답의 2인 독립 검토([review-sheet.csv](../benchmarks/eval40/review-sheet.csv)).
 - 검증자 독립 검사를 CI의 Docker 샌드박스에서 돌리는 일. 지금은 로컬 프로세스 샌드박스이고, 도구 호출 프로브가 없습니다.
 - 운영사 API와 인덱서의 V3 전환. 지금 V3를 읽는 것은 체인 화면과 Gateway의 체인 판정입니다.
@@ -136,5 +154,5 @@ npm run start --workspace @mcpshield/dashboard -- -p 3100
 ## 의견을 듣고 싶은 세 가지
 
 1. **갈린 표 처리.** 세 검증자가 PASS·FAIL·ABSTAIN으로 갈리면 판정을 내지 않고 사람 검토로 보냅니다. 그동안은 실행을 막습니다(UNVERIFIED). 발표에서 이 정도면 충분한지, 검토 기한이나 담당 같은 절차까지 보여야 하는지 궁금합니다.
-2. **AI의 역할.** 지금 결과로는 AI를 "의심이면 보류(ABSTAIN)" 신호로만 쓰고, FAIL은 규칙·샌드박스의 확정 증거로만 내는 것이 맞다고 봅니다. Gemini 결과가 나와도 이 방향이 맞을지 의견을 듣고 싶습니다.
+2. **AI의 역할.** 지금 결과로는 AI를 "의심이면 보류(ABSTAIN)" 신호로만 쓰고, FAIL은 규칙·샌드박스의 확정 증거로만 내는 것이 맞다고 봅니다. Gemini 3.5 Flash-Lite도 오탐은 없었지만(47회 중 0회) 형식 오류가 120회 중 42회였습니다. 이 방향이 맞을지 의견을 듣고 싶습니다.
 3. **연출한 반대표.** 1.0.0에서 C의 ABSTAIN은 반대표 기록을 보이려고 연출했습니다. 발표에서 연출이라고 밝히고 써도 되는지, 아니면 실제로 의견이 갈리는 표본을 만들어 보여야 하는지 궁금합니다.
