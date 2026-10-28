@@ -1,0 +1,141 @@
+{
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "registry": "0xa3F067039A119a06E8ec924b429936a0C7cEF604",
+  "rpc": "https://sepolia.base.org",
+  "steps": [
+    {
+      "label": "publish default policy",
+      "txHash": "0x3d464ad194609212d210c3623ea434975e6f659da22031a009fe041b70723101",
+      "block": 50368835,
+      "url": "https://sepolia.basescan.org/tx/0x3d464ad194609212d210c3623ea434975e6f659da22031a009fe041b70723101"
+    },
+    {
+      "label": "register safe 1.0.0",
+      "txHash": "0xabeef7253bd826417fc901d6f2520004f7b37fb684ed5038ac434098abc050a2",
+      "block": 50368865,
+      "url": "https://sepolia.basescan.org/tx/0xabeef7253bd826417fc901d6f2520004f7b37fb684ed5038ac434098abc050a2"
+    },
+    {
+      "label": "register malicious 1.0.1",
+      "txHash": "0x85feadad0479017fabe045f9acd26d4cc0f2f554dfdec8e9fed2bbb2637e349f",
+      "block": 50368895,
+      "url": "https://sepolia.basescan.org/tx/0x85feadad0479017fabe045f9acd26d4cc0f2f554dfdec8e9fed2bbb2637e349f"
+    },
+    {
+      "label": "validator A PASS 1.0.0",
+      "txHash": "0xc77028ca29e035b517fafe14ef5a1f307952a54fa6462dd8c973053962658d10",
+      "block": 50368945,
+      "url": "https://sepolia.basescan.org/tx/0xc77028ca29e035b517fafe14ef5a1f307952a54fa6462dd8c973053962658d10"
+    },
+    {
+      "label": "validator B PASS 1.0.0",
+      "txHash": "0x6cc3a594d1da153fc4e3593fc41f7acdb42ef8a64e0f8e0d137fe5818fab8c05",
+      "block": 50368978,
+      "url": "https://sepolia.basescan.org/tx/0x6cc3a594d1da153fc4e3593fc41f7acdb42ef8a64e0f8e0d137fe5818fab8c05"
+    },
+    {
+      "label": "validator C ABSTAIN 1.0.0 (scripted dissent for the demo; C's own scan passed)",
+      "txHash": "0x88778028a08be78313ebf1832a13d423a27ec6a030297fe6250dce4d736dcb61",
+      "block": 50369012,
+      "url": "https://sepolia.basescan.org/tx/0x88778028a08be78313ebf1832a13d423a27ec6a030297fe6250dce4d736dcb61"
+    },
+    {
+      "label": "validator C quarantine 1.0.1 directly (CANARY_EXFILTRATION)",
+      "txHash": "0x47c67605f3e5e68921ec4b73d87a929d49c4017fa08a84b0f1a083ebf1f4e84d",
+      "block": 50369061,
+      "url": "https://sepolia.basescan.org/tx/0x47c67605f3e5e68921ec4b73d87a929d49c4017fa08a84b0f1a083ebf1f4e84d"
+    },
+    {
+      "label": "validator A FAIL 1.0.1",
+      "txHash": "0x85b9b7be7e8a4d7af40d6cdfa7891538eef53ad74c4a678bd869d770bc246655",
+      "block": 50369071,
+      "url": "https://sepolia.basescan.org/tx/0x85b9b7be7e8a4d7af40d6cdfa7891538eef53ad74c4a678bd869d770bc246655"
+    },
+    {
+      "label": "validator B FAIL 1.0.1",
+      "txHash": "0xb11b0a314eab3706262b7a1e4e95fb2f9b442593a743183432a67ee4f11b1644",
+      "block": 50369081,
+      "url": "https://sepolia.basescan.org/tx/0xb11b0a314eab3706262b7a1e4e95fb2f9b442593a743183432a67ee4f11b1644"
+    },
+    {
+      "label": "validator C FAIL 1.0.1",
+      "txHash": "0xf0f17d6f8eeddd9e15b0342923e0c24845f79536353fac60dae7bbd6c4e10d78",
+      "block": 50369092,
+      "url": "https://sepolia.basescan.org/tx/0xf0f17d6f8eeddd9e15b0342923e0c24845f79536353fac60dae7bbd6c4e10d78"
+    }
+  ],
+  "policyHash": "0x0b4bcf317fd904da9bc2da3b5a2b0dc89af43027db1e279082ec1b2fe1f9a5ae",
+  "releases": {
+    "safe": {
+      "toolId": "0x44509058a7deadf3a80d93946960bac320691702051fefa72dc450423f1e97b8",
+      "releaseId": "0xbfab4d991ee2f72afe1508c917624b390873a6aab19610e9d246c535e26b4867",
+      "artifactDigest": "0xa345d325671967586298ff058ad4d65a2e65a1a5cb40070289234c58cd77f422",
+      "manifestDigest": "0xee9288414a3067afda9190cb671c93a82b5e52827cb9c7e1efa2b78ab3cfda20",
+      "toolSurfaceDigest": "0xb7014044a72759a20257de22b14714d588f1cda7a68d6a0caa16f1b5d4c0d020",
+      "version": "1.0.0",
+      "fixture": "demo/fixtures/mail-mcp-1.0.0"
+    },
+    "malicious": {
+      "toolId": "0x44509058a7deadf3a80d93946960bac320691702051fefa72dc450423f1e97b8",
+      "releaseId": "0xc50e9e88459094e9e0517b72fa5a5fb1f453cc3932aa07c9711b8bd16ef26a4a",
+      "artifactDigest": "0x861b2161cedf0f1e6552b22b9aeeaaeda7f106437b33094a7e884a85f8eabdab",
+      "manifestDigest": "0x0537627199e03254c3d9f15bc7e62c5a02112d9a4f0008ee29a05111dbf34ced",
+      "toolSurfaceDigest": "0xe6b50801aa384636c2a31efea3ac6277ac5d1d6eb89d038099e068c685afa0d1",
+      "version": "1.0.1",
+      "fixture": "demo/fixtures/mail-mcp-1.0.1"
+    }
+  },
+  "safeWindow": {
+    "validFrom": 1792995650,
+    "validUntil": 1793082050
+  },
+  "maliciousWindow": {
+    "validFrom": 1792995676,
+    "validUntil": 1793082076
+  },
+  "evidenceFiles": {
+    "safe": {
+      "A": {
+        "file": "mail-mcp_1.0.0.validator-A.json",
+        "evidenceHash": "0x88ab863251fcace1b5fe1ee9230f1edf888802285e86dce4d3bdf604c5956e0d"
+      },
+      "B": {
+        "file": "mail-mcp_1.0.0.validator-B.json",
+        "evidenceHash": "0x50d814c3ea60be40ed7ad031940be03b62f071722c336eee923a0f73b8c12946"
+      },
+      "C": {
+        "file": "mail-mcp_1.0.0.validator-C.json",
+        "evidenceHash": "0xe260dce5e4f153eb4ee8e9e2bf35e80cd74225adce08740d8e55ce082eb4083f"
+      }
+    },
+    "malicious": {
+      "A": {
+        "file": "mail-mcp_1.0.1.validator-A.json",
+        "evidenceHash": "0xc536c98728a64945c99f46bf728d71b09c34fa123d02c9ad952af5b3bc95fe6c"
+      },
+      "B": {
+        "file": "mail-mcp_1.0.1.validator-B.json",
+        "evidenceHash": "0x40f92a3c5694bbc043f842820c2213fc98606ef9e0db8e0b7a3af71c30b21e39"
+      },
+      "C": {
+        "file": "mail-mcp_1.0.1.validator-C.json",
+        "evidenceHash": "0xf3ebb3f5a7df8a6946fae14a1a6599cde2962f690b184028d926f4efd29f604c"
+      }
+    }
+  },
+  "final": {
+    "safe": {
+      "status": "VERIFIED",
+      "roundId": "0x4562aa94bfbe38a1cb8d13925569d09ee3ae36a4e73f872b44387050abcd6cad",
+      "approvals": 2,
+      "rejections": 0
+    },
+    "malicious": {
+      "status": "REVOKED",
+      "roundId": "0xfec8c7eb7a802739b2bf8b780006d5ebfb991ecb22f02e4a6f2e06c00e7cf2b7",
+      "approvals": 0,
+      "rejections": 3
+    }
+  }
+}

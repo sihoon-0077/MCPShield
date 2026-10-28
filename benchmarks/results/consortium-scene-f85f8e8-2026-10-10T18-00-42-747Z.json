@@ -1,0 +1,294 @@
+{
+  "schemaVersion": "mcpshield.consortium-scene.v1",
+  "status": "MEASURED",
+  "environment": {
+    "chain": "LOCAL_EVM_GANACHE",
+    "chainId": 1337,
+    "contract": "ReleaseRegistryV2",
+    "scanner": "REPORT_FIXTURE_TEST_DOUBLE",
+    "validators": "SINGLE_INSTITUTION_DEMO",
+    "governance": "SINGLE_INSTITUTION_DEMO",
+    "validatorVerification": "SIGNS_OPERATOR_TEMPLATE_NO_INDEPENDENT_RESCAN",
+    "rpc": "ONE_SHARED_LOCAL_RPC_FOR_BOTH_COMPANIES",
+    "topology": "Ganache, both Control APIs, the operator-endpoint switch and MCP clients share one Node process; Gateways run as child processes",
+    "node": "v24.13.0",
+    "platform": "win32"
+  },
+  "limitations": [
+    "Synthetic REPORT FIXTURE scan: the evidence bundle claims a DOCKER sandbox but no container ran",
+    "Operator outage injected by a loopback switch that destroys sockets",
+    "Operator compromise simulated by an attacker instance holding the operator signing key with an injected falsified chain view",
+    "Validators are three deterministic Ganache keys in one harness signing operator templates (not independent organisations)",
+    "Local instant mining: not Base Sepolia, no real block time or confirmation wait"
+  ],
+  "trust": {
+    "gatewayA": "operator Control API (company-a tenant), pins the operator admission key; does not read the chain itself",
+    "gatewayB": "company B's own Control API, pins company B's admission key; that API reads the same chain itself and never contacts the operator"
+  },
+  "identities": {
+    "safe": {
+      "releaseId": "0xbfab4d991ee2f72afe1508c917624b390873a6aab19610e9d246c535e26b4867",
+      "companyBIndependentMatch": true
+    },
+    "malicious": {
+      "releaseId": "0xc50e9e88459094e9e0517b72fa5a5fb1f453cc3932aa07c9711b8bd16ef26a4a",
+      "companyBIndependentMatch": true
+    }
+  },
+  "scenes": {
+    "approved": {
+      "inspect": {
+        "gatewayA": {
+          "method": "GATEWAY_CHILD_PROCESS_INSPECT_NEVER_SPAWNS",
+          "exitCode": 0,
+          "decision": "ALLOW",
+          "releaseStatus": "VERIFIED",
+          "reasonCode": "RELEASE_VERIFIED",
+          "decisionSource": "API",
+          "gatewayError": null,
+          "gatewayErrorClass": null
+        },
+        "gatewayB": {
+          "method": "GATEWAY_CHILD_PROCESS_INSPECT_NEVER_SPAWNS",
+          "exitCode": 0,
+          "decision": "ALLOW",
+          "releaseStatus": "VERIFIED",
+          "reasonCode": "RELEASE_VERIFIED",
+          "decisionSource": "API",
+          "gatewayError": null,
+          "gatewayErrorClass": null
+        }
+      },
+      "firstToolCall": {
+        "direct": true,
+        "gatewayA": true,
+        "gatewayB": true
+      }
+    },
+    "operatorOutage": {
+      "toolCallDuringOutage": {
+        "gatewayA": {
+          "ok": false,
+          "startedAt": 1791655227705,
+          "at": 1791655227750,
+          "ms": 45.226699999999255,
+          "error": "Connection closed",
+          "gatewayBlocked": "Admission unavailable; strict or non-read-only calls fail closed",
+          "lastAdmission": {
+            "status": "VERIFIED",
+            "reasonCode": "RELEASE_VERIFIED"
+          }
+        },
+        "gatewayB": {
+          "ok": true,
+          "startedAt": 1791655227858,
+          "at": 1791655227923,
+          "ms": 65.16339999999764
+        }
+      },
+      "primedSignedCaches": {
+        "read": {
+          "decision": "ALLOW",
+          "decisionSource": "API",
+          "reasonCode": "RELEASE_VERIFIED",
+          "errorClass": null
+        },
+        "write": {
+          "decision": "ALLOW",
+          "decisionSource": "API",
+          "reasonCode": "RELEASE_VERIFIED",
+          "errorClass": null
+        }
+      },
+      "readWrite": [
+        {
+          "method": "IN_PROCESS_GATEWAY_LIBRARY_getAdmission",
+          "case": "strict + valid signed cache / READ",
+          "decision": "BLOCK",
+          "decisionSource": null,
+          "reasonCode": null,
+          "errorClass": "UNAVAILABLE_FAIL_CLOSED",
+          "error": "Admission unavailable; strict or non-read-only calls fail closed"
+        },
+        {
+          "method": "IN_PROCESS_GATEWAY_LIBRARY_getAdmission",
+          "case": "strict + valid signed cache / WRITE",
+          "decision": "BLOCK",
+          "decisionSource": null,
+          "reasonCode": null,
+          "errorClass": "UNAVAILABLE_FAIL_CLOSED",
+          "error": "Admission unavailable; strict or non-read-only calls fail closed"
+        },
+        {
+          "method": "IN_PROCESS_GATEWAY_LIBRARY_getAdmission",
+          "case": "balanced + valid signed cache / READ",
+          "decision": "ALLOW",
+          "decisionSource": "CACHE",
+          "reasonCode": "RELEASE_VERIFIED",
+          "errorClass": null
+        },
+        {
+          "method": "IN_PROCESS_GATEWAY_LIBRARY_getAdmission",
+          "case": "balanced + valid signed cache / WRITE",
+          "decision": "BLOCK",
+          "decisionSource": null,
+          "reasonCode": null,
+          "errorClass": "UNAVAILABLE_FAIL_CLOSED",
+          "error": "Admission unavailable; strict or non-read-only calls fail closed"
+        },
+        {
+          "method": "IN_PROCESS_GATEWAY_LIBRARY_getAdmission",
+          "case": "balanced + expired cache (clock +31 s) / READ",
+          "decision": "BLOCK",
+          "decisionSource": null,
+          "reasonCode": null,
+          "errorClass": "SIGNED_CACHE_EXPIRED",
+          "error": "Signed admission expired or has an invalid lifetime"
+        }
+      ]
+    },
+    "revoked": {
+      "chainRevoked": true,
+      "gatewayA": {
+        "method": "GATEWAY_CHILD_PROCESS_RUN",
+        "exitCode": 3,
+        "decision": "BLOCK",
+        "releaseStatus": "REVOKED",
+        "reasonCode": "RELEASE_REVOKED",
+        "refusedBeforeSpawn": true,
+        "failure": null
+      },
+      "gatewayB": {
+        "method": "GATEWAY_CHILD_PROCESS_RUN",
+        "exitCode": 3,
+        "decision": "BLOCK",
+        "releaseStatus": "REVOKED",
+        "reasonCode": "RELEASE_REVOKED",
+        "refusedBeforeSpawn": true,
+        "failure": null
+      }
+    },
+    "operatorCompromised": {
+      "simulation": "INJECTED_FALSIFIED_CHAIN_VIEW_WITH_OPERATOR_KEY",
+      "chainRevoked": true,
+      "gatewayAFirstSight": {
+        "method": "GATEWAY_CHILD_PROCESS_INSPECT_NEVER_SPAWNS",
+        "exitCode": 0,
+        "decision": "ALLOW",
+        "releaseStatus": "VERIFIED",
+        "reasonCode": "RELEASE_VERIFIED",
+        "decisionSource": "API",
+        "gatewayError": null,
+        "gatewayErrorClass": null
+      },
+      "gatewayAWithJournal": {
+        "method": "GATEWAY_CHILD_PROCESS_INSPECT_NEVER_SPAWNS",
+        "exitCode": 1,
+        "decision": "BLOCK",
+        "releaseStatus": null,
+        "reasonCode": null,
+        "decisionSource": null,
+        "gatewayError": "Release was previously revoked or terminal journal is full; admission fails closed",
+        "gatewayErrorClass": "LOCAL_REVOCATION_JOURNAL"
+      },
+      "gatewayB": {
+        "method": "GATEWAY_CHILD_PROCESS_INSPECT_NEVER_SPAWNS",
+        "exitCode": 0,
+        "decision": "BLOCK",
+        "releaseStatus": "REVOKED",
+        "reasonCode": "RELEASE_REVOKED",
+        "decisionSource": "API",
+        "gatewayError": null,
+        "gatewayErrorClass": null
+      }
+    },
+    "validatorQuarantine": {
+      "txHash": "0xa52276c1f1b43bc906d38dd10e2936a7383c84044b6b05ca13cdedd573eb9406",
+      "block": 105,
+      "sessionsReady": {
+        "gatewayA": true,
+        "gatewayB": true
+      },
+      "pollIntervalMs": 50,
+      "propagation": {
+        "gatewayA": {
+          "refusedNextCall": true,
+          "refusalReason": "MCPShield blocked 0xbfab4d991ee2f72afe1508c917624b390873a6aab19610e9d246c535e26b4867: RELEASE_QUARANTINED (QUARANTINED); report: /v1/releases/0xbfab4d991ee2f72a",
+          "refusalAdmission": {
+            "status": "QUARANTINED",
+            "reasonCode": "RELEASE_QUARANTINED"
+          },
+          "msFromInclusionToRefusal": 126,
+          "msFromSendToRefusal": 251,
+          "lastAllowedStartedBeforeInclusion": true,
+          "unexpectedFailuresBeforeSend": 0
+        },
+        "gatewayB": {
+          "refusedNextCall": true,
+          "refusalReason": "MCPShield blocked 0xbfab4d991ee2f72afe1508c917624b390873a6aab19610e9d246c535e26b4867: RELEASE_QUARANTINED (QUARANTINED); report: /v1/releases/0xbfab4d991ee2f72a",
+          "refusalAdmission": {
+            "status": "QUARANTINED",
+            "reasonCode": "RELEASE_QUARANTINED"
+          },
+          "msFromInclusionToRefusal": 126,
+          "msFromSendToRefusal": 251,
+          "lastAllowedStartedBeforeInclusion": true,
+          "unexpectedFailuresBeforeSend": 0
+        }
+      }
+    }
+  },
+  "measurements": {
+    "toolCallLatencyMs": {
+      "direct": {
+        "n": 50,
+        "p50": 0.24,
+        "p95": 0.45,
+        "max": 0.55
+      },
+      "gatewayA": {
+        "n": 50,
+        "p50": 62.87,
+        "p95": 80.56,
+        "max": 126.36
+      },
+      "gatewayB": {
+        "n": 50,
+        "p50": 61.69,
+        "p95": 79.76,
+        "max": 80.09
+      },
+      "failedCalls": 0,
+      "note": "list_messages tools/call round trip over stdio after warm-up, targets interleaved. Gateway paths include a signed admission check per call (API -> chain read -> Ed25519 sign -> Gateway verify). Gateway A additionally passes the local operator-endpoint switch."
+    },
+    "quarantinePropagationMs": {
+      "gatewayA": 126,
+      "gatewayB": 126,
+      "note": "From receipt observed by the harness to the first refused call of a running session. Local instant-mining lower bound; resolution = poll interval + one call. On a testnet add block time; a negative status is read from the head block, only a new ALLOW waits for the configured confirmations."
+    }
+  },
+  "sourceCommit": "f85f8e8d3e2d686168a393c7bf9f5558643d100f",
+  "worktreeDirty": false,
+  "sourceComparability": "MATCHING_BOUNDARY_SNAPSHOTS",
+  "provenance": {
+    "scope": "GIT_TRACKED_AND_NONIGNORED_UNTRACKED_FILES",
+    "start": {
+      "commit": "f85f8e8d3e2d686168a393c7bf9f5558643d100f",
+      "dirty": false,
+      "statusHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sourceHash": "25b37a9c9977ead5651753f84eab50580bdd6f3ea4a70116aaf9228e65f3a7d4",
+      "files": 425
+    },
+    "end": {
+      "commit": "f85f8e8d3e2d686168a393c7bf9f5558643d100f",
+      "dirty": false,
+      "statusHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sourceHash": "25b37a9c9977ead5651753f84eab50580bdd6f3ea4a70116aaf9228e65f3a7d4",
+      "files": 425
+    }
+  },
+  "measuredAt": "2026-10-10T18:00:42.747Z",
+  "samples": 50,
+  "pollIntervalMs": 50,
+  "allowDirty": false
+}

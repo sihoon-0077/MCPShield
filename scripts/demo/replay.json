@@ -28,8 +28,8 @@
       {
         "releaseId": "mail-mcp@1.0.0",
         "signature": "VALID",
-        "artifactDigest": "sha256:832b83fe46e8682d5b8cfd75bae7d193fa9ca7bd8027c333107b0e4869ae0af8",
-        "toolSurfaceHash": "0xdc62858eaccd6be4610102d4dbd9fc13b3f5dc5ced1ce27befbd1ef8722f1511",
+        "artifactDigest": "sha256:a345d325671967586298ff058ad4d65a2e65a1a5cb40070289234c58cd77f422",
+        "toolSurfaceHash": "0xb7014044a72759a20257de22b14714d588f1cda7a68d6a0caa16f1b5d4c0d020",
         "scanStatus": "PASSED",
         "chainStatus": "VERIFIED",
         "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -37,8 +37,8 @@
       {
         "releaseId": "mail-mcp@1.0.1",
         "signature": "VALID",
-        "artifactDigest": "sha256:186e20e6e68b50c907d48209188d82d5afc0bc9bebdad39efe773da0ee30a336",
-        "toolSurfaceHash": "0xd0bf6289b1a1c64f2b5099332e51dc2684fb8ac8aa31b48d358f1719adfd1922",
+        "artifactDigest": "sha256:861b2161cedf0f1e6552b22b9aeeaaeda7f106437b33094a7e884a85f8eabdab",
+        "toolSurfaceHash": "0xe6b50801aa384636c2a31efea3ac6277ac5d1d6eb89d038099e068c685afa0d1",
         "scanStatus": "FAILED",
         "chainStatus": "REVOKED",
         "txHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
