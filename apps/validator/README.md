@@ -65,3 +65,35 @@ single-key OS processes and local EVM: safe null-baseline PASS reaches approvals
 then A/B produce the two FAIL attestations and both Gateways block. Its AI is a
 loopback contract stub, not measured external-provider quality. See the API README
 for its opt-in flags; portable synthetic evidence is not proof this native run passed.
+
+## V3 independent validator (ADR-008)
+
+`apps/validator/src/v3.ts` is the validator for `ReleaseRegistryV3`. It does not
+sign the operator's report. For one release it:
+
+1. reads the release identity from chain and checks that its **own copy** of the
+   artifact resolves to exactly those digests (`ARTIFACT_IDENTITY_MISMATCH` otherwise);
+2. scans that copy itself and derives its own verdict: a deterministic non-AI
+   HIGH/CRITICAL finding is FAIL; otherwise an AI (non-deterministic) HIGH/CRITICAL
+   suspicion or an incomplete scan is ABSTAIN (ADR-002); everything else is PASS;
+3. writes its own evidence file (report + validator address + identity) and signs
+   the sha256 of that file as `evidenceHash`;
+4. with `--quarantine`, sends a direct emergency quarantine from its own key when
+   its scan has a deterministic CRITICAL sandbox finding.
+
+Disagreeing with other validators is a normal outcome; V3 records the dissent.
+The round window (`VALIDATOR_VALID_FROM`/`VALIDATOR_VALID_UNTIL`) is the one the
+operator announced, so honest validators land in the same round. Scope today:
+local-source artifacts under the default policy. Prepared and OCI profiles still
+use `v2.ts`.
+
+```bash
+VALIDATOR_PRIVATE_KEY=... CONTROL_V2_RPC_URLS=https://sepolia.base.org CONTROL_V2_CHAIN_ID=84532 \
+CONTROL_V3_REGISTRY_ADDRESS=0x... CONTROL_VALIDATOR_POLICY_HASH=0x... VALIDATOR_RELEASE_ID=0x... \
+VALIDATOR_ARTIFACT_DIR=demo/fixtures/mail-mcp-1.0.1 VALIDATOR_BASELINE_DIR=demo/fixtures/mail-mcp-1.0.0 \
+VALIDATOR_VALID_FROM=... VALIDATOR_VALID_UNTIL=... VALIDATOR_EVIDENCE_DIR=data/validator-evidence \
+node --import tsx apps/validator/src/v3.ts --quarantine
+```
+
+`VALIDATOR_RELAYER_PRIVATE_KEY` lets a validator without gas have its signed vote
+relayed; the quarantine is always sent by the validator itself.

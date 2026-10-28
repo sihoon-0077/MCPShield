@@ -1,6 +1,6 @@
 # MCPShield
 
-## 멘토·심사위원께 (2026-10-11 업데이트)
+## 멘토·심사위원께 (2026-10-26 업데이트)
 
 MCPShield는 AI Agent가 쓰는 MCP 서버의 **새 버전마다** 정확한 배포본을 검사하고, 여러 회사가 나눠 맡도록 설계한 검증자 3명 중 2명의 판정(2-of-3)을 블록체인에 기록한 뒤, Gateway가 **도구를 실행하기 직전에** 그 판정을 강제하는 공급망 보안 프로토타입입니다.
 
@@ -9,15 +9,18 @@ MCP 서버 목록 사이트에는 비슷한 이름의 스캐너가 여럿 있습
 
 ### 먼저 보실 곳
 
-1. [1차 멘토링(2026-10) 응답](docs/mentoring-2026-10-response.md) — 받은 의견별로 무엇을 결정·구현했고 무엇이 남았는지 정리했습니다.
-2. [캡스톤 최종 마스터 문서 v2.1](docs/MCPShield_캡스톤_최종_마스터문서_v2.1.md) — 현재 기준 문서입니다. [v2.0](docs/MCPShield_캡스톤_최종_마스터문서_v2.0.md)은 비교용으로 보존합니다.
-3. 팀 결정 기록(ADR)
+1. [3차 멘토링 응답: 직접 확인하는 방법](docs/mentoring-3rd-response.md) — Base Sepolia 거래 링크, 두 회사 허용·차단 화면, 검증자별 증거 해시 대조, 고정 40개 표본 평가 결과를 설치 없이 볼 수 있게 정리했습니다.
+2. [1차 멘토링(2026-10) 응답](docs/mentoring-2026-10-response.md) — 받은 의견별로 무엇을 결정·구현했고 무엇이 남았는지 정리했습니다.
+3. [캡스톤 최종 마스터 문서 v2.1](docs/MCPShield_캡스톤_최종_마스터문서_v2.1.md) — 현재 기준 문서입니다. [v2.0](docs/MCPShield_캡스톤_최종_마스터문서_v2.0.md)은 비교용으로 보존합니다.
+4. 팀 결정 기록(ADR)
    - [ADR-003 검증자 설계: 쓰는 회사가 곧 검증자](docs/adr-003-validator-consortium.md)
    - [ADR-004 블록체인이 필요한 장면](docs/adr-004-blockchain-necessity-scene.md)
    - [ADR-005 최종 데모 경로](docs/adr-005-capstone-demo-path.md)
    - [ADR-006 재검사 정책](docs/adr-006-gateway-recheck-policy.md)
    - [ADR-007 owner 권한 운영](docs/adr-007-registry-owner-governance.md)
-4. 2개 회사 장면 자동 테스트: [`tests/integration/consortium-scene.test.ts`](tests/integration/consortium-scene.test.ts) (하네스: [`consortium-scene.ts`](tests/integration/consortium-scene.ts), `npm run test:backend`에 포함되어 CI 대상, CI 결과는 PR 후 확인)
+   - [ADR-008 검증자별 증거 서명과 반대표 기록](docs/adr-008-independent-evidence-and-dissent.md)
+   - [ADR-009 빠른 체인에서의 Gateway 체인 판정](docs/adr-009-chain-reader-on-fast-chains.md)
+5. 2개 회사 장면 자동 테스트: [`tests/integration/consortium-scene.test.ts`](tests/integration/consortium-scene.test.ts) (하네스: [`consortium-scene.ts`](tests/integration/consortium-scene.ts), `npm run test:backend`에 포함되어 CI 대상, CI 결과는 PR 후 확인)
    - 측정까지 직접 실행: `npm run evaluate:consortium-scene` (기본 표본 50, Windows PowerShell은 `npm.cmd run evaluate:consortium-scene`)
    - 결과 파일: `benchmarks/results/consortium-scene-<커밋 7자리>[-dirty-<소스 해시 8자리>]-<측정 시각>.json`. 작업 트리가 깨끗하지 않거나(`--allow-dirty`를 주면 그 사실을 기록하고 진행) 장면 조건이 하나라도 깨지면 파일을 쓰지 않고, 기존 파일을 덮어쓰지 않습니다.
 
@@ -30,8 +33,8 @@ MCP 서버 목록 사이트에는 비슷한 이름의 스캐너가 여럿 있습
 | 로컬 구현·검증 | 회사 A·B 두 Gateway 장면: 운영사 장애, 악성 업데이트 폐기(두 Gateway 모두 실행 전 거부), 운영사 admission 서명 키 탈취, 검증자 직접 긴급 격리 | Ganache 로컬 EVM(`LOCAL_EVM`)에서 실행합니다. 스캐너는 고정 보고서 대역(`REPORT FIXTURE`)이며 실제 Docker 검사는 이 장면에 포함되지 않습니다. 검증자 3명은 팀이 운영하는 테스트 키로 운영사 템플릿에 서명합니다(결과 표시 `SINGLE_INSTITUTION_DEMO`, `SIGNS_OPERATOR_TEMPLATE_NO_INDEPENDENT_RESCAN`). |
 | 로컬 구현·검증 | 실행 오버헤드 측정: Gateway 유무별 도구 호출 지연(stdio 기준), 긴급 격리 후 각 Gateway 차단까지 시간, 장애 시 읽기·쓰기 동작(5개 경우, 만료 캐시 포함) | 공식 측정(커밋 `f85f8e8`, Windows 개발 PC·Node v24.13.0, 표본 50): 호출 p50 직접 0.24 ms / Gateway A 62.87 ms / Gateway B 61.69 ms, 긴급 격리 후 다음 호출 거부까지 A·B 각 126 ms([결과 JSON](benchmarks/results/consortium-scene-f85f8e8-2026-10-10T18-00-42-747Z.json)). 로컬 체인은 즉시 채굴이라 전파 시간은 하한값입니다. 2-of-3 폐기가 실행 중 세션에 전파되는 시간은 아직 재지 않았습니다. |
 | 다음 단계 | `docker compose`·대시보드를 회사 2개 스택(V2 + 서명 admission)으로 이전 | 현재 Compose는 V1 + 레거시 무서명 admission입니다. |
-| 다음 단계 | Base Sepolia 배포와 실측 | 테스트넷은 블록 시간이 더해지고, 새 승인(ALLOW)에는 확정 대기도 더해집니다. |
-| 다음 단계 | 실제 외부 AI 모델 연결 | 현재는 로컬 대역입니다. |
+| 완료 | Base Sepolia에 ReleaseRegistryV3 배포, 승인·긴급 격리·폐기 거래 10건, 두 회사 Gateway의 체인 직접 판정(1.0.0 허용, 1.0.1 차단) | 검증자 3곳과 관리자 키는 팀이 운영합니다. 운영사 API·인덱서·`docker compose`는 아직 V3로 옮기지 않았습니다([3차 응답](docs/mentoring-3rd-response.md)). |
+| 부분 완료 | 실제 AI 모델 호출: 고정 40개 표본 × (로컬 모델 2개, 무료 Gemini 3.5 Flash-Lite) × 3회 반복 | 소형 로컬 모델은 탐지를 거의 더하지 못했습니다. Gemini 3.5 Flash-Lite는 규칙을 통과한 정상에서 오탐 0회, 규칙이 놓친 공격에서 성공 7회 중 4회 의심, 응답 형식 오류 120회 중 42회입니다(결과 그대로 보고, [3차 응답](docs/mentoring-3rd-response.md)). Gemini 2.5 Flash·3.5 Flash는 하루 20회 한도로 나눠 실행 중입니다. |
 
 ### 보장 범위
 

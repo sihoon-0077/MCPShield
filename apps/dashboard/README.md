@@ -82,3 +82,17 @@ For a disposable synthetic UI preview, run `node --import tsx scripts/demo/contr
 Add `--baseline-ui` to populate **SYNTHETIC_UI_ONLY / UNVERIFIED** source/runtime display records and an opt-in 2.1 policy. This checks browser selection, reset and error handling only: no image, source path, execution proof, model or chain signer is configured, so preparation/scanning must reject. It is not a successful prepared-runtime fixture or native E2E. Use the admin preview token to check explicit none/ID selection, source/policy changes and Korean rejection; use the reader token to confirm mutation controls are absent.
 
 The session-bound health, preparation and receipt sibling panels use distinct stable keys. Reusing only the tenant/role key across these siblings caused duplicate preparation panels during refresh. The AST regression in `forms.test.mts` guards both unique prefixes and tenant/role binding. Browser QA on 2026-10-01 verified one panel after repeated refresh, retained comparison selection, reset on source/policy change, reader restrictions and fresh admin login reset. Synthetic baseline requests were rejected (preparation source identity mismatch / scan execution policy mismatch), with no prepared job or approval; this does not test a successful Docker preparation. Separately, registering the allowlisted `mail-mcp-1.0.0` fixture and submitting its ordinary scan exercised the real API/worker and SSE refresh: `QUEUED` → `COMPLETED / INCONCLUSIVE`, still `UNVERIFIED` without sandbox/chain authority.
+
+## Chain-only ledger (`/ledger`, ADR-008)
+
+`/ledger` is a read-only view of `ReleaseRegistryV3` on Base Sepolia that never asks the
+operator API. A list of transaction hashes (the demo record plus `MCPSHIELD_V3_TX_HASHES`)
+only says where to look: each receipt is fetched from chain, must be a successful call to the
+registry or its policy registry, and only logs emitted by the registry are used. Status,
+rounds and votes come from contract views. Every vote shows the validator's own evidence hash
+and whether it landed after the decision (recorded dissent). Public Base RPCs cap
+`eth_getLogs` at 200 blocks, so the page does not scan history.
+
+The A사/B사 cards run the Gateway's own `directRpcAdmission` against each company's RPC
+(`MCPSHIELD_V3_RPC_A`, `MCPSHIELD_V3_RPC_B`, default `https://sepolia.base.org`). Any read
+failure is shown as a fail-closed block, never as an allow.

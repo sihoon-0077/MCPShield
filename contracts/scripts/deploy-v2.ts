@@ -3,7 +3,10 @@ import { v2RpcRequest } from "../../packages/contracts-sdk/src/transport.js";
 import { pathToFileURL } from "node:url";
 import { compileReleaseRegistry } from "./compile.js";
 
-export async function deployV2(rpcUrl: string, key: string, validators: string[], expectedChainId: number, admin?: string) {
+export type RegistryContract = "ReleaseRegistryV2" | "ReleaseRegistryV3";
+// V3 (ADR-008) shares ValidatorRegistry, PolicyRegistry and the constructor with V2; only the release registry differs.
+export async function deployV2(rpcUrl: string, key: string, validators: string[], expectedChainId: number, admin?: string,
+  registryContract: RegistryContract = "ReleaseRegistryV2") {
   const request = v2RpcRequest(rpcUrl);
   const provider = new JsonRpcProvider(request, undefined, { batchMaxCount: 1 });
   try {
@@ -20,8 +23,8 @@ export async function deployV2(rpcUrl: string, key: string, validators: string[]
     const owner = admin ?? wallet.address;
     const validatorRegistry = await deploy("ValidatorRegistry", [owner, validators]);
     const policyRegistry = await deploy("PolicyRegistry", [owner]);
-    const releaseRegistry = await deploy("ReleaseRegistryV2", [wallet.address, validatorRegistry.address, policyRegistry.address]);
-    return { chainId: expectedChainId, owner, relayer: wallet.address, validatorRegistry, policyRegistry, releaseRegistry,
+    const releaseRegistry = await deploy(registryContract, [wallet.address, validatorRegistry.address, policyRegistry.address]);
+    return { chainId: expectedChainId, registryContract, owner, relayer: wallet.address, validatorRegistry, policyRegistry, releaseRegistry,
       validatorAddresses: validators, governance: admin ? "EXTERNAL_ADMIN" : "SINGLE_INSTITUTION_DEMO", upgradeable: false };
   } finally { provider.destroy(); }
 }
@@ -38,6 +41,7 @@ async function main() {
     } finally { provider.destroy(); }
     return;
   }
-  console.log(JSON.stringify(await deployV2(rpc, DEPLOYER_PRIVATE_KEY, VALIDATOR_ADDRESSES.split(","), Number(CONTROL_V2_CHAIN_ID), process.env.V2_GOVERNANCE_ADMIN)));
+  const registry: RegistryContract = process.argv.includes("--v3") ? "ReleaseRegistryV3" : "ReleaseRegistryV2";
+  console.log(JSON.stringify(await deployV2(rpc, DEPLOYER_PRIVATE_KEY, VALIDATOR_ADDRESSES.split(","), Number(CONTROL_V2_CHAIN_ID), process.env.V2_GOVERNANCE_ADMIN, registry)));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error) => { console.error(error.message); process.exitCode = 1; });

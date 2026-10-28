@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { posix } from 'node:path';
 import ts from 'typescript';
 // @ts-expect-error Pure shared serializer is JavaScript.
@@ -26,11 +26,28 @@ function assertCopiedClosure(copied: Set<string>) {
     assert.ok(copied.has(target), `Dashboard Docker COPY missing ${target} imported by ${path}`);
   }
 }
-test('dashboard image copies the full explicit shared-module import closure', () => {
+function copiedFiles() {
   const dockerfile = readFileSync(new URL('apps/dashboard/Dockerfile', root), 'utf8');
   // These COPY statements are explicit files, not directory globs or cross-stage copies.
-  const copied = new Set(dockerfile.split(/\r?\n/).filter(line => /^COPY (?:services\/|packages\/|apps\/gateway\/src\/)/.test(line))
+  return new Set(dockerfile.split(/\r?\n/).filter(line => /^COPY (?:services\/|packages\/|apps\/gateway\/src\/|deployments\/|benchmarks\/)/.test(line))
     .flatMap(line => line.trim().split(/\s+/).slice(1, -1)));
+}
+function dashboardSources(dir = 'apps/dashboard'): string[] {
+  return readdirSync(new URL(`${dir}/`, root), { withFileTypes: true }).flatMap(entry => {
+    if (entry.isDirectory()) return ['node_modules', '.next', 'test'].includes(entry.name) ? [] : dashboardSources(`${dir}/${entry.name}`);
+    return /\.(?:ts|tsx|mts|mjs)$/.test(entry.name) ? [`${dir}/${entry.name}`] : [];
+  });
+}
+test('dashboard image copies every file outside apps/dashboard that the dashboard source imports', () => {
+  const copied = copiedFiles(), sources = dashboardSources();
+  assert.ok(sources.includes('apps/dashboard/lib/ledger-v3.ts'));
+  for (const path of sources) for (const dependency of imports(path).filter(name => name.startsWith('.'))) {
+    const target = posix.normalize(posix.join(posix.dirname(path), dependency));
+    if (!target.startsWith('apps/dashboard/')) assert.ok(copied.has(target), `Dashboard Docker COPY missing ${target} imported by ${path}`);
+  }
+});
+test('dashboard image copies the full explicit shared-module import closure', () => {
+  const copied = copiedFiles();
   assert.ok(copied.size >= 8);
   assertCopiedClosure(copied);
   for (const omitted of ['scoped-policy.mjs', 'canonical-json.mjs']) {
