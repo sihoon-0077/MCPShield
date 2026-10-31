@@ -69,6 +69,50 @@ test('eval40 adapter: unchanged scanner transport reaches a chat-completions ups
   } finally { await close(server); await close(upstream); }
 });
 
+test('eval40 adapter: a 503 gets spaced retries within the scanner timeout budget; a refused critic call is counted', async () => {
+  const seen = [];
+  let plan = [];
+  const upstream = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    seen.push(Date.now());
+    const step = plan.shift() ?? { status: 200 };
+    if (step.status !== 200) { response.writeHead(step.status).end('high demand'); return; }
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ finish_reason: 'stop',
+      message: { role: 'assistant', content: '{"riskClaims":[],"semanticDiff":{"purposeChanged":false,"dataScopeExpanded":false,"newHiddenObligation":false},"needsHumanReview":false}' } }] }));
+  });
+  const upstreamUrl = await listen(upstream);
+  const token = 'adapter-token-for-test-only';
+  const base = { provider: 'mock', url: `${upstreamUrl}/chat/completions`, model: 'vendor/model-x', minIntervalMs: 0, headers: {} };
+  const { server, stats } = createEvalAiAdapter({ token, keys: { roomy: 'UPSTREAM-SECRET-KEY', tight: 'UPSTREAM-SECRET-KEY' }, upstreams: {
+    roomy: { ...base, overloadRetryMs: [40, 80, 120], retryBudgetMs: 5_000 }, tight: { ...base, overloadRetryMs: [400], retryBudgetMs: 300 } } });
+  const adapterUrl = `${await listen(server)}/v1/responses`;
+  const call = (model, schemaName = 'mcpshield_semantic') => requestAiJson({ provider: 'openai', url: adapterUrl, token, model, prompt: 'synthetic prompt',
+    responseSchema: semanticOutputSchema, schemaName, timeoutMs: 10_000 });
+  try {
+    // Two 503s, then an answer: the caller never sees the overload, and the retries are spaced as configured.
+    plan = [{ status: 503 }, { status: 503 }];
+    await call('roomy');
+    assert.equal(seen.length, 3);
+    assert.ok(seen[1] - seen[0] >= 35 && seen[2] - seen[1] >= 75, `spaced ${seen[1] - seen[0]} / ${seen[2] - seen[1]} ms`);
+    assert.equal(stats.roomy.retries, 2);
+
+    // Retries run out: the 503 comes back, and only a refused critic call counts as criticLost.
+    plan = [{ status: 503 }, { status: 503 }, { status: 503 }, { status: 503 }];
+    await assert.rejects(call('roomy'), /AI_HTTP_503/);
+    assert.equal(seen.length, 7, 'one first attempt and three retries');
+    assert.equal(stats.roomy.criticLost, 0, 'an analyzer refusal is not a lost critic call');
+    plan = [{ status: 503 }, { status: 503 }, { status: 503 }, { status: 503 }];
+    await assert.rejects(call('roomy', 'mcpshield_critic'), /AI_HTTP_503/);
+    assert.equal(stats.roomy.criticLost, 1);
+
+    // A retry that would end past the budget is not started.
+    plan = [{ status: 503 }];
+    await assert.rejects(call('tight'), /AI_HTTP_503/);
+    assert.equal(seen.length, 12);
+    assert.equal(stats.tight.retries, 0);
+  } finally { await close(server); await close(upstream); }
+});
+
 test('eval40 adapter: provider schema relaxation drops keywords, never property names', () => {
   const schema = { type: 'object', additionalProperties: false, required: ['minimum', 'items'], properties: {
     minimum: { type: 'integer', minimum: 1 }, items: { type: 'array', maxItems: 2, items: { type: 'string', maxLength: 5, enum: ['a', 'b'] } } } };

@@ -7,7 +7,9 @@
 // Keys live in MCPSHIELD_SECRETS_DIR, outside the repository and OneDrive: either one env file `eval40.env`
 // (GEMINI_API_KEY=...) or one file per key (gemini.key). They are never
 // logged or returned. Requests need the per-run EVAL40_ADAPTER_TOKEN. Each upstream is paced (one request at a time, minimum interval) so a free tier's
-// per-minute limit is not hit by the evaluation itself; a daily-quota 429 is passed back as HTTP 429.
+// per-minute limit is not hit by the evaluation itself; a daily-quota 429 is passed back as HTTP 429. A 503 ("high demand") is
+// retried a few times, spaced out, while the scanner's per-call timeout still leaves room for the answer. A critic call the
+// provider finally refuses is counted (stats criticLost) so the runner can tell it from the model's own answer.
 //
 //   EVAL40_ADAPTER_TOKEN=... MCPSHIELD_SECRETS_DIR=... node benchmarks/eval40/ai-adapter.mjs [--port 11500]
 import { createServer } from 'node:http';
@@ -35,6 +37,9 @@ export const DEFAULT_UPSTREAMS = {
 };
 const MAX_BODY = 512 * 1024;
 const RATE_HEADERS = /^x-ratelimit-|^retry-after$/i;
+// Waits before each 503 retry, and the time from a request's arrival (pacing included) after which no retry starts:
+// eval40 gives the scanner 120 s per call, so a last attempt still has about 45 s to answer.
+const OVERLOAD_RETRY_MS = [10_000, 20_000, 30_000], RETRY_BUDGET_MS = 75_000;
 
 // Drops schema keywords, never property names: entries of `properties` are walked as schemas, not filtered.
 const stripKeys = (schema, keys) => Array.isArray(schema) ? schema.map((item) => stripKeys(item, keys))
@@ -70,14 +75,15 @@ export function createEvalAiAdapter({ token, upstreams = DEFAULT_UPSTREAMS, keys
   const lanes = new Map(), stats = {};
   const lane = (alias) => { if (!lanes.has(alias)) lanes.set(alias, { last: 0, chain: Promise.resolve() }); return lanes.get(alias); };
   const record = (alias, patch) => {
-    const s = (stats[alias] ??= { requests: 0, ok: 0, http: {}, retries: 0, rateHeaders: {} });
+    const s = (stats[alias] ??= { requests: 0, ok: 0, http: {}, retries: 0, criticLost: 0, rateHeaders: {} });
     for (const [k, v] of Object.entries(patch)) if (k === 'status') s.http[v] = (s.http[v] ?? 0) + 1; else if (k === 'rateHeaders') s.rateHeaders = v; else s[k] += v;
     if (statsFile) { try { writeFileSync(statsFile, `${JSON.stringify(stats, null, 2)}\n`); } catch { /* stats are best effort */ } }
   };
-  async function forward(alias, upstream, chatBody) {
+  async function forward(alias, upstream, chatBody, arrivedAt) {
     const key = keys?.[alias];
     if (!key) return { status: 503 };
-    for (let attempt = 0; attempt < 2; attempt++) {
+    const overload = upstream.overloadRetryMs ?? OVERLOAD_RETRY_MS, budget = upstream.retryBudgetMs ?? RETRY_BUDGET_MS;
+    for (let attempt = 0; ; attempt++) {
       const response = await fetchImpl(upstream.url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(110_000),
         headers: { 'content-type': 'application/json', authorization: `Bearer ${key}`, ...upstream.headers }, body: JSON.stringify(chatBody) });
       const rateHeaders = Object.fromEntries([...response.headers].filter(([name]) => RATE_HEADERS.test(name)));
@@ -85,13 +91,14 @@ export function createEvalAiAdapter({ token, upstreams = DEFAULT_UPSTREAMS, keys
       if (response.ok) { record(alias, { ok: 1 }); return { status: 200, chat: await response.json() }; }
       await response.body?.cancel().catch(() => {});
       const retryAfter = Number(response.headers.get('retry-after'));
-      // One retry for a short per-minute limit or a transient upstream error; a long wait means the daily quota.
-      if (attempt === 0 && (response.status === 429 && Number.isFinite(retryAfter) && retryAfter <= 30 || response.status >= 500)) {
-        record(alias, { retries: 1 }); await sleep(response.status === 429 ? retryAfter * 1000 + 250 : 2000); continue;
-      }
-      return { status: response.status };
+      // A 503 gets spaced retries; a short per-minute 429 or another 5xx gets one; a long 429 wait means the daily quota.
+      const wait = response.status === 503 ? overload[attempt]
+        : attempt > 0 ? undefined
+        : response.status === 429 ? (Number.isFinite(retryAfter) && retryAfter <= 30 ? retryAfter * 1000 + 250 : undefined)
+        : response.status >= 500 ? 2000 : undefined;
+      if (wait === undefined || Date.now() - arrivedAt + wait > budget) return { status: response.status };
+      record(alias, { retries: 1 }); await sleep(wait);
     }
-    return { status: 502 };
   }
   const server = createServer(async (request, response) => {
     const reply = (status, body) => { response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body)); };
@@ -104,14 +111,15 @@ export function createEvalAiAdapter({ token, upstreams = DEFAULT_UPSTREAMS, keys
       const upstream = upstreams[body?.model];
       if (!upstream) return reply(404, { error: 'unknown model alias' });
       const chatBody = toChatCompletions(body, upstream);
-      const l = lane(body.model);
+      const l = lane(body.model), arrivedAt = Date.now();
       // One request at a time per upstream, at least minIntervalMs apart.
       const turn = l.chain.then(async () => {
         const wait = l.last + upstream.minIntervalMs - Date.now(); if (wait > 0) await sleep(wait);
-        try { return await forward(body.model, upstream, chatBody); } finally { l.last = Date.now(); }
+        try { return await forward(body.model, upstream, chatBody, arrivedAt); } finally { l.last = Date.now(); }
       });
       l.chain = turn.catch(() => {});
       const result = await turn;
+      if (result.status !== 200 && body.text.format.name === 'mcpshield_critic') record(body.model, { criticLost: 1 });
       if (result.status !== 200) return reply(result.status, { error: `upstream ${result.status}` });
       return reply(200, toResponses(result.chat, body.model));
     } catch (error) {
