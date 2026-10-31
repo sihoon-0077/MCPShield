@@ -17,3 +17,5 @@ export const attestationV3Domain = (chainId: number | bigint, verifyingContract:
 export const ROUND_OUTCOMES = ["OPEN", "APPROVED", "REJECTED", "SPLIT"] as const;
 
 export { releaseRegistryV3Abi, createReleaseRegistryV3 } from "./v3-registry.mjs";
+export { VERDICTS, QUARANTINE_REASONS, EVIDENCE_SCHEMA, MAX_EVIDENCE_BYTES, verdictFromFindings, verdictFromReport, quarantineReason,
+  evidenceDocument, checkedVoteEvidence, type V3Verdict, type V3Release } from "./v3-evidence.mjs";

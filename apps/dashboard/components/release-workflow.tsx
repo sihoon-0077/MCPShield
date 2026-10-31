@@ -5,7 +5,13 @@ import { SCOPED_NODE_PROFILE, validateScopedReviewPolicy, validateScopedBaseline
 
 export type SemanticEvidenceScope = { semanticEvidenceMode?: string; providerQuality?: string };
 export type PublisherVerification = { status: string; purpose: string; behaviorSafety: string; publisherId?: string; sourceArtifactDigest?: string; publicKeyFingerprint?: string };
-export type Release = SemanticEvidenceScope & { releaseId: string; legacyReleaseId: string; toolId: string; version: string; status: string; artifactDigest: string; toolSurfaceHash: string; policyHash: string | null; reportRoot: string | null; validUntil: string | null; sourceType?: string; runtimeProfile?: string; sourceReleaseId?: string; publisherVerification?: PublisherVerification; chainUnavailable?: boolean; chain: null | { chainId: number; registryContract: string; observedBlock: number; blockHash: string; txHash: string | null } };
+export type Release = SemanticEvidenceScope & { releaseId: string; legacyReleaseId: string; toolId: string; version: string; status: string; artifactDigest: string; toolSurfaceHash: string; policyHash: string | null; reportRoot: string | null; validUntil: string | null; sourceType?: string; runtimeProfile?: string; sourceReleaseId?: string; publisherVerification?: PublisherVerification; chainUnavailable?: boolean; chain: null | { chainId: number; registryContract: string; registryVersion?: number; observedBlock: number; blockHash: string; txHash: string | null } };
+/** ReleaseRegistryV3 (ADR-008) view from GET /v1/releases/:id/votes: every validator's own verdict and evidence hash, read from chain. */
+export type V3Vote = { validator: string; cast: boolean; verdict: "PASS" | "FAIL" | "ABSTAIN" | null; evidenceHash: string | null; agreesWithOperator: boolean | null; afterDecision: boolean | null; txHash: string | null;
+  evidence: null | { consistent: boolean; derivedVerdict: string; basis: string[]; findings: { code: string; severity: string; stage: string; deterministic: boolean }[] } };
+export type V3Round = { roundId: string; scanId: string | null; live: boolean; validFrom: number; validUntil: number; outcome: string; approvals: number; rejections: number; abstentions: number; openedAt: number; decidedAt: number | null; votes: V3Vote[] };
+export type V3Quarantine = { validator: string; reason: string | null; evidenceHash: string; expiresAt: number; txHash: string };
+export type V3Votes = { registryVersion: number; releaseId: string; policyHash: string | null; registered: boolean; status?: string; decisionRound?: string | null; needsReview?: boolean; quarantineUntil?: number | null; rounds: V3Round[]; quarantines?: V3Quarantine[] };
 export type Scan = { scanId: string; releaseId: string; policyHash: string; baselineReleaseId?: string | null; appealId?: string | null; status: string; stage: string; attempts: number; maxAttempts: number; traceId: string; createdAt: string; updatedAt: string; nextAttemptAt: string; lastError?: unknown; result?: SemanticEvidenceScope & { state?: string; verdict?: string; validUntil?: string; reportRoot?: string; scanResult?: { scanStatus?: string } } };
 export type ChainAction = { actionId: string; releaseId: string | null; kind: string; status: string; txHash: string | null; errorCode: string | null; chainId: number; registryAddress: string; createdAt: string; updatedAt: string; attempts?: number; nextAttemptAt?: string | null; retryBudget?: { maxAttempts: number } };
 export type Admission = { decision: string; status: string; reasonCode: string; releaseId: string; policyHash: string; source: string; checkedAt: string; traceId: string; signature?: string; snapshot?: { expiresAt: string; observedBlock: number; blockHash: string; chainId: number; registryContract: string; operationClass: string } };
@@ -60,6 +66,34 @@ export function ChainActionsView({ actions }: { actions: ChainAction[] }) {
   return <div className="ops-table-wrap"><table><thead><tr><th>작업 / 범위</th><th>전송 상태</th><th>트랜잭션</th><th>최근 변경</th></tr></thead><tbody>{actions.map((item) => <tr key={item.actionId}><td>{actionName[item.kind] ?? item.kind}<small>{item.releaseId ? "현재 릴리스" : "조직 정책 작업 · 적용 정책 확인 필요"}</small><small title={item.actionId}>{short(item.actionId)}</small></td><td><b>{item.status}</b><small>{actionStatus[item.status] ?? "알 수 없는 상태"}</small>{Number.isSafeInteger(item.attempts) && <small>처리 시도 {item.attempts}회{Number.isSafeInteger(item.retryBudget?.maxAttempts) ? ` / 최대 ${item.retryBudget!.maxAttempts}회` : ""}</small>}{item.nextAttemptAt && ["NEW", "PREPARED", "SUBMITTED"].includes(item.status) && <small>다음 확인 {date(item.nextAttemptAt)}</small>}{item.status === "DEAD_LETTER" && <small className="ops-flow-error">전송 결과가 불명확할 수 있습니다. 관리자가 체인 기록을 확인한 뒤 조치해야 합니다.</small>}{item.errorCode && <small className="ops-flow-error">{item.errorCode}</small>}</td><td><code title={item.txHash ?? ""}>{short(item.txHash)}</code><small>chain {item.chainId} · {short(item.registryAddress)}</small></td><td>{date(item.updatedAt)}</td></tr>)}</tbody></table>{!actions.length && <p className="ops-empty">불러온 내역에 체인 작업이 없습니다. 전송 또는 검증 완료로 간주하지 않습니다.</p>}</div>;
 }
 
+const verdictName: Record<string, string> = { PASS: "통과", FAIL: "실패", ABSTAIN: "보류" };
+const outcomeName: Record<string, string> = { OPEN: "투표 중 · 결론 전", APPROVED: "승인 · 2/3 PASS 달성", REJECTED: "폐기 · 2/3 FAIL 달성", SPLIT: "표가 갈림 · 사람 검토" };
+const chainTime = (value?: number | null) => value ? new Date(value * 1000).toLocaleString("ko-KR") : "기록 없음";
+/** operatorVerdicts: scanId → the operator's own recommendation. A vote is marked as differing only when the operator reached PASS or FAIL. */
+export function VotesV3View({ votes, error, operatorVerdicts = {} }: { votes: V3Votes | null; error?: string; operatorVerdicts?: Record<string, string | undefined> }) {
+  if (error) return <p className="ops-message error" role="alert">{error} · 검증자 투표를 불러오지 못했습니다. 승인으로 간주하지 않습니다.</p>;
+  if (!votes) return <p className="ops-empty">검증자 투표를 체인에서 불러오는 중입니다.</p>;
+  if (!votes.registered) return <p className="ops-empty">체인에 등록되지 않은 릴리스입니다. 검증자 투표가 없습니다.</p>;
+  if (!votes.rounds.length && !votes.quarantines?.length) return <p className="ops-empty">아직 열린 투표 라운드가 없습니다. 운영사 검사 완료만으로는 승인되지 않습니다.</p>;
+  return <div aria-label="검증자별 투표">
+    {votes.needsReview && <p className="ops-message error" role="status">표가 갈렸습니다. 각 검증자 회사 담당자가 확인하고 새 라운드에서 다시 투표할 때까지 실행을 막습니다. 운영사가 결과를 덮어쓰지 않습니다.</p>}
+    {votes.quarantines?.map((item) => <p key={item.txHash} className="ops-data-note"><b>긴급 격리 · 검증자 <code title={item.validator}>{short(item.validator)}</code></b> · 사유 {item.reason ?? "알 수 없음"} · 만료 {chainTime(item.expiresAt)}<br />
+      증거 <code title={item.evidenceHash}>{short(item.evidenceHash)}</code> · 거래 <code title={item.txHash}>{short(item.txHash)}</code><br />
+      검증자가 자기 키로 직접 보낸 거래라 운영사가 막을 수 없습니다. 같은 버전에는 검증자마다 한 번만 쓸 수 있고, 폐기는 별도로 FAIL 2표가 필요합니다.</p>)}
+    {votes.rounds.map((round) => { const operator = round.scanId ? operatorVerdicts[round.scanId] : undefined, decisive = operator === "PASS" || operator === "FAIL"; return <div key={round.roundId} className="ops-table-wrap">
+      <p className="ops-data-note"><b>{outcomeName[round.outcome] ?? round.outcome}</b>{round.live ? " · 현재 판정 근거" : votes.decisionRound === round.roundId ? " · 폐기 근거" : ""}<br />
+        PASS {round.approvals} · FAIL {round.rejections} · 보류 {round.abstentions} / 검증자 3곳 · 라운드 <code title={round.roundId}>{short(round.roundId)}</code><br />
+        검사 유효기간 {chainTime(round.validFrom)} ~ {chainTime(round.validUntil)}{round.decidedAt ? ` · 결론 ${chainTime(round.decidedAt)}` : ""}<br />
+        운영사 검사 권고: {operator ?? "알 수 없음"}{decisive ? "" : " · 결론이 없는 참고 값이라 표와 비교하지 않음"}</p>
+      <table><thead><tr><th>검증자</th><th>판정</th><th>자기 증거</th><th>트랜잭션</th></tr></thead><tbody>{round.votes.map((vote) => <tr key={vote.validator}>
+        <td><code title={vote.validator}>{short(vote.validator)}</code></td>
+        <td>{vote.cast && vote.verdict ? <><b>{vote.verdict} · {verdictName[vote.verdict] ?? "알 수 없음"}</b>{decisive && vote.verdict !== operator && <small>운영사 검사와 다른 판정 · 그대로 기록</small>}{vote.afterDecision && <small>결론 뒤에 들어온 표 · 결과는 바꾸지 않음</small>}</> : <small>아직 투표하지 않음</small>}</td>
+        <td>{vote.evidenceHash ? <><code title={vote.evidenceHash}>{short(vote.evidenceHash)}</code><small>{vote.evidence ? `${vote.evidence.basis.length ? `근거 ${vote.evidence.basis.join(", ")}` : "차단 근거 없음"} · ${vote.evidence.consistent ? "증거 파일과 판정 일치" : "증거 파일과 판정 불일치 · 확인 필요"}` : "증거 파일 미제출 · 해시만 체인에 있음"}</small></> : <small>없음</small>}</td>
+        <td><code title={vote.txHash ?? ""}>{short(vote.txHash)}</code>{vote.cast && !vote.txHash && <small>인덱서 관측 전</small>}</td></tr>)}</tbody></table></div>; })}
+    <p className="ops-data-note">각 검증자가 자기 사본을 직접 검사해 만든 증거 파일의 해시와 판정에 서명했습니다. 체인은 해시가 있는지만 확인합니다. 증거 파일 요약은 운영 API가 해시를 대조해 보관한 사본입니다.</p>
+  </div>;
+}
+
 export function AdmissionView({ admission, now }: { admission: Admission | null; now: number }) {
   if (!admission) return <p className="ops-empty">아직 조회하지 않았습니다. 실행 판정은 아래 버튼으로 현재 API에 직접 확인하세요.</p>;
   const snapshot = admission.snapshot;
@@ -70,8 +104,10 @@ export function AdmissionView({ admission, now }: { admission: Admission | null;
     <p>이 화면은 API 조회 시점의 결과입니다. 서명 검증·도구 실행은 하지 않으며, 실제 Gateway가 실행 직전에 다시 확인합니다.</p></div>;
 }
 
-export function ReleaseWorkflow({ release, scans, policies, actions, manage, onRefresh }: {
-  release: Release; scans: Scan[]; policies: { policyHash: string; alias: string; deprecatedAt: string | null; document?: unknown }[]; actions: ChainAction[]; manage: boolean; onRefresh: () => Promise<void>;
+export function ReleaseWorkflow({ release, scans, policies, actions, manage, registryVersion, onRefresh }: {
+  release: Release; scans: Scan[]; policies: { policyHash: string; alias: string; deprecatedAt: string | null; document?: unknown }[]; actions: ChainAction[]; manage: boolean;
+  /** The trust plane the API writes to (from /v1/session), known before the indexer has observed this release. */
+  registryVersion?: number | null; onRefresh: () => Promise<void>;
 }) {
   policies = policies.filter(policy => policyMatchesRelease(release, policy));
   const releaseScans = scans.filter((scan) => scan.releaseId === release.releaseId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -86,10 +122,25 @@ export function ReleaseWorkflow({ release, scans, policies, actions, manage, onR
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now());
-  useEffect(() => { setAdmission(null); }, [policyHash, operationClass, release.status, release.chainUnavailable, release.chain?.blockHash]);
+  // Clear a shown admission when the decision behind it changes (status, deciding round or report root, availability), not on
+  // every newly observed block: public L2s and the local rehearsal chain make a block every 1–2 s. The snapshot expiry still applies.
+  useEffect(() => { setAdmission(null); }, [policyHash, operationClass, release.status, release.chainUnavailable, release.reportRoot]);
   useEffect(() => { if (!admission?.snapshot) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [admission]);
   const releaseActions = actions.filter((item) => item.releaseId === release.releaseId);
   const attestationActions = releaseActions.filter((item) => item.kind === "ATTEST");
+  // ADR-008: on ReleaseRegistryV3 each validator's own vote is on chain, so show those instead of counting relay jobs.
+  const v3 = release.chain?.registryVersion === 3 || registryVersion === 3;
+  const [votes, setVotes] = useState<V3Votes | null>(null);
+  const [votesError, setVotesError] = useState("");
+  useEffect(() => {
+    if (!v3) return;
+    const controller = new AbortController();
+    controlApi<V3Votes>(`releases/${encodeURIComponent(release.releaseId)}/votes`, undefined, "GET", undefined, controller.signal)
+      .then((value) => { setVotes(value); setVotesError(""); })
+      .catch((failure) => { if (!controller.signal.aborted) setVotesError(failure instanceof Error ? failure.message : "조회 실패"); });
+    return () => controller.abort();
+  }, [v3, release.releaseId, release.status, release.chain?.blockHash, attestationActions.length]);
+  const liveRound = votes?.rounds.find((round) => round.live) ?? votes?.rounds[0];
   const visibleActions = actions.filter((item) => item.releaseId === release.releaseId || (item.releaseId === null && ["PUBLISH_POLICY", "DEPRECATE_POLICY"].includes(item.kind)));
   const ready = scan?.status === "COMPLETED" && scan.result?.state === "READY_FOR_VALIDATORS";
   async function perform(work: () => Promise<void>) {
@@ -106,8 +157,8 @@ export function ReleaseWorkflow({ release, scans, policies, actions, manage, onR
       await onRefresh();
     });
   }
-  return <section className="ops-workflow" aria-label="V2 검증에서 실행 판정까지">
-    <div className="ops-section-heading"><h3>검사 → 검증자 → 체인 → 실행 판정</h3><span className="ops-badge">V2 운영 API · REPLAY 아님</span></div>
+  return <section className="ops-workflow" aria-label={v3 ? "V3 검증에서 실행 판정까지" : "V2 검증에서 실행 판정까지"}>
+    <div className="ops-section-heading"><h3>검사 → 검증자 → 체인 → 실행 판정</h3><span className="ops-badge">{v3 ? "V3 운영 API · 검증자별 증거 · REPLAY 아님" : "V2 운영 API · REPLAY 아님"}</span></div>
     <p>연결된 API의 실제 기록입니다. 로컬 체인도 chain ID로 구분하며, 전송 접수와 실행 허용을 혼동하지 않습니다.</p>
     <PublisherEvidenceNotice release={release} scan={scan} />
     <SemanticEvidenceNotice evidence={scan?.result ?? release} required={release.runtimeProfile === "restricted-oci-offline-v1" || release.runtimeProfile === SCOPED_NODE_PROFILE} />
@@ -116,12 +167,16 @@ export function ReleaseWorkflow({ release, scans, policies, actions, manage, onR
     {scan && release.runtimeProfile === SCOPED_NODE_PROFILE && <BaselineNotice selection={scan} label="선택한 검사의 비교 대상" />}
     <ol className="ops-flow" aria-label="현재 증빙 단계">
       <li><span>01 · 검사</span><b>{scan?.status ?? "검사 전"}</b><small>분석 {scan?.result?.scanResult?.scanStatus ?? "미완료"}<br />검사 완료 ≠ 보안 통과</small></li>
-      <li><span>02 · 증거 준비</span><b>{ready ? "READY" : "준비 미확인"}</b><small>{ready ? `권고 판정 ${scan.result?.verdict ?? "미제공"}` : "완료된 증거가 필요합니다."}<br />READY ≠ PASS</small></li>
-      <li><span>03 · 검증자 제출</span><b>{attestationActions.length}건의 작업</b><small>불러온 릴리스 전체 이력<br />독립 검증자 수·quorum 아님</small></li>
+      {v3 ? <li><span>02 · 운영사 검사 (참고)</span><b>{scan?.status === "COMPLETED" ? `권고 ${scan.result?.verdict ?? "미제공"}` : "검사 전"}</b><small>검증 라운드의 유효기간만 정함<br />검증자 판정에 반영되지 않음</small></li>
+        : <li><span>02 · 증거 준비</span><b>{ready ? "READY" : "준비 미확인"}</b><small>{ready ? `권고 판정 ${scan.result?.verdict ?? "미제공"}` : "완료된 증거가 필요합니다."}<br />READY ≠ PASS</small></li>}
+      {v3 ? <li><span>03 · 검증자 투표</span><b>{liveRound ? `${liveRound.votes.filter((vote) => vote.cast).length}/3 투표 · ${outcomeName[liveRound.outcome] ?? liveRound.outcome}` : votesError ? "조회 불가" : "투표 없음"}</b><small>검증자 3곳이 각자 검사해 서명<br />같은 판정 2표면 결정 · 운영사 판정을 따르지 않음</small></li>
+        : <li><span>03 · 검증자 제출</span><b>{attestationActions.length}건의 작업</b><small>불러온 릴리스 전체 이력<br />독립 검증자 수·quorum 아님</small></li>}
       <li><span>04 · Registry 관측</span><b>{release.chainUnavailable ? "현재 조회 불가" : release.chain ? release.status : "체인 증빙 없음"}</b><small>{release.chain ? `chain ${release.chain.chainId} · block ${release.chain.observedBlock}${release.chainUnavailable ? " (이전 기록)" : ""}` : "인덱서 관측 기록이 필요합니다."}<br />{release.policyHash === policyHash ? "선택 정책의 관측 기록" : "선택 정책과 관측 정책을 비교하세요."}</small></li>
       <li><span>05 · Gateway 판정</span><b>{admission ? `API: ${admission.decision}` : "직접 조회 필요"}</b><small>도구 실행 여부는 확인하지 않음<br />아래에서 최신 판정 조회</small></li>
     </ol>
-    <p className="ops-data-note">검증자는 외부 실행기에서 증거와 EIP-712 서명 대상을 검증한 뒤 제출합니다. 이 화면에서 개인키를 입력하거나 서명을 생성하지 않습니다.</p>
+    {v3 ? <><p className="ops-data-note">검증자 3곳은 각자 자기 사본을 검사하고, 자기 증거 파일의 해시와 판정에 EIP-712로 서명합니다. 운영사 검사와 판정이 달라도 그대로 체인에 기록됩니다. 이 화면에서 개인키를 입력하거나 서명을 생성하지 않습니다.</p>
+      <h3>검증자별 투표 · 체인 기록</h3><VotesV3View votes={votes} error={votesError} operatorVerdicts={Object.fromEntries(releaseScans.map((item) => [item.scanId, item.result?.verdict]))} /></>
+      : <p className="ops-data-note">검증자는 외부 실행기에서 증거와 EIP-712 서명 대상을 검증한 뒤 제출합니다. 이 화면에서 개인키를 입력하거나 서명을 생성하지 않습니다.</p>}
     <h3>전송 작업 기록</h3><p>NEW → PREPARED → SUBMITTED → COMPLETED. COMPLETED는 영수증 수신 또는 이미 반영된 작업이며, 최종 확인 수와 현재 실행 허가는 별도입니다. 정책 작업은 조직 전체 내역입니다.</p>
     <ChainActionsView actions={visibleActions} />
     {manage && <details className="ops-chain-admin"><summary>관리자 · 온체인 등록 요청</summary><p>설정된 서버 relayer가 트랜잭션을 전송합니다. 네트워크 가스 비용이 발생할 수 있습니다. 검증자 투표를 대신하지 않습니다.</p><form method="post" onSubmit={enqueue}><label>등록할 대상<select name="chainOperation" disabled={busy}><option value="release">현재 릴리스 등록</option>{policy && !policy.deprecatedAt && <option value="policy">선택 정책 공개 · {policy.alias}</option>}</select></label><label className="ops-check"><input type="checkbox" required disabled={busy} />위 릴리스/정책과 서버에 설정된 체인으로 전송을 요청합니다.</label><button disabled={busy}>온체인 등록 요청</button></form></details>}

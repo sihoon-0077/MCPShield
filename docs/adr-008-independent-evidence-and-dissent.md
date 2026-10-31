@@ -54,7 +54,23 @@ V2를 고치지 않고 `ReleaseRegistryV3`를 새로 둔다. V2와 그 위의 �
 - 판정 근거 라운드가 없는 정책은 격리가 한 번이라도 있었으면 EXPIRED로 읽힌다(V2와 같음). Gateway는 VERIFIED만 허용하므로 차단 결과는 같다.
 - SPLIT 갱신 라운드는 아직 유효한 승인을 대신한다. 정직한 ABSTAIN 하나와 FAIL 하나면 사람 검토가 끝날 때까지 실행이 멈춘다(의도).
 - 검증자가 둘만 활성인 동안 PASS 1·FAIL 1이면 라운드는 결론 없이 남는다. 다른 라운드는 막지 않는다.
-- API·검증자 앱·인덱서·대시보드의 쓰기 경로는 아직 V2다. V3 전환은 다음 작업(대시보드 V2→V3 전환)에서 한다.
+- docker compose 데모는 아직 V1(ADR-005)이다. V3 전체 흐름은 compose 없이 `npm run demo:v3`로 돌린다(아래).
+
+## 운영 경로 V3 전환 (2026-10-29)
+
+`CONTROL_V3_REGISTRY_ADDRESS`를 주면 운영사 API·인덱서·대시보드가 V3로 동작한다. V2 설정과 V2 테스트는 그대로다. 두 주소를 함께 주면 시작을 거부한다(`REGISTRY_VERSION_AMBIGUOUS`).
+
+- **운영사 API:** 운영사는 라운드만 알린다(`GET /v1/scans/:id/attestation`: 자기 검사의 유효기간, 판정·증거 칸 없음). 검증자가 자기 판정과 자기 증거 해시로 서명한 표를 받아 가스를 내고 중계한다(`POST /v1/validator/attestations`).
+  - 묶는 것은 릴리스 정체성·정책·라운드·nonce·기한뿐이다. 판정은 운영사 검사와 비교하지 않는다. 그래서 반대표도 다른 표와 똑같이 중계된다.
+  - 증거 파일은 sha256이 서명된 `evidenceHash`와 같을 때만 보관한다. 판정이 그 파일의 보고서와 맞는지(`consistent`)는 거절 사유가 아니라 공개 정보다.
+  - 긴급 격리 중계는 증거 파일이 있어야 하고, 그 보고서에 결정론적 CRITICAL 근거가 있어야 한다.
+  - 운영사 검사는 참고 값이다. Docker가 없으면 운영사 검사는 `INCONCLUSIVE`로 끝나지만, V3에서는 검증자 판정만 체인에 반영된다.
+- **검증자 앱:** `CONTROL_SCAN_ID`를 주면 운영사 중계를 쓴다. 정책은 고정하고, 서명하는 모든 칸은 체인과 자기 검사로 다시 만든다. 체인에 올라간 거래의 calldata가 자기 서명 그대로인지 직접 확인한다. 긴급 격리는 계속 자기 키로 직접 보낸다. 운영사가 중계를 거부해도 같은 서명을 직접 보낼 수 있다.
+- **인덱서:** V3 이벤트를 그대로 기록한다. 릴리스 기록에 `chain.registryVersion: 3`을 남기고, `reportRoot`에는 판정 근거 라운드 id를 넣는다.
+- **조회:** `GET /v1/releases/:id/votes`는 라운드별 결과와 검증자별 판정·증거 해시·운영사와 다른지·결론 뒤 표 여부·거래 해시를 체인에서 읽는다. 증거 원본은 `GET /v1/releases/:id/votes/:roundId/:validator/evidence`로 받는다.
+- **대시보드:** 검증 흐름에 검증자별 투표 표를 보여 준다. 표가 갈리면 사람 검토로 표시한다.
+- **실행:** `npm run demo:v3`(로컬 Ganache)와 `--base-sepolia`(실제 테스트넷 거래)를 쓴다. `npm run demo:v3-smoke`가 1.0.0 승인·허용과 1.0.1 폐기·차단을 스스로 확인한다.
+- **테스트:** `tests/api/v3-fullcycle.test.ts`(중계·반대표·늦은 표·두 Gateway·인덱서)와 `tests/integration/v3-local-stack.test.ts`.
 
 ## Alternatives considered
 

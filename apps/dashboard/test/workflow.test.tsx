@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AdmissionView, BaselineNotice, ChainActionsView, PublisherEvidenceNotice, ReleaseWorkflow, policyMatchesRelease, type Release, type Scan, type ChainAction, type Admission, type PublisherVerification } from "../components/release-workflow";
+import { AdmissionView, BaselineNotice, ChainActionsView, PublisherEvidenceNotice, ReleaseWorkflow, VotesV3View, policyMatchesRelease, type Release, type Scan, type ChainAction, type Admission, type PublisherVerification, type V3Round, type V3Vote, type V3Votes } from "../components/release-workflow";
 
 const release: Release = { releaseId: `0x${"1".repeat(64)}`, legacyReleaseId: "synthetic@1.0.0", toolId: "synthetic", version: "1.0.0", status: "UNVERIFIED", artifactDigest: `sha256:${"2".repeat(64)}`, toolSurfaceHash: `0x${"3".repeat(64)}`, policyHash: `0x${"4".repeat(64)}`, reportRoot: null, validUntil: null, chain: null };
 const scan: Scan = { scanId: "synthetic-scan", releaseId: release.releaseId, policyHash: release.policyHash!, status: "COMPLETED", stage: "COMPLETED", attempts: 1, maxAttempts: 3, traceId: "5".repeat(32), createdAt: "2026-09-08T00:00:00Z", updatedAt: "2026-09-08T00:00:01Z", nextAttemptAt: "2026-09-08T00:00:00Z", result: { state: "READY_FOR_VALIDATORS", verdict: "ABSTAIN", scanResult: { scanStatus: "INCONCLUSIVE" } } };
@@ -82,4 +82,31 @@ test("chain retry exhaustion explains operator reconciliation without offering b
   const pending = renderToStaticMarkup(<ChainActionsView actions={[{ ...action, attempts: 2, nextAttemptAt: scan.updatedAt }]} />);
   assert.match(pending, /처리 시도 2회/);
   assert.match(pending, /다음 확인/);
+});
+
+test("V3 votes show each validator's own verdict and evidence, dissent, late votes and split review without inventing approval", () => {
+  const [a, b, c] = ["a", "b", "c"].map((digit) => `0x${digit.repeat(40)}`);
+  const vote = (validator: string, verdict: "PASS" | "FAIL" | "ABSTAIN", extra: Partial<V3Vote> = {}): V3Vote => ({ validator, cast: true, verdict, evidenceHash: `0x${"e".repeat(64)}`,
+    agreesWithOperator: true, afterDecision: false, txHash: `0x${"f".repeat(64)}`, evidence: { consistent: true, derivedVerdict: verdict, basis: verdict === "PASS" ? [] : ["CANARY_EXFILTRATION"], findings: [] }, ...extra });
+  const round: V3Round = { roundId: `0x${"c".repeat(64)}`, scanId: scan.scanId, live: true, validFrom: 1793000000, validUntil: 1793086400, outcome: "APPROVED", approvals: 2, rejections: 0, abstentions: 1,
+    openedAt: 1793000001, decidedAt: 1793000005, votes: [vote(a, "PASS"), vote(b, "PASS"), vote(c, "ABSTAIN", { agreesWithOperator: false, afterDecision: true, evidence: null })] };
+  const view = (patch: Partial<V3Votes>): V3Votes => ({ registryVersion: 3, releaseId: release.releaseId, policyHash: release.policyHash!, registered: true, status: "VERIFIED", decisionRound: round.roundId, needsReview: false, rounds: [round], ...patch });
+  const html = renderToStaticMarkup(<VotesV3View votes={view({})} operatorVerdicts={{ [scan.scanId]: "PASS" }} />);
+  for (const value of ["승인 · 2/3 PASS 달성", "현재 판정 근거", "PASS 2 · FAIL 0 · 보류 1", "운영사 검사 권고: PASS", "운영사 검사와 다른 판정 · 그대로 기록", "결론 뒤에 들어온 표", "증거 파일 미제출 · 해시만 체인에 있음", "증거 파일과 판정 일치"]) assert.ok(html.includes(value), value);
+  assert.equal(html.split("운영사 검사와 다른 판정").length - 1, 1, "only the ABSTAIN vote differs from a PASS recommendation");
+  // An operator scan without a conclusion (no Docker sandbox) is a reference only: no vote is called a dissent against it.
+  const inconclusive = renderToStaticMarkup(<VotesV3View votes={view({})} operatorVerdicts={{ [scan.scanId]: "ABSTAIN" }} />);
+  assert.match(inconclusive, /결론이 없는 참고 값이라 표와 비교하지 않음/); assert.doesNotMatch(inconclusive, /운영사 검사와 다른 판정/);
+  const split = renderToStaticMarkup(<VotesV3View votes={view({ status: "UNVERIFIED", needsReview: true, rounds: [{ ...round, outcome: "SPLIT", approvals: 1, rejections: 1, abstentions: 1 }] })} />);
+  assert.match(split, /표가 갈림 · 사람 검토/); assert.match(split, /운영사가 결과를 덮어쓰지 않습니다/);
+  assert.match(renderToStaticMarkup(<VotesV3View votes={view({ rounds: [] })} />), /운영사 검사 완료만으로는 승인되지 않습니다/);
+  const quarantined = renderToStaticMarkup(<VotesV3View votes={view({ status: "REVOKED", quarantines: [{ validator: c, reason: "CANARY_EXFILTRATION", evidenceHash: `0x${"e".repeat(64)}`, expiresAt: 1793003600, txHash: `0x${"9".repeat(64)}` }],
+    rounds: [{ ...round, outcome: "REJECTED", approvals: 0, rejections: 3, abstentions: 0, live: false, votes: [vote(a, "FAIL"), vote(b, "FAIL"), vote(c, "FAIL")] }] })} operatorVerdicts={{ [scan.scanId]: "FAIL" }} />);
+  for (const value of ["긴급 격리 · 검증자", "사유 CANARY_EXFILTRATION", "운영사가 막을 수 없습니다", "폐기 · 2/3 FAIL 달성", "폐기 근거"]) assert.ok(quarantined.includes(value), value);
+  assert.match(renderToStaticMarkup(<VotesV3View votes={null} error="조회 실패" />), /승인으로 간주하지 않습니다/);
+  // A V3 release replaces the relay-job count with chain votes; the V2 wording stays for V2 releases (first workflow test).
+  const v3Release: Release = { ...release, chain: { chainId: 31337, registryContract: action.registryAddress, registryVersion: 3, observedBlock: 7, blockHash: `0x${"d".repeat(64)}`, txHash: null } };
+  const workflow = renderToStaticMarkup(<ReleaseWorkflow release={v3Release} scans={[scan]} policies={[]} actions={[]} manage={false} onRefresh={async () => {}} />);
+  assert.match(workflow, /V3 운영 API · 검증자별 증거/); assert.match(workflow, /03 · 검증자 투표/); assert.match(workflow, /검증자 투표를 체인에서 불러오는 중입니다/);
+  assert.doesNotMatch(workflow, /quorum 아님|API: ALLOW/);
 });

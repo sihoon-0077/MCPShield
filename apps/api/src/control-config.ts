@@ -31,6 +31,9 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
     platform: { os: "linux", architecture: env.CONTROL_OCI_ARCHITECTURE as "amd64" | "arm64" } }) : undefined;
   if ([env.CONTROL_RECEIPT_RPC_URL, env.CONTROL_RECEIPT_REGISTRY_ADDRESS, env.CONTROL_RECEIPT_CHAIN_ID, env.CONTROL_RECEIPT_RELAYER_KEY].some(Boolean)
     && ![env.CONTROL_RECEIPT_RPC_URL, env.CONTROL_RECEIPT_REGISTRY_ADDRESS, env.CONTROL_RECEIPT_CHAIN_ID, env.CONTROL_RECEIPT_RELAYER_KEY].every(Boolean)) throw new Error("INCOMPLETE_RECEIPT_CHAIN_CONFIG");
+  // ADR-008: CONTROL_V3_REGISTRY_ADDRESS switches the trust plane to ReleaseRegistryV3; RPC, chain id and keys keep their V2 names.
+  if (env.CONTROL_V2_REGISTRY_ADDRESS && env.CONTROL_V3_REGISTRY_ADDRESS) throw new Error("REGISTRY_VERSION_AMBIGUOUS");
+  const registryVersion = env.CONTROL_V3_REGISTRY_ADDRESS ? 3 : 2, registryAddress = (registryVersion === 3 ? env.CONTROL_V3_REGISTRY_ADDRESS : env.CONTROL_V2_REGISTRY_ADDRESS) ?? "";
   const aiProvider = env.CONTROL_AI_PROVIDER ?? "custom", aiTimeoutMs = Number(env.CONTROL_AI_TIMEOUT_MS ?? 45000);
   if (!["custom", "openai"].includes(aiProvider) || !Number.isSafeInteger(aiTimeoutMs) || aiTimeoutMs < 100 || aiTimeoutMs > 120000) throw new Error("INVALID_CONTROL_AI_CONFIG");
   const aiToken = env.CONTROL_AI_TOKEN ?? (aiProvider === "openai" ? env.OPENAI_API_KEY : undefined);
@@ -54,10 +57,11 @@ export function controlConfig(env = process.env): ControlOptions | undefined {
     signingKey: env.CONTROL_SIGNING_KEY?.replace(/\\n/g, "\n"), signingKeyId: env.CONTROL_SIGNING_KEY_ID,
     scannerOptions: { sandbox: env.CONTROL_SANDBOX_MODE === "docker" ? "docker" : undefined, allowRemoteAi,
       ...(allowRemoteAi ? { aiProvider: aiProvider as "custom" | "openai", aiModel: env.CONTROL_AI_MODEL, aiUrl: env.CONTROL_AI_URL, aiToken, aiTimeoutMs, aiDisclosurePolicy } : {}) },
+    // The V2 reader works unchanged on V3: getDecision keeps its layout, and reportRoot carries the deciding round id.
     chainDecision: env.CONTROL_V2_RPC_URLS ? v2ChainReader({ rpcUrls: env.CONTROL_V2_RPC_URLS.split(","),
-      registryContract: env.CONTROL_V2_REGISTRY_ADDRESS ?? "", chainId: Number(env.CONTROL_V2_CHAIN_ID),
+      registryContract: registryAddress, chainId: Number(env.CONTROL_V2_CHAIN_ID),
       confirmations: Number(env.CONTROL_V2_CONFIRMATIONS ?? "2") }) : undefined,
-    v2Relayer: env.CONTROL_V2_RELAYER_KEY && env.CONTROL_V2_RPC_URLS ? new V2Relayer(env.CONTROL_V2_RPC_URLS.split(",")[0], env.CONTROL_V2_REGISTRY_ADDRESS ?? "", Number(env.CONTROL_V2_CHAIN_ID), env.CONTROL_V2_RELAYER_KEY) : undefined,
+    v2Relayer: env.CONTROL_V2_RELAYER_KEY && env.CONTROL_V2_RPC_URLS ? new V2Relayer(env.CONTROL_V2_RPC_URLS.split(",")[0], registryAddress, Number(env.CONTROL_V2_CHAIN_ID), env.CONTROL_V2_RELAYER_KEY, registryVersion) : undefined,
     receiptRelayer: env.CONTROL_RECEIPT_RPC_URL ? new ReceiptRelayer(env.CONTROL_RECEIPT_RPC_URL, env.CONTROL_RECEIPT_REGISTRY_ADDRESS!, Number(env.CONTROL_RECEIPT_CHAIN_ID), env.CONTROL_RECEIPT_RELAYER_KEY!, Number(env.CONTROL_RECEIPT_CONFIRMATIONS ?? 2)) : undefined,
   };
 }

@@ -2,6 +2,7 @@ import { id } from "ethers";
 import type { FastifyInstance } from "fastify";
 import { attestationV2Types, bytes32, quarantineV2Types } from "../../../packages/contracts-sdk/src/v2.js";
 import { chainActionId, chainActions, enqueueChainAction, type V2Relayer } from "./chain-outbox.js";
+import { registerV3VoteRoutes } from "./chain-control-v3.js";
 import { ControlStore } from "./control-store.js";
 import { hash, loadEvidence, type ControlOptions, type Credential } from "./control-plane.js";
 import { ociPolicy, preparedPolicy, policyVerdict, validPolicy, isNodePreparedPolicy } from "./control-policy.js";
@@ -72,6 +73,8 @@ export async function registerChainRoutes(api: FastifyInstance, store: ControlSt
     if (!policy || policy.deprecatedAt) throw failure("POLICY_UNAVAILABLE", 404);
     return reply.code(202).send({ action: await enqueueChainAction(store, enabled(), user.tenantId, "PUBLISH_POLICY", { policyHash: policy.policyHash }) });
   });
+  // ADR-008: on ReleaseRegistryV3 validators sign their own verdict and evidence, so the V2 template binding below does not apply.
+  if (relayer?.registryVersion === 3) return registerV3VoteRoutes(api, store, enabled, authenticate, authorize, signedAction);
   api.get("/scans/:scanId/attestation", async (request) => {
     const user = authenticate(request.headers.authorization); authorize(user, "operator");
     const validator = (request.query as any).validator;

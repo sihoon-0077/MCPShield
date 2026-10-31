@@ -102,7 +102,8 @@ export async function registerControlPlane(app: FastifyInstance, options: Contro
     registerPreparationRoutes(api, store, options, authenticate, authorize);
     api.get("/session", async (request) => {
       const { tenantId, role } = authenticate(request.headers.authorization);
-      return { tenantId, role, capabilities: { read: true, scan: role !== "reader", evidence: role !== "reader", manage: role === "admin" } };
+      // registryVersion tells the console which trust plane this API writes to (3 = ReleaseRegistryV3, ADR-008) before any release is indexed.
+      return { tenantId, role, capabilities: { read: true, scan: role !== "reader", evidence: role !== "reader", manage: role === "admin" }, registryVersion: options.v2Relayer?.registryVersion ?? null };
     });
     api.get("/policies", async (request) => ({ items: await store.list(authenticate(request.headers.authorization).tenantId, "policy") }));
     api.post("/policies", async (request, reply) => {

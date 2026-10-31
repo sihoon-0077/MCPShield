@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 const COOKIE = "mcpshield_control";
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
 const routes = {
-  GET: [/^session$/, /^health$/, /^operations$/, /^releases$/, /^releases\/[^/]+\/(history|appeals|gateway-config)$/, /^scans$/, /^scans\/[^/]+(?:\/evidence)?$/, /^policies$/, /^chain\/actions(?:\/[^/]+)?$/, /^receipt-ledgers(?:\/[^/]+(?:\/batches)?)?$/, /^receipt-batches\/[^/]+(?:\/evidence)?$/, /^preparations(?:\/[^/]+(?:\/evidence)?)?$/, /^events\/stream$/],
+  GET: [/^session$/, /^health$/, /^operations$/, /^releases$/, /^releases\/[^/]+\/(history|appeals|gateway-config|votes)$/, /^scans$/, /^scans\/[^/]+(?:\/evidence)?$/, /^policies$/, /^chain\/actions(?:\/[^/]+)?$/, /^receipt-ledgers(?:\/[^/]+(?:\/batches)?)?$/, /^receipt-batches\/[^/]+(?:\/evidence)?$/, /^preparations(?:\/[^/]+(?:\/evidence)?)?$/, /^events\/stream$/],
   POST: [/^releases\/resolve$/, /^releases\/[^/]+\/(appeals|register|prepare)$/, /^appeals\/[^/]+\/resolve$/, /^scans$/, /^scans\/[^/]+\/retry$/, /^policies$/, /^policies\/[^/]+\/(deprecate|publish)$/, /^admission\/check$/, /^receipt-ledgers$/, /^preparations\/[^/]+\/retry$/],
 };
 

@@ -9,7 +9,8 @@ async function indexedTransaction<T>(store: ControlStore, client: V2Relayer, txH
     { traceparent: action?.submission_trace_parent ?? action?.trace_parent ?? undefined });
 }
 
-export async function indexV2(store: ControlStore, client: V2Relayer, { deploymentBlock = 0, confirmations = 2 } = {}) {
+// maxBlocks bounds one eth_getLogs range: public Base RPCs refuse more than 200 blocks per call.
+export async function indexV2(store: ControlStore, client: V2Relayer, { deploymentBlock = 0, confirmations = 2, maxBlocks = 500 } = {}) {
   const chainId = client.chainId, registry = client.registryAddress.toLowerCase();
   const transactionKey = `v2-indexer:${chainId}:${registry}`;
   let checkpoints;
@@ -35,7 +36,7 @@ export async function indexV2(store: ControlStore, client: V2Relayer, { deployme
   checkpoints = await store.query("SELECT block_number FROM cp_v2_blocks WHERE chain_id = ? AND registry_address = ? ORDER BY block_number DESC LIMIT 1", [chainId, registry]);
   const head = await client.provider.getBlock("latest"); if (!head) throw new Error("BLOCK_UNAVAILABLE");
   const from = checkpoints.length ? Number(checkpoints[0].block_number) + 1 : deploymentBlock;
-  const to = Math.min(head.number, from + 499);
+  const to = Math.min(head.number, from + Math.max(1, Math.floor(maxBlocks)) - 1);
   const tenants = (await store.query("SELECT tenant_id,document FROM cp_records WHERE kind = 'release'")).map((row) => ({ tenantId: row.tenant_id, release: JSON.parse(row.document) }));
   let observed = 0;
   if (from <= to) {
@@ -93,8 +94,9 @@ export async function indexV2(store: ControlStore, client: V2Relayer, { deployme
       // Observation metadata only; Gateway authorization still uses its fresh signed proof.
       const observedAt = "checkedAt" in state && typeof state.checkedAt === "string" ? state.checkedAt : new Date().toISOString();
       const [event] = await store.query("SELECT transaction_hash FROM cp_v2_events WHERE chain_id = ? AND registry_address = ? AND release_id = ? ORDER BY block_number DESC,log_index DESC LIMIT 1", [chainId, registry, release.releaseId]);
+      // On ReleaseRegistryV3 (registryVersion 3) reportRoot is the id of the deciding round, not an operator evidence root.
       await store.put(tenantId, "release", release.releaseId, { ...release, status: state.status, chainUnavailable: false, policyHash: policy.policyHash,
-        reportRoot: state.reportRoot, validUntil: state.validUntil, chain: { chainId, registryContract: client.registryAddress,
+        reportRoot: state.reportRoot, validUntil: state.validUntil, chain: { chainId, registryContract: client.registryAddress, registryVersion: client.registryVersion,
           observedBlock: state.observedBlock, blockHash: state.blockHash, txHash: event?.transaction_hash ?? null, observedAt } }, true);
     } catch {
       await store.put(tenantId, "release", release.releaseId, { ...release, status: "UNVERIFIED", chainUnavailable: true }, true);

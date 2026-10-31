@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AbiCoder, Contract, JsonRpcProvider, TypedDataEncoder, Wallet, keccak256, verifyTypedData } from "ethers";
 import { attestationV2Domain, attestationV2Types, bytes32, createReleaseRegistryV2, quarantineV2Types } from "../../../packages/contracts-sdk/src/v2.js";
+import { attestationV3Domain, attestationV3Types, createReleaseRegistryV3 } from "../../../packages/contracts-sdk/src/v3.js";
 import { ControlStore } from "./control-store.js";
 import { hash } from "./control-plane.js";
 import { currentTraceId, traceHeaders, withSpan } from "../../../packages/telemetry/index.mjs";
@@ -11,17 +12,23 @@ export type ChainRelayer = Pick<V2Relayer, "provider" | "signer" | "chainId" | "
 export const chainRetryBudget = Object.freeze({ maxAttempts: 12, maxElapsedMs: 300000, baseDelayMs: 1000, maxDelayMs: 30000 });
 export const chainActionId = (relayer: ChainRelayer, tenantId: string, kind: ChainActionKind, payload: Record<string, any>) =>
   hash({ tenantId, kind, payload, chainId: relayer.chainId, registryAddress: relayer.registryAddress.toLowerCase() });
+export type RegistryVersion = 2 | 3;
+/** Relays signed validator actions to ReleaseRegistryV2, or to ReleaseRegistryV3 (ADR-008) when registryVersion is 3.
+ * V3 shares the V2 write calls; only the attestation type (own evidenceHash), the EIP-712 domain version and replay detection differ. */
 export class V2Relayer {
   readonly provider: JsonRpcProvider;
   readonly signer: Wallet;
   readonly registry: ReturnType<typeof createReleaseRegistryV2>;
-  constructor(readonly rpcUrl: string, readonly registryAddress: string, readonly chainId: number, key: string) {
+  constructor(readonly rpcUrl: string, readonly registryAddress: string, readonly chainId: number, key: string, readonly registryVersion: RegistryVersion = 2) {
+    if (registryVersion !== 2 && registryVersion !== 3) throw new Error("UNSUPPORTED_REGISTRY_VERSION");
     const request = v2RpcRequest(rpcUrl);
     this.provider = new JsonRpcProvider(request, undefined, { batchMaxCount: 1 });
     this.signer = new Wallet(key, this.provider);
-    this.registry = createReleaseRegistryV2(registryAddress, this.signer);
+    this.registry = registryVersion === 3 ? createReleaseRegistryV3(registryAddress, this.signer) : createReleaseRegistryV2(registryAddress, this.signer);
   }
-  get domain() { return attestationV2Domain(this.chainId, this.registryAddress); }
+  /** Attestations and quarantines share one domain per registry; V3 only bumps the version string. */
+  get domain() { return this.registryVersion === 3 ? attestationV3Domain(this.chainId, this.registryAddress) : attestationV2Domain(this.chainId, this.registryAddress); }
+  get attestationTypes() { return this.registryVersion === 3 ? attestationV3Types : attestationV2Types; }
   async context(validator?: string) {
     const network = await this.provider.getNetwork(); if (network.chainId !== BigInt(this.chainId)) throw new Error("CHAIN_ID_MISMATCH");
     const address = await this.registry.validators();
@@ -40,6 +47,12 @@ export class V2Relayer {
     if (kind === "REGISTER_RELEASE") return (await this.registry.releases(payload.releaseId)).exists;
     if (kind === "PUBLISH_POLICY") return (await (await this.policyContract()).policies(payload.policyHash)).publishedAt > 0n;
     if (kind === "DEPRECATE_POLICY") return (await (await this.policyContract()).policies(payload.policyHash)).deprecated;
+    if (kind === "ATTEST" && this.registryVersion === 3) {
+      // V3 has no digest set: a vote is applied when this validator's vote in this round is the one signed here.
+      const a = payload.attestation, validator = verifyTypedData(this.domain, attestationV3Types, a, payload.signature);
+      const vote = await this.registry.getVote(await this.registry.roundIdOf(a.releaseId, a.policyHash, a.validFrom, a.validUntil, a.validatorSetVersion), validator);
+      return vote.cast && vote.evidenceHash === a.evidenceHash && Number(vote.verdict) === Number(a.verdict);
+    }
     if (kind === "ATTEST") {
       const digest = TypedDataEncoder.hash(this.domain, attestationV2Types, payload.attestation);
       const validator = verifyTypedData(this.domain, attestationV2Types, payload.attestation, payload.signature);
@@ -61,7 +74,7 @@ export class V2Relayer {
     return { raw, txHash: keccak256(raw) };
   }
   async validateSignature(payload: any, signature: string, quarantine = false) {
-    const recovered = verifyTypedData(this.domain, quarantine ? quarantineV2Types : attestationV2Types, payload, signature);
+    const recovered = verifyTypedData(this.domain, quarantine ? quarantineV2Types : this.attestationTypes, payload, signature);
     const context = await this.context(recovered);
     if (context.validatorSetVersion !== payload.validatorSetVersion || context.nonce !== payload.nonce) throw new Error("STALE_NONCE_OR_VALIDATOR_SET");
     return recovered;
