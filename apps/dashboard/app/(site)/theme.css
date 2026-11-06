@@ -1,0 +1,44 @@
+/* Type, palette and shared motion of the product site. Loaded after site.css, so these win.
+   Palette (open to adjust, then change the five values below): https://coolors.co/0c0d0b-121411-ecebe4-c6ff2e-ff5a4d
+   Type: Switzer and Cabinet Grotesk come from the Fontshare API (ITF Free Font License: files may not be redistributed, so none are committed);
+   Pretendard (Korean, OFL) and JetBrains Mono (OFL) are self-hosted from npm. Without network the Latin text falls back to Pretendard. */
+:root{
+  --bg:#0c0d0b;--side:#0e100d;--panel:#121411;--line:#272a25;--text:#ecebe4;--lime:#c6ff2e;--danger:#ff5a4d;--pass:#7cff88;
+  --sans:'Switzer','Pretendard Variable',Pretendard,-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;
+  --display:'Cabinet Grotesk','Pretendard Variable',Pretendard,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;
+  --mono:'JetBrains Mono Variable','Pretendard Variable',Consolas,'Cascadia Mono',ui-monospace,monospace;
+  --default-mono-font-family:var(--mono);
+}
+html{background:var(--bg)}
+body{font-family:var(--sans);color:var(--text);word-break:keep-all;overflow-wrap:break-word;font-feature-settings:'ss01','tnum';text-rendering:optimizeLegibility}
+::selection{background:var(--lime);color:#0c0d0b}
+code,kbd,samp,pre{font-family:var(--mono);font-feature-settings:'zero'}
+
+/* Headings and large values use the display face; Korean glyphs fall through to Pretendard. */
+.ws-heading h1,.workspace .progress-heading h1{font-family:var(--display);font-weight:700;letter-spacing:-.02em}
+.metric-card strong,.pick-side-head h3,.pick-card b,.ov-card h3{font-family:var(--display);font-weight:700;letter-spacing:-.01em}
+.ws-brand,.logo{font-family:var(--display);font-weight:800;letter-spacing:.04em}
+.ws-brand b,.logo>span>span{font-weight:500}
+.ws-heading p{font-family:var(--mono);letter-spacing:.08em}
+
+/* No accent bar on the left edge of boxes: state is carried by the border colour and a dot or icon instead. */
+.ws-sidebar nav{position:relative}
+.ws-sidebar nav a{border-left:0;padding-inline:13px;position:relative;z-index:1;transition:color .2s ease}
+.ws-sidebar nav a:hover{background:none;color:var(--text)}
+.ws-sidebar nav a.active{background:none;color:var(--text)}
+.ws-sidebar nav a svg{width:17px;height:17px;flex:none}
+.ws-nav-pill{position:absolute;left:0;right:0;top:0;height:44px;background:#1a1d18;border:1px solid #2c3029;opacity:0;pointer-events:none}
+.ws-nav-pill::after{content:'';position:absolute;right:12px;top:50%;width:5px;height:5px;margin-top:-2.5px;border-radius:50%;background:var(--lime)}
+.reason-card{border-left:0;border:1px solid #3d2422}
+.reason-card.none{border-color:#263325}
+.dash-side>span.active{border-left:0}
+.ops-message.error{border-color:#4a2a27}
+
+/* Workspace surfaces: flat, no green haze behind the content. */
+.ws-main{background:var(--bg)}
+.ws-topbar{background:rgba(12,13,11,.86)}
+.ws-button{font-family:var(--sans);font-weight:600;transition:border-color .2s ease,color .2s ease,background-color .2s ease,transform .15s ease}
+.ws-button:active:not(:disabled){transform:translateY(1px)}
+.ws-button.primary:hover{box-shadow:none}
+.ws-button svg{width:15px;height:15px}
+.panel{transition:border-color .25s ease}

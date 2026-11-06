@@ -1,0 +1,112 @@
+{
+  "validator": "0xF49bFe116E64d3535eB500D3fb453B1D899f696F",
+  "report": {
+    "schemaVersion": "1.0.0",
+    "scanId": "f6137bc5-4f10-45bc-88f3-54b2c64fe904",
+    "releaseId": "mail-mcp@1.0.1",
+    "artifactDigest": "sha256:861b2161cedf0f1e6552b22b9aeeaaeda7f106437b33094a7e884a85f8eabdab",
+    "toolSurfaceHash": "0xe6b50801aa384636c2a31efea3ac6277ac5d1d6eb89d038099e068c685afa0d1",
+    "scanStatus": "FAILED",
+    "findings": [
+      {
+        "code": "UNSAFE_MODULE_LOAD",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "STATIC",
+        "message": "Artifact module loading or runtime egress is outside the self-contained Gateway profile.",
+        "evidence": {
+          "file": "index.mjs",
+          "rule": "self-contained-imports-v1",
+          "reason": "runtime network builtin is not allowed: node:http"
+        }
+      },
+      {
+        "code": "SENSITIVE_FILE_READ",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "STATIC",
+        "message": "Fixture reads a sensitive or injected canary file.",
+        "evidence": {
+          "file": "index.mjs",
+          "rule": "sensitive-file-read-v1"
+        }
+      },
+      {
+        "code": "UNDECLARED_EGRESS",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "STATIC",
+        "message": "Fixture contains network egress while declaring no egress.",
+        "evidence": {
+          "file": "index.mjs",
+          "rule": "undeclared-egress-v1"
+        }
+      },
+      {
+        "code": "TOOL_SURFACE_CHANGED",
+        "severity": "MEDIUM",
+        "deterministic": true,
+        "stage": "STATIC",
+        "message": "The declared MCP tool surface changed from the baseline release.",
+        "evidence": {
+          "baselineToolSurfaceHash": "0xb7014044a72759a20257de22b14714d588f1cda7a68d6a0caa16f1b5d4c0d020",
+          "currentToolSurfaceHash": "0xe6b50801aa384636c2a31efea3ac6277ac5d1d6eb89d038099e068c685afa0d1"
+        }
+      },
+      {
+        "code": "SEMANTIC_BEHAVIOR_MISMATCH",
+        "severity": "HIGH",
+        "deterministic": false,
+        "stage": "AI",
+        "message": "Local semantic fallback found behavior that exceeds the declared MCP capability.",
+        "evidence": {
+          "analyzer": "LOCAL_STRUCTURED_FALLBACK_V1",
+          "signals": [
+            "sensitive-file-access",
+            "tool-surface-change",
+            "undeclared-network-egress"
+          ]
+        }
+      },
+      {
+        "code": "SENSITIVE_FILE_READ",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "SANDBOX",
+        "message": "The fixture read the injected sensitive canary file at runtime.",
+        "evidence": {
+          "observer": "NODE_PRELOAD_V1",
+          "target": "INJECTED_CANARY"
+        }
+      },
+      {
+        "code": "UNDECLARED_EGRESS",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "SANDBOX",
+        "message": "The fixture opened a network connection while declaring no egress.",
+        "evidence": {
+          "observer": "NODE_PRELOAD_V1",
+          "protocol": "http:",
+          "destination": "CONTROLLED_LOCAL",
+          "path": "/events"
+        }
+      },
+      {
+        "code": "CANARY_EXFILTRATION",
+        "severity": "CRITICAL",
+        "deterministic": true,
+        "stage": "SANDBOX",
+        "message": "The fixture sent the injected dummy canary to the controlled local sink.",
+        "evidence": {
+          "canarySha256": "e43fccea24e11f7e86829c6436ab012e73d5b85a51f4d213b4e31f4b3c7075ce",
+          "canaryType": "ENV_SECRET",
+          "sink": "CONTROLLED_LOCAL",
+          "sandbox": "LOCAL_PROCESS"
+        }
+      }
+    ],
+    "evidenceHash": "0x8125b890d0e8c7448ad84930ae8130a1fe91cc0b05083bd744601daa2429280e",
+    "source": "LIVE"
+  }
+}

@@ -1,0 +1,11 @@
+apiVersion: 1
+providers:
+  - name: MCPShield measured operations
+    orgId: 1
+    folder: MCPShield
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboard-files

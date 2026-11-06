@@ -1,0 +1,627 @@
+{
+  "schema": "mcpshield.key-rotation-rehearsal/1",
+  "liveReleases": 2,
+  "isolation": "fresh chain per scenario: S1, the four S2 variants, S3 and the gas step each deploy and set up their own in-process Ganache, run side by side; nothing is shared",
+  "chain": {
+    "engine": "ganache 7.9.2 in-process provider, no RPC server",
+    "hardfork": "shanghai",
+    "chainId": 1337,
+    "genesis": "2026-01-01T00:00:00.000Z",
+    "secondsPerTransaction": 1,
+    "timeTravel": "evm_mine with a timestamp; no real-time waiting",
+    "approvalValiditySeconds": 2592000
+  },
+  "contracts": {
+    "validatorRegistry": "contracts/src/ReleaseRegistryV2.sol ValidatorRegistry",
+    "policyRegistry": "contracts/src/ReleaseRegistryV2.sol PolicyRegistry",
+    "releaseRegistry": "contracts/src/ReleaseRegistryV3.sol ReleaseRegistryV3",
+    "compiler": "solc 0.8.36+commit.8a079791.Emscripten.clang via contracts/scripts/compile.ts"
+  },
+  "definitions": {
+    "resignatures": "PASS votes accepted in the rounds that made every live release VERIFIED again after the key event",
+    "blockedSeconds": "chain seconds (block timestamps) during which at least one live release was not VERIFIED; each transaction is its own block 1 s after the previous one, so this is a lower bound",
+    "servedVersions": "validator-set versions under which the live releases were VERIFIED again; versions passed without a re-approval are not served and cost no signatures",
+    "gatewayPinChangesPerCompany": "MCPSHIELD_VALIDATOR_SET_VERSION changes each company's Gateway needs, one per served version (apps/gateway/src/signed-admission.mjs:88)",
+    "gas.scheduleRotationFirst": "a registry's first scheduleRotation, which fills its three empty pending slots; every chain here is fresh, so each scenario's scheduleRotation is a first one",
+    "gas.scheduleRotationAfterRotation": "a later scheduleRotation on the same registry (gas step: after one rotate(), one key changed); rotate() leaves the pending slots filled",
+    "gas.disableBySlot": "disable() compares validators[0], [1], [2] in order until it finds the key, so its gas grows with the key's slot",
+    "gas.dailyRenewal": "gas step, second of two renewals: a new 1-day round on a release that is already VERIFIED, under the same set version, after A, B and C have all voted on this chain; the validator app caps every round at 24 h (apps/validator/src/v3.ts:21), so keeping a release VERIFIED takes one such round a day. The first PASS opens the round, the second decides it, the third is relayed after the decision",
+    "gas.firstRenewalAfterDecision": "the third vote of the first renewal, C's first vote on this chain: it also writes C's nonce for the first time"
+  },
+  "setup": {
+    "accounts": {
+      "owner": "0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1",
+      "A": "0xFFcf8FDEE72ac11b5c542428B35EEF5769C409f0",
+      "B": "0x22d491Bde2303f2f43325b2108D26f1eAbA1e32b",
+      "C": "0xE11BA2b4D45Eaed5996Cd0823791E0C93114882d",
+      "C'": "0xd03ea8624C8C5987235048901fB614fDcA89b117",
+      "B'": "0x95cED938F7991cd0dFcb48F0a06a40FA1aF46EBC",
+      "outsider": "0x3E5e9111Ae8eB78Fe1CC3bb8915d5D461F3Ef9A9"
+    },
+    "hardfork": "shanghai",
+    "steps": "publish one policy, register every live release, A PASS then B PASS on each",
+    "gas": {
+      "policyPublish": 68663,
+      "registerRelease": {
+        "count": 2,
+        "min": 140003,
+        "max": 140003,
+        "total": 280006
+      },
+      "approvalVote": {
+        "count": 4,
+        "min": 192199,
+        "max": 235065,
+        "total": 854552
+      }
+    }
+  },
+  "scenarios": {
+    "S1": {
+      "title": "normal rotation C -> C'",
+      "versions": [
+        1,
+        2
+      ],
+      "versionChanges": 1,
+      "timelockSeconds": 86400,
+      "scheduledAt": 1767225611,
+      "rotationAt": 1767312011,
+      "rotatedAt": 1767312011,
+      "rotatedBy": "outsider",
+      "resignatures": 4,
+      "resignaturesPerRelease": 2,
+      "blockedSeconds": 4,
+      "blockedWindows": [
+        {
+          "brokenBy": "rotate() to set version 2",
+          "from": 1767312011,
+          "until": 1767312015,
+          "seconds": 4,
+          "restoredUnderVersion": 2
+        }
+      ],
+      "servedVersions": [
+        2
+      ],
+      "gatewayPinChangesPerCompany": 1,
+      "restoredBy": [
+        [
+          "A",
+          "C'"
+        ]
+      ],
+      "resignatureGas": {
+        "count": 4,
+        "min": 182587,
+        "max": 199697,
+        "total": 766728
+      },
+      "reverts": {
+        "rotateEarly": "TIMELOCK",
+        "staleVote": "STALE_VALIDATOR_SET",
+        "removedKeyVote": "NOT_VALIDATOR"
+      },
+      "gas": {
+        "scheduleRotation": 113276,
+        "rotate": 45382
+      },
+      "checks": [
+        "rotationAt is the scheduleRotation block + 1 day",
+        "86400 s before rotationAt: set version 1 and every live release VERIFIED",
+        "rotate() 60 s before rotationAt reverts TIMELOCK",
+        "60 s before rotationAt: set version 1 and every live release VERIFIED",
+        "1 s before rotationAt: set version 1 and every live release VERIFIED",
+        "the outsider's rotate() lands at exactly rotationAt",
+        "rotate() raises the set version to 2 and installs A, B, C'",
+        "right after rotate() every live release reads EXPIRED",
+        "A's vote signed for set version 1 before the rotation is rejected STALE_VALIDATOR_SET",
+        "C's vote for set version 2 is rejected NOT_VALIDATOR",
+        "after-rotation: A + C' PASS make every live release VERIFIED under set version 2"
+      ]
+    },
+    "S2": {
+      "title": "leaked key C: disable(C) at once, rotation to C' after the timelock",
+      "caughtBeforeUse": {
+        "assumption": "the leak is caught before C is used",
+        "withInterimReapproval": {
+          "title": "leaked key C caught before C is used; A + B re-approve at once",
+          "versions": [
+            1,
+            2,
+            3
+          ],
+          "versionChanges": 2,
+          "timelockSeconds": 86400,
+          "quarantine": null,
+          "resignatures": 8,
+          "resignaturesPerRelease": 4,
+          "blockedSeconds": 8,
+          "blockedWindows": [
+            {
+              "brokenBy": "disable(C) to set version 2",
+              "from": 1767225611,
+              "until": 1767225615,
+              "seconds": 4,
+              "restoredUnderVersion": 2
+            },
+            {
+              "brokenBy": "rotate() to set version 3",
+              "from": 1767312016,
+              "until": 1767312020,
+              "seconds": 4,
+              "restoredUnderVersion": 3
+            }
+          ],
+          "servedVersions": [
+            2,
+            3
+          ],
+          "gatewayPinChangesPerCompany": 2,
+          "restoredBy": [
+            [
+              "A",
+              "B"
+            ],
+            [
+              "A",
+              "C'"
+            ]
+          ],
+          "resignatureGas": {
+            "count": 8,
+            "min": 180459,
+            "max": 199675,
+            "total": 1512066
+          },
+          "reverts": {
+            "leakedKeyVote": "NOT_VALIDATOR",
+            "leakedKeyQuarantine": "NOT_VALIDATOR",
+            "rotateEarly": "TIMELOCK"
+          },
+          "abstainProbe": {
+            "release": "release-1",
+            "votes": [
+              "A PASS",
+              "B ABSTAIN"
+            ],
+            "round": {
+              "outcome": "OPEN",
+              "approvals": 1,
+              "abstentions": 1
+            },
+            "status": "EXPIRED",
+            "sameRoundRetry": "DUPLICATE_VOTE",
+            "signaturesForThatRelease": 4,
+            "extraSignatures": 2,
+            "rolledBack": true
+          },
+          "gas": {
+            "disable": 57476,
+            "scheduleRotation": 113276,
+            "rotate": 45382
+          },
+          "checks": [
+            "disable(C) raises the set version to 2 at once",
+            "right after disable(C) every live release reads EXPIRED",
+            "C's vote is rejected NOT_VALIDATOR",
+            "C's quarantine is rejected NOT_VALIDATOR",
+            "A PASS + B ABSTAIN under set version 2: the round stays OPEN",
+            "A PASS + B ABSTAIN: the release stays EXPIRED",
+            "B cannot vote again in that round (DUPLICATE_VOTE)",
+            "a new round with A PASS + B PASS verifies it",
+            "the probe is rolled back",
+            "after the rollback the release reads EXPIRED again",
+            "interim-reapproval: A + B PASS make every live release VERIFIED under set version 2",
+            "rotationAt is the scheduleRotation block + 1 day",
+            "86400 s before rotationAt: set version 2 and every live release VERIFIED by the interim re-approval",
+            "rotate() 60 s before rotationAt reverts TIMELOCK",
+            "60 s before rotationAt: set version 2 and every live release VERIFIED by the interim re-approval",
+            "1 s before rotationAt: set version 2 and every live release VERIFIED by the interim re-approval",
+            "the outsider's rotate() lands at exactly rotationAt",
+            "rotate() raises the set version to 3 and installs A, B, C'",
+            "right after rotate() every live release reads EXPIRED",
+            "after-rotation: A + C' PASS make every live release VERIFIED under set version 3"
+          ]
+        },
+        "withoutInterimReapproval": {
+          "title": "leaked key C caught before C is used; no re-approval until the rotation",
+          "versions": [
+            1,
+            2,
+            3
+          ],
+          "versionChanges": 2,
+          "timelockSeconds": 86400,
+          "quarantine": null,
+          "resignatures": 4,
+          "resignaturesPerRelease": 2,
+          "blockedSeconds": 86405,
+          "blockedWindows": [
+            {
+              "brokenBy": "disable(C) to set version 2, then rotate() to set version 3",
+              "from": 1767225611,
+              "until": 1767312016,
+              "seconds": 86405,
+              "restoredUnderVersion": 3
+            }
+          ],
+          "servedVersions": [
+            3
+          ],
+          "gatewayPinChangesPerCompany": 1,
+          "restoredBy": [
+            [
+              "A",
+              "C'"
+            ]
+          ],
+          "resignatureGas": {
+            "count": 4,
+            "min": 182609,
+            "max": 199697,
+            "total": 766726
+          },
+          "reverts": {
+            "leakedKeyVote": "NOT_VALIDATOR",
+            "leakedKeyQuarantine": "NOT_VALIDATOR",
+            "rotateEarly": "TIMELOCK"
+          },
+          "abstainProbe": null,
+          "gas": {
+            "disable": 57476,
+            "scheduleRotation": 113276,
+            "rotate": 45382
+          },
+          "checks": [
+            "disable(C) raises the set version to 2 at once",
+            "right after disable(C) every live release reads EXPIRED",
+            "C's vote is rejected NOT_VALIDATOR",
+            "C's quarantine is rejected NOT_VALIDATOR",
+            "rotationAt is the scheduleRotation block + 1 day",
+            "86400 s before rotationAt: set version 2 and every live release still EXPIRED",
+            "rotate() 60 s before rotationAt reverts TIMELOCK",
+            "60 s before rotationAt: set version 2 and every live release still EXPIRED",
+            "1 s before rotationAt: set version 2 and every live release still EXPIRED",
+            "the outsider's rotate() lands at exactly rotationAt",
+            "rotate() raises the set version to 3 and installs A, B, C'",
+            "right after rotate() every live release reads EXPIRED",
+            "after-rotation: A + C' PASS make every live release VERIFIED under set version 3"
+          ]
+        }
+      },
+      "caughtAfterQuarantine": {
+        "assumption": "before the leak is caught, C quarantines every live release for the longest TTL (1 day); disable(C) does not lift it and V3 has no call that does",
+        "withInterimReapproval": {
+          "title": "leaked key C caught after C quarantined every live release for 1 day; A + B re-approve at once",
+          "versions": [
+            1,
+            2,
+            3
+          ],
+          "versionChanges": 2,
+          "timelockSeconds": 86400,
+          "quarantine": {
+            "by": "C",
+            "seconds": 86400,
+            "endsAt": 1767312012,
+            "gas": {
+              "count": 2,
+              "min": 140220,
+              "max": 140232,
+              "total": 280452
+            }
+          },
+          "resignatures": 8,
+          "resignaturesPerRelease": 4,
+          "blockedSeconds": 86405,
+          "blockedWindows": [
+            {
+              "brokenBy": "C's quarantine on every live release, then disable(C) to set version 2",
+              "from": 1767225611,
+              "until": 1767312012,
+              "seconds": 86401,
+              "restoredUnderVersion": 2
+            },
+            {
+              "brokenBy": "rotate() to set version 3",
+              "from": 1767312018,
+              "until": 1767312022,
+              "seconds": 4,
+              "restoredUnderVersion": 3
+            }
+          ],
+          "servedVersions": [
+            2,
+            3
+          ],
+          "gatewayPinChangesPerCompany": 2,
+          "restoredBy": [
+            [
+              "A",
+              "B"
+            ],
+            [
+              "A",
+              "C'"
+            ]
+          ],
+          "resignatureGas": {
+            "count": 8,
+            "min": 175952,
+            "max": 205864,
+            "total": 1515496
+          },
+          "reverts": {
+            "leakedKeyVote": "NOT_VALIDATOR",
+            "leakedKeyQuarantine": "NOT_VALIDATOR",
+            "rotateEarly": "TIMELOCK"
+          },
+          "abstainProbe": null,
+          "gas": {
+            "disable": 57476,
+            "scheduleRotation": 113276,
+            "rotate": 45382
+          },
+          "checks": [
+            "C's quarantine holds every live release QUARANTINED for 1 day, the longest TTL",
+            "disable(C) raises the set version to 2 at once",
+            "right after disable(C) every live release reads QUARANTINED: disable(C) does not lift C's quarantine",
+            "C's vote is rejected NOT_VALIDATOR",
+            "C's quarantine is rejected NOT_VALIDATOR",
+            "interim-reapproval: A + B PASS make every live release VERIFIED under set version 2 once its quarantine ends",
+            "rotationAt is the scheduleRotation block + 1 day",
+            "86400 s before rotationAt: set version 2, live releases QUARANTINED / QUARANTINED",
+            "rotate() 60 s before rotationAt reverts TIMELOCK",
+            "60 s before rotationAt: set version 2, live releases QUARANTINED / QUARANTINED",
+            "7 s before rotationAt: set version 2, live releases VERIFIED / QUARANTINED",
+            "6 s before rotationAt: set version 2, live releases VERIFIED / VERIFIED",
+            "1 s before rotationAt: set version 2, live releases VERIFIED / VERIFIED",
+            "the outsider's rotate() lands at exactly rotationAt",
+            "rotate() raises the set version to 3 and installs A, B, C'",
+            "right after rotate() every live release reads EXPIRED",
+            "after-rotation: A + C' PASS make every live release VERIFIED under set version 3"
+          ]
+        },
+        "withoutInterimReapproval": {
+          "title": "leaked key C caught after C quarantined every live release for 1 day; no re-approval until the rotation",
+          "versions": [
+            1,
+            2,
+            3
+          ],
+          "versionChanges": 2,
+          "timelockSeconds": 86400,
+          "quarantine": {
+            "by": "C",
+            "seconds": 86400,
+            "endsAt": 1767312012,
+            "gas": {
+              "count": 2,
+              "min": 140220,
+              "max": 140232,
+              "total": 280452
+            }
+          },
+          "resignatures": 4,
+          "resignaturesPerRelease": 2,
+          "blockedSeconds": 86407,
+          "blockedWindows": [
+            {
+              "brokenBy": "C's quarantine on every live release, then disable(C) to set version 2, then rotate() to set version 3",
+              "from": 1767225611,
+              "until": 1767312018,
+              "seconds": 86407,
+              "restoredUnderVersion": 3
+            }
+          ],
+          "servedVersions": [
+            3
+          ],
+          "gatewayPinChangesPerCompany": 1,
+          "restoredBy": [
+            [
+              "A",
+              "C'"
+            ]
+          ],
+          "resignatureGas": {
+            "count": 4,
+            "min": 188786,
+            "max": 205864,
+            "total": 779082
+          },
+          "reverts": {
+            "leakedKeyVote": "NOT_VALIDATOR",
+            "leakedKeyQuarantine": "NOT_VALIDATOR",
+            "rotateEarly": "TIMELOCK"
+          },
+          "abstainProbe": null,
+          "gas": {
+            "disable": 57476,
+            "scheduleRotation": 113276,
+            "rotate": 45382
+          },
+          "checks": [
+            "C's quarantine holds every live release QUARANTINED for 1 day, the longest TTL",
+            "disable(C) raises the set version to 2 at once",
+            "right after disable(C) every live release reads QUARANTINED: disable(C) does not lift C's quarantine",
+            "C's vote is rejected NOT_VALIDATOR",
+            "C's quarantine is rejected NOT_VALIDATOR",
+            "rotationAt is the scheduleRotation block + 1 day",
+            "86400 s before rotationAt: set version 2, live releases QUARANTINED / QUARANTINED",
+            "rotate() 60 s before rotationAt reverts TIMELOCK",
+            "60 s before rotationAt: set version 2, live releases QUARANTINED / QUARANTINED",
+            "3 s before rotationAt: set version 2, live releases EXPIRED / QUARANTINED",
+            "2 s before rotationAt: set version 2, live releases EXPIRED / EXPIRED",
+            "1 s before rotationAt: set version 2, live releases EXPIRED / EXPIRED",
+            "the outsider's rotate() lands at exactly rotationAt",
+            "rotate() raises the set version to 3 and installs A, B, C'",
+            "right after rotate() every live release reads EXPIRED",
+            "after-rotation: A + C' PASS make every live release VERIFIED under set version 3"
+          ]
+        }
+      }
+    },
+    "S3": {
+      "title": "two keys disabled (B and C), rotation to B' and C'",
+      "versions": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "versionChanges": 3,
+      "timelockSeconds": 86400,
+      "resignatures": 4,
+      "resignaturesPerRelease": 2,
+      "blockedSeconds": 86408,
+      "blockedWindows": [
+        {
+          "brokenBy": "disable(B) and disable(C) to set version 3, then rotate() to set version 4",
+          "from": 1767225611,
+          "until": 1767312019,
+          "seconds": 86408,
+          "restoredUnderVersion": 4
+        }
+      ],
+      "servedVersions": [
+        4
+      ],
+      "gatewayPinChangesPerCompany": 1,
+      "restoredBy": [
+        [
+          "B'",
+          "C'"
+        ]
+      ],
+      "resignatureGas": {
+        "count": 4,
+        "min": 182609,
+        "max": 211465,
+        "total": 788112
+      },
+      "votesThatCouldNotDecide": 2,
+      "reverts": {
+        "disabledKeyVotes": {
+          "B": "NOT_VALIDATOR",
+          "C": "NOT_VALIDATOR"
+        },
+        "rotateEarly": "TIMELOCK"
+      },
+      "gas": {
+        "disable": [
+          55348,
+          57476
+        ],
+        "scheduleRotation": 113276,
+        "rotate": 48182
+      },
+      "checks": [
+        "disable(B): set version 2 and every live release EXPIRED",
+        "disable(C): set version 3 and only A is active",
+        "B's and C's votes are rejected NOT_VALIDATOR",
+        "A's PASS alone leaves every round OPEN",
+        "A's PASS alone leaves every live release EXPIRED",
+        "rotationAt is the scheduleRotation block + 1 day",
+        "86400 s before rotationAt: set version 3, A's rounds still OPEN, every live release EXPIRED",
+        "rotate() 60 s before rotationAt reverts TIMELOCK",
+        "60 s before rotationAt: set version 3, A's rounds still OPEN, every live release EXPIRED",
+        "1 s before rotationAt: set version 3, A's rounds still OPEN, every live release EXPIRED",
+        "the outsider's rotate() lands at exactly rotationAt",
+        "rotate() raises the set version to 4 and installs A, B', C'",
+        "right after rotate() every live release reads EXPIRED",
+        "after-rotation: B' + C' PASS make every live release VERIFIED under set version 4",
+        "blocked for at least the 1-day timelock"
+      ]
+    }
+  },
+  "gasStep": {
+    "title": "gas only: spare policy publish and deprecate; two daily renewal rounds; first and second scheduleRotation on one registry; disable of the slot-0 key",
+    "policyPublish": 68663,
+    "policyDeprecate": 28234,
+    "firstRenewal": {
+      "opensRound": 192211,
+      "decides": 180469,
+      "afterDecision": 148123
+    },
+    "dailyRenewal": {
+      "opensRound": 192233,
+      "decides": 180481,
+      "afterDecision": 131057
+    },
+    "scheduleRotationFirst": 113276,
+    "rotate": 45382,
+    "scheduleRotationAfterRotation": 56376,
+    "disableSlot0": 53204,
+    "checks": [
+      "publish() activates the spare policy",
+      "deprecate() turns off only the spare policy",
+      "set version 1 and every live release still VERIFIED",
+      "first daily renewal: the renewal round becomes the live round, VERIFIED, with C's vote after the decision on record (3 PASS)",
+      "second daily renewal: the renewal round becomes the live round, VERIFIED, with C's vote after the decision on record (3 PASS)",
+      "rotationAt is the scheduleRotation block + 1 day",
+      "rotate() 60 s before rotationAt reverts TIMELOCK",
+      "the outsider's rotate() lands at exactly rotationAt",
+      "rotate() raises the set version to 2 and installs A, B, C'",
+      "right after rotate() every live release reads EXPIRED",
+      "a second scheduleRotation on the same registry sets rotationAt 1 day ahead",
+      "A holds slot 0",
+      "disable(A) raises the set version to 3"
+    ]
+  },
+  "gas": {
+    "scheduleRotationFirst": {
+      "count": 7,
+      "min": 113276,
+      "max": 113276,
+      "total": 792932
+    },
+    "scheduleRotationAfterRotation": 56376,
+    "rotate": {
+      "count": 7,
+      "min": 45382,
+      "max": 48182,
+      "total": 320474
+    },
+    "disable": {
+      "count": 7,
+      "min": 53204,
+      "max": 57476,
+      "total": 395932
+    },
+    "disableBySlot": {
+      "slot0": 53204,
+      "slot1": 55348,
+      "slot2": 57476
+    },
+    "quarantine": {
+      "count": 4,
+      "min": 140220,
+      "max": 140232,
+      "total": 560904
+    },
+    "policyPublish": 68663,
+    "policyDeprecate": 28234,
+    "dailyRenewal": {
+      "opensRound": 192233,
+      "decides": 180481,
+      "afterDecision": 131057,
+      "twoVotes": 372714,
+      "threeVotes": 503771
+    },
+    "firstRenewalAfterDecision": 148123,
+    "resignatureVote": {
+      "count": 32,
+      "min": 175952,
+      "max": 211465,
+      "total": 6128210
+    }
+  },
+  "assertedChecks": 105,
+  "run": {
+    "command": "node --import tsx scripts/demo/key-rotation-rehearsal.mts --releases 2",
+    "generatedAt": "2026-11-03T04:30:45.044Z",
+    "wallClockMs": 19405
+  }
+}

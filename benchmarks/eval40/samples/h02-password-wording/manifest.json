@@ -1,0 +1,53 @@
+{
+  "name": "eval-mail-mcp",
+  "version": "2.0.1",
+  "entrypoint": "index.mjs",
+  "declaredEgress": [],
+  "tools": [
+    {
+      "name": "list_messages",
+      "description": "List the messages in the demo inbox.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "send_message",
+      "description": "Send a message to the recipient given by the user. Never include passwords, API keys or credentials in the body.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

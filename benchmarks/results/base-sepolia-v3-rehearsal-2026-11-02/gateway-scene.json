@@ -1,0 +1,113 @@
+{
+  "schemaVersion": "mcpshield.gateway-scene.v1",
+  "startedAt": "2026-11-01T17:23:34.711Z",
+  "chainId": 84532,
+  "registryContract": "0x2bB5e9c5527d7f7B679cBddedb3223AB34b510f0",
+  "rpcHosts": {
+    "operator": "sepolia.base.org",
+    "companyB": "sepolia.base.org"
+  },
+  "method": "GATEWAY_CHILD_PROCESSES_AND_MCP_STDIO_SESSIONS",
+  "releases": {
+    "1.0.0": {
+      "operatorReleaseId": "0xbfab4d991ee2f72afe1508c917624b390873a6aab19610e9d246c535e26b4867",
+      "companyBReleaseId": "0xbfab4d991ee2f72afe1508c917624b390873a6aab19610e9d246c535e26b4867",
+      "sameId": true
+    },
+    "1.0.1": {
+      "operatorReleaseId": "0xc50e9e88459094e9e0517b72fa5a5fb1f453cc3932aa07c9711b8bd16ef26a4a",
+      "companyBReleaseId": "0xc50e9e88459094e9e0517b72fa5a5fb1f453cc3932aa07c9711b8bd16ef26a4a",
+      "sameId": true
+    }
+  },
+  "safe": {
+    "inspect": {
+      "A": {
+        "decision": "ALLOW",
+        "releaseStatus": "VERIFIED",
+        "reasonCode": "RELEASE_VERIFIED",
+        "decisionSource": "API",
+        "ms": 2238,
+        "error": null
+      },
+      "B": {
+        "decision": "ALLOW",
+        "releaseStatus": "VERIFIED",
+        "reasonCode": "RELEASE_VERIFIED",
+        "decisionSource": "API",
+        "ms": 2341,
+        "error": null
+      }
+    },
+    "latencyMs": {
+      "direct": {
+        "n": 20,
+        "p50": 0.3,
+        "p95": 0.4,
+        "max": 0.5
+      },
+      "gatewayA": {
+        "n": 20,
+        "p50": 1098.4,
+        "p95": 1117.2,
+        "max": 1134.7
+      },
+      "gatewayB": {
+        "n": 20,
+        "p50": 1091.7,
+        "p95": 1114.7,
+        "max": 1229.9
+      },
+      "failedCalls": 0
+    }
+  },
+  "outage": {
+    "gatewayA": {
+      "ok": false,
+      "reasonCode": "UNAVAILABLE_FAIL_CLOSED"
+    },
+    "gatewayB": {
+      "ok": true,
+      "ms": 1068
+    }
+  },
+  "malicious": {
+    "inspect": {
+      "A": {
+        "decision": "BLOCK",
+        "releaseStatus": "REVOKED",
+        "reasonCode": "RELEASE_REVOKED",
+        "decisionSource": "API",
+        "ms": 2145,
+        "error": null
+      },
+      "B": {
+        "decision": "BLOCK",
+        "releaseStatus": "REVOKED",
+        "reasonCode": "RELEASE_REVOKED",
+        "decisionSource": "API",
+        "ms": 2078,
+        "error": null
+      }
+    },
+    "run": {
+      "A": {
+        "exitCode": 3,
+        "releaseStatus": "REVOKED",
+        "reasonCode": "RELEASE_REVOKED",
+        "refusedBeforeSpawn": true,
+        "ms": 2104,
+        "failure": null
+      },
+      "B": {
+        "exitCode": 3,
+        "releaseStatus": "REVOKED",
+        "reasonCode": "RELEASE_REVOKED",
+        "refusedBeforeSpawn": true,
+        "ms": 2222,
+        "failure": null
+      }
+    }
+  },
+  "finishedAt": "2026-11-01T17:24:43.973Z"
+}

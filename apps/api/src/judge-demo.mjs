@@ -32,6 +32,25 @@ export class JudgeDemoError extends Error {
 
 const event = (type, detail) => ({ at: new Date().toISOString(), type, detail });
 const cleanFinding = ({ code, severity, stage, message }) => ({ code, severity, stage, message });
+const mcpInput = [
+  { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "mcpshield-judge-lab", version: "1.0.0" } } },
+  { jsonrpc: "2.0", method: "notifications/initialized" },
+  { jsonrpc: "2.0", id: 2, method: "tools/list" },
+  { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_messages", arguments: {} } },
+].map(JSON.stringify).join("\n") + "\n";
+
+function mcpResult(stdout) {
+  const responses = stdout.trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+  const initialized = responses.find(({ id }) => id === 1);
+  const listed = responses.find(({ id }) => id === 2);
+  const called = responses.find(({ id }) => id === 3);
+  if (responses.length !== 3 || initialized?.error || initialized?.result?.serverInfo?.name !== "mail-mcp") throw new Error("MCP initialize failed");
+  if (listed?.error || listed?.result?.tools?.length !== 1 || listed.result.tools[0].name !== "list_messages") throw new Error("MCP tools/list failed");
+  if (called?.error || called?.result?.isError === true || called?.result?.content?.length !== 1 || called.result.content[0].type !== "text") throw new Error("MCP tools/call failed");
+  const result = JSON.parse(called.result.content[0].text);
+  if (JSON.stringify(result) !== JSON.stringify({ ok: true, messages: [{ id: "demo-1", subject: "Welcome" }] })) throw new Error("Unexpected MCP tool result");
+  return result;
+}
 
 export function createJudgeDemo({ ttlMs = 15 * 60_000, maxSessions = 100 } = {}) {
   // ponytail: one-process TTL storage is enough for the single-instance demo; use Redis when scaling horizontally.
@@ -92,16 +111,20 @@ export function createJudgeDemo({ ttlMs = 15 * 60_000, maxSessions = 100 } = {})
     const releaseId = releaseIds[key];
     const fetchImpl = async (_url, options) => {
       const identity = JSON.parse(options.body);
+      const scan = scans.get(session.sessionId)[key];
+      if (!scan || identity.releaseId !== releaseId || identity.artifactDigest !== scan.artifactDigest || identity.toolSurfaceHash !== scan.toolSurfaceHash) {
+        throw new Error("Admission identity does not match the scanned release");
+      }
       return new Response(JSON.stringify({
-        schemaVersion: "1.0.0", releaseId: identity.releaseId, decision: allow ? "ALLOW" : "BLOCK",
+        schemaVersion: "1.0.0", releaseId, decision: allow ? "ALLOW" : "BLOCK",
         releaseStatus: allow ? "VERIFIED" : "REVOKED", reasonCode: allow ? "RELEASE_VERIFIED" : "RELEASE_REVOKED",
         checkedAt: new Date().toISOString(), source: "LIVE",
       }), { status: 200, headers: { "content-type": "application/json" } });
     };
     try {
-      const result = await runArtifact({ artifactDir: fixtures[key], mode: "live", fetchImpl, capture: true });
-      session.executions.push({ releaseId, decision: "ALLOW", spawnAttempted: true, result: JSON.parse(result.stdout), at: new Date().toISOString() });
-      session.events.push(event("ARTIFACT_EXECUTED", "Verified safe artifact executed in the restricted Gateway runtime"));
+      const result = await runArtifact({ artifactDir: fixtures[key], mode: "live", fetchImpl, capture: true, input: mcpInput });
+      session.executions.push({ releaseId, decision: "ALLOW", spawnAttempted: true, result: mcpResult(result.stdout), at: new Date().toISOString() });
+      session.events.push(event("ARTIFACT_EXECUTED", "Verified safe MCP tool executed in the restricted Gateway runtime"));
     } catch (error) {
       if (!(error instanceof AdmissionBlockedError) || allow) throw error;
       session.executions.push({ releaseId, decision: "BLOCK", spawnAttempted: false, reasonCode: error.decision.reasonCode, at: new Date().toISOString() });

@@ -1,0 +1,29 @@
+{
+  "schema": "mcpshield.validator-evidence.v3",
+  "validator": "0x7c2a6f58F3481E28C30C4c0e23bA53256fa8Ef75",
+  "release": {
+    "releaseId": "0xbfab4d991ee2f72afe1508c917624b390873a6aab19610e9d246c535e26b4867",
+    "artifactDigest": "0xa345d325671967586298ff058ad4d65a2e65a1a5cb40070289234c58cd77f422",
+    "manifestDigest": "0xee9288414a3067afda9190cb671c93a82b5e52827cb9c7e1efa2b78ab3cfda20",
+    "toolSurfaceDigest": "0xb7014044a72759a20257de22b14714d588f1cda7a68d6a0caa16f1b5d4c0d020"
+  },
+  "verdict": "PASS",
+  "basis": [],
+  "ai": {
+    "required": true,
+    "provider": "openai",
+    "model": "gemini-3.5-flash",
+    "status": "COMPLETED"
+  },
+  "report": {
+    "schemaVersion": "1.0.0",
+    "scanId": "3225d13e-98ac-44e4-909f-80aabf8aaaee",
+    "releaseId": "mail-mcp@1.0.0",
+    "artifactDigest": "sha256:a345d325671967586298ff058ad4d65a2e65a1a5cb40070289234c58cd77f422",
+    "toolSurfaceHash": "0xb7014044a72759a20257de22b14714d588f1cda7a68d6a0caa16f1b5d4c0d020",
+    "scanStatus": "PASSED",
+    "findings": [],
+    "evidenceHash": "0x4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "source": "LIVE"
+  }
+}

@@ -17,6 +17,7 @@ import {
 import { Repository } from "./repository.js";
 import { patterns, validateScanResult } from "./validation.js";
 import type { RegistryClient } from "./registry-client.js";
+import { registerControlPlane, type ControlOptions } from "./control-plane.js";
 // @ts-expect-error The judge runner is ESM JavaScript shared with the scanner and Gateway.
 import { createJudgeDemo, JudgeDemoError } from "./judge-demo.mjs";
 
@@ -41,6 +42,7 @@ export interface AppOptions {
   operationLeaseMs?: number;
   repository?: Repository;
   judgeDemo?: boolean;
+  controlPlane?: ControlOptions;
 }
 
 function errorBody(code: string, message: string, details?: unknown) {
@@ -77,6 +79,8 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     options.attestationContract ?? "0x0000000000000000000000000000000000000001",
   );
   const judgeDemo = options.judgeDemo ? createJudgeDemo() : undefined;
+
+  if (options.controlPlane) await registerControlPlane(app, options.controlPlane);
 
   app.addHook("onClose", async () => repository.close());
 

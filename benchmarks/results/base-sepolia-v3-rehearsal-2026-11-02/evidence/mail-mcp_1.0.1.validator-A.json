@@ -1,0 +1,164 @@
+{
+  "schema": "mcpshield.validator-evidence.v3",
+  "validator": "0x1567c3Df4bd6FEa5Ef82A49c99e8465bF42A4486",
+  "release": {
+    "releaseId": "0xc50e9e88459094e9e0517b72fa5a5fb1f453cc3932aa07c9711b8bd16ef26a4a",
+    "artifactDigest": "0x861b2161cedf0f1e6552b22b9aeeaaeda7f106437b33094a7e884a85f8eabdab",
+    "manifestDigest": "0x0537627199e03254c3d9f15bc7e62c5a02112d9a4f0008ee29a05111dbf34ced",
+    "toolSurfaceDigest": "0xe6b50801aa384636c2a31efea3ac6277ac5d1d6eb89d038099e068c685afa0d1"
+  },
+  "verdict": "FAIL",
+  "basis": [
+    "UNSAFE_MODULE_LOAD",
+    "SENSITIVE_FILE_READ",
+    "UNDECLARED_EGRESS",
+    "CANARY_EXFILTRATION"
+  ],
+  "ai": {
+    "required": true,
+    "provider": "openai",
+    "model": "gpt-6.1-terra",
+    "status": "COMPLETED"
+  },
+  "report": {
+    "schemaVersion": "1.0.0",
+    "scanId": "143ef299-0221-428d-ad8a-a5d1b154630f",
+    "releaseId": "mail-mcp@1.0.1",
+    "artifactDigest": "sha256:861b2161cedf0f1e6552b22b9aeeaaeda7f106437b33094a7e884a85f8eabdab",
+    "toolSurfaceHash": "0xe6b50801aa384636c2a31efea3ac6277ac5d1d6eb89d038099e068c685afa0d1",
+    "scanStatus": "FAILED",
+    "findings": [
+      {
+        "code": "UNSAFE_MODULE_LOAD",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "STATIC",
+        "message": "Artifact module loading or runtime egress is outside the self-contained Gateway profile.",
+        "evidence": {
+          "file": "index.mjs",
+          "rule": "self-contained-imports-v1",
+          "reason": "runtime network builtin is not allowed: node:http"
+        }
+      },
+      {
+        "code": "SENSITIVE_FILE_READ",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "STATIC",
+        "message": "Fixture reads a sensitive or injected canary file.",
+        "evidence": {
+          "file": "index.mjs",
+          "rule": "sensitive-file-read-v1"
+        }
+      },
+      {
+        "code": "UNDECLARED_EGRESS",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "STATIC",
+        "message": "Fixture contains network egress while declaring no egress.",
+        "evidence": {
+          "file": "index.mjs",
+          "rule": "undeclared-egress-v1"
+        }
+      },
+      {
+        "code": "SEMANTIC_BEHAVIOR_MISMATCH",
+        "severity": "HIGH",
+        "deterministic": false,
+        "stage": "AI",
+        "message": "Despite the manifest declaring no egress, startup conditionally reads a file specified by an environment variable and POSTs its contents to a configured sink before handling tool calls. The hostname is restricted to localhost, 127.0.0.1, or exfil-sink; the supplied code calls the content a canary.",
+        "evidence": {
+          "analyzer": "STRUCTURED_SEMANTIC_V2",
+          "category": "DATA_EXFILTRATION",
+          "confidence": 0.99,
+          "spans": [
+            {
+              "source": "excerpts.0.content",
+              "start": 0,
+              "end": 3374,
+              "textHash": "sha256:c4a4fd75b09f692f3ac854145dc9a94a5898f8c771b33f1943940018812d4e83"
+            },
+            {
+              "source": "excerpts.1.content",
+              "start": 0,
+              "end": 454,
+              "textHash": "sha256:0537627199e03254c3d9f15bc7e62c5a02112d9a4f0008ee29a05111dbf34ced"
+            }
+          ],
+          "recommendedProbe": "Review the startup path and deployment configuration to determine what file and sink can be supplied and whether this transfer is authorized.",
+          "critic": "SUPPORTED",
+          "needsHumanReview": true
+        }
+      },
+      {
+        "code": "SEMANTIC_BEHAVIOR_MISMATCH",
+        "severity": "MEDIUM",
+        "deterministic": false,
+        "stage": "AI",
+        "message": "The export tool is described as exporting demo messages, but its handler only returns an exported count; no message export action is shown.",
+        "evidence": {
+          "analyzer": "STRUCTURED_SEMANTIC_V2",
+          "category": "SCOPE_MISMATCH",
+          "confidence": 0.95,
+          "spans": [
+            {
+              "source": "tools.0.description",
+              "start": 0,
+              "end": 26,
+              "textHash": "sha256:121447cad01e038a44bbe94c6894c52407f2368f2f9ab99c454dde666950e6b5"
+            },
+            {
+              "source": "excerpts.0.content",
+              "start": 0,
+              "end": 3374,
+              "textHash": "sha256:c4a4fd75b09f692f3ac854145dc9a94a5898f8c771b33f1943940018812d4e83"
+            }
+          ],
+          "recommendedProbe": "Verify the intended export destination and whether returning only a count satisfies the tool contract.",
+          "critic": "SUPPORTED",
+          "needsHumanReview": true
+        }
+      },
+      {
+        "code": "SENSITIVE_FILE_READ",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "SANDBOX",
+        "message": "The fixture read the injected sensitive canary file at runtime.",
+        "evidence": {
+          "observer": "NODE_PRELOAD_V1",
+          "target": "INJECTED_CANARY"
+        }
+      },
+      {
+        "code": "UNDECLARED_EGRESS",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "SANDBOX",
+        "message": "The fixture opened a network connection while declaring no egress.",
+        "evidence": {
+          "observer": "NODE_PRELOAD_V1",
+          "protocol": "http:",
+          "destination": "CONTROLLED_LOCAL",
+          "path": "/events"
+        }
+      },
+      {
+        "code": "CANARY_EXFILTRATION",
+        "severity": "CRITICAL",
+        "deterministic": true,
+        "stage": "SANDBOX",
+        "message": "The fixture sent the injected dummy canary to the controlled local sink.",
+        "evidence": {
+          "canarySha256": "4b57dc9b8fa73bbccf215d6990be8a14d1f84be234ac7a43995651629c3fab93",
+          "canaryType": "ENV_SECRET",
+          "sink": "CONTROLLED_LOCAL",
+          "sandbox": "LOCAL_PROCESS"
+        }
+      }
+    ],
+    "evidenceHash": "0x13dbe0a0f6091a141deaf045e53642a8e4b6bd5c226543596c28d35540b15c3b",
+    "source": "LIVE"
+  }
+}

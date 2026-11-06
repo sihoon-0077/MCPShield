@@ -1,0 +1,29 @@
+{
+  "chainId": 84532,
+  "registryContract": "ReleaseRegistryV3",
+  "owner": "0x19f37547095EDdd2A056494438592d22714DCc6b",
+  "relayer": "0x19f37547095EDdd2A056494438592d22714DCc6b",
+  "validatorRegistry": {
+    "address": "0xd2dD77B8C99A20e0a5001c54f2b11ce2153Fdb0B",
+    "txHash": "0x288ab9f4d4ae6f00d05b20e210ebafb96535ad1d89c6e84c33ed8511f59007c1",
+    "blockNumber": 53158862
+  },
+  "policyRegistry": {
+    "address": "0xc0ec06Cca3DeC3fBb01F848829B7A6c18f8675E9",
+    "txHash": "0xd9c22519b8c2595ec632dda0ab62b327a7d865574732216cc650a4fc3a5b90ac",
+    "blockNumber": 53158895
+  },
+  "releaseRegistry": {
+    "address": "0x2bB5e9c5527d7f7B679cBddedb3223AB34b510f0",
+    "txHash": "0x474b3add2d1a6d09a3bccfdab03227a761ceac106e15b5fe7e7992cfdd6bc775",
+    "blockNumber": 53158949
+  },
+  "validatorAddresses": [
+    "0x1567c3Df4bd6FEa5Ef82A49c99e8465bF42A4486",
+    "0xF49bFe116E64d3535eB500D3fb453B1D899f696F",
+    "0x7c2a6f58F3481E28C30C4c0e23bA53256fa8Ef75"
+  ],
+  "governance": "SINGLE_INSTITUTION_DEMO",
+  "upgradeable": false,
+  "deployedAt": "2026-11-01T17:21:03.280Z"
+}

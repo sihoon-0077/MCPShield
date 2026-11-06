@@ -1,6 +1,7 @@
 import { buildApp } from "./app.js";
 import { registryClientFromEnv } from "./registry-client.js";
 import { loadConfig } from "./config.js";
+import { controlConfig } from "./control-config.js";
 
 const config = loadConfig();
 const registryClient = registryClientFromEnv();
@@ -18,6 +19,7 @@ const app = await buildApp({
   attestationContract: config.attestationContract,
   operationLeaseMs: config.operationLeaseMs,
   judgeDemo: process.env.MCPSHIELD_JUDGE_DEMO_ENABLED === "true",
+  controlPlane: controlConfig(),
 });
 
 await app.listen({ host: config.apiHost, port: config.apiPort });

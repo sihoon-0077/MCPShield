@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "mcpshield.eval40-usage.v1",
+  "source": "fetch wrapper around api.openai.com /v1/responses during this run (status, model, schema, token usage only)",
+  "scans": {
+    "perModel": 120
+  },
+  "note": "USD = tokens x list price per million tokens used for budgeting; cached-input discounts are ignored, so this is an upper-bound estimate, not an invoice.",
+  "models": {
+    "gpt-6.1-terra": {
+      "calls": 235,
+      "semanticCalls": 120,
+      "criticCalls": 115,
+      "non200": 0,
+      "incomplete": 0,
+      "inputTokens": 779143,
+      "outputTokens": 96974,
+      "reasoningTokens": 37714,
+      "usdPerMillion": {
+        "in": 1,
+        "out": 5
+      },
+      "usdEstimate": 1.264,
+      "usdPerScanEstimate": 0.01053
+    },
+    "gpt-6-luna": {
+      "calls": 230,
+      "semanticCalls": 120,
+      "criticCalls": 110,
+      "non200": 0,
+      "incomplete": 0,
+      "inputTokens": 768949,
+      "outputTokens": 168692,
+      "reasoningTokens": 115675,
+      "usdPerMillion": {
+        "in": 0.1,
+        "out": 0.5
+      },
+      "usdEstimate": 0.1612,
+      "usdPerScanEstimate": 0.00134
+    }
+  }
+}

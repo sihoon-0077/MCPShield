@@ -1,0 +1,129 @@
+{
+  "schema": "mcpshield.validator-evidence.v3",
+  "validator": "0x7c2a6f58F3481E28C30C4c0e23bA53256fa8Ef75",
+  "release": {
+    "releaseId": "0xc50e9e88459094e9e0517b72fa5a5fb1f453cc3932aa07c9711b8bd16ef26a4a",
+    "artifactDigest": "0x861b2161cedf0f1e6552b22b9aeeaaeda7f106437b33094a7e884a85f8eabdab",
+    "manifestDigest": "0x0537627199e03254c3d9f15bc7e62c5a02112d9a4f0008ee29a05111dbf34ced",
+    "toolSurfaceDigest": "0xe6b50801aa384636c2a31efea3ac6277ac5d1d6eb89d038099e068c685afa0d1"
+  },
+  "verdict": "FAIL",
+  "basis": [
+    "UNSAFE_MODULE_LOAD",
+    "SENSITIVE_FILE_READ",
+    "UNDECLARED_EGRESS",
+    "CANARY_EXFILTRATION"
+  ],
+  "ai": {
+    "required": true,
+    "provider": "openai",
+    "model": "gemini-3.5-flash",
+    "status": "COMPLETED"
+  },
+  "report": {
+    "schemaVersion": "1.0.0",
+    "scanId": "de14b233-7c52-4799-a0d3-54ef4643f385",
+    "releaseId": "mail-mcp@1.0.1",
+    "artifactDigest": "sha256:861b2161cedf0f1e6552b22b9aeeaaeda7f106437b33094a7e884a85f8eabdab",
+    "toolSurfaceHash": "0xe6b50801aa384636c2a31efea3ac6277ac5d1d6eb89d038099e068c685afa0d1",
+    "scanStatus": "FAILED",
+    "findings": [
+      {
+        "code": "UNSAFE_MODULE_LOAD",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "STATIC",
+        "message": "Artifact module loading or runtime egress is outside the self-contained Gateway profile.",
+        "evidence": {
+          "file": "index.mjs",
+          "rule": "self-contained-imports-v1",
+          "reason": "runtime network builtin is not allowed: node:http"
+        }
+      },
+      {
+        "code": "SENSITIVE_FILE_READ",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "STATIC",
+        "message": "Fixture reads a sensitive or injected canary file.",
+        "evidence": {
+          "file": "index.mjs",
+          "rule": "sensitive-file-read-v1"
+        }
+      },
+      {
+        "code": "UNDECLARED_EGRESS",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "STATIC",
+        "message": "Fixture contains network egress while declaring no egress.",
+        "evidence": {
+          "file": "index.mjs",
+          "rule": "undeclared-egress-v1"
+        }
+      },
+      {
+        "code": "SEMANTIC_BEHAVIOR_MISMATCH",
+        "severity": "CRITICAL",
+        "deterministic": false,
+        "stage": "AI",
+        "message": "The server executes exfiltrateCanary on startup if environment variables are set, sending local file contents to an external HTTP URL despite declaredEgress being empty.",
+        "evidence": {
+          "analyzer": "STRUCTURED_SEMANTIC_V2",
+          "category": "DATA_EXFILTRATION",
+          "confidence": 0.98,
+          "spans": [
+            {
+              "source": "excerpts.0.content",
+              "start": 0,
+              "end": 3374,
+              "textHash": "sha256:c4a4fd75b09f692f3ac854145dc9a94a5898f8c771b33f1943940018812d4e83"
+            }
+          ],
+          "recommendedProbe": "Verify background network connections and file access when MCP_EXFIL_URL and MCP_CANARY_PATH environment variables are defined.",
+          "critic": "SUPPORTED",
+          "needsHumanReview": true
+        }
+      },
+      {
+        "code": "SENSITIVE_FILE_READ",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "SANDBOX",
+        "message": "The fixture read the injected sensitive canary file at runtime.",
+        "evidence": {
+          "observer": "NODE_PRELOAD_V1",
+          "target": "INJECTED_CANARY"
+        }
+      },
+      {
+        "code": "UNDECLARED_EGRESS",
+        "severity": "HIGH",
+        "deterministic": true,
+        "stage": "SANDBOX",
+        "message": "The fixture opened a network connection while declaring no egress.",
+        "evidence": {
+          "observer": "NODE_PRELOAD_V1",
+          "protocol": "http:",
+          "destination": "CONTROLLED_LOCAL",
+          "path": "/events"
+        }
+      },
+      {
+        "code": "CANARY_EXFILTRATION",
+        "severity": "CRITICAL",
+        "deterministic": true,
+        "stage": "SANDBOX",
+        "message": "The fixture sent the injected dummy canary to the controlled local sink.",
+        "evidence": {
+          "canarySha256": "023ba854e31a09248ba82b125630277dc494badafdd485e3da4c77e7bfb43d81",
+          "canaryType": "ENV_SECRET",
+          "sink": "CONTROLLED_LOCAL",
+          "sandbox": "LOCAL_PROCESS"
+        }
+      }
+    ],
+    "evidenceHash": "0x209f08f4ce83a0dce714e7cfc2ba25c8ddc4d9af35d493484a7696aa5b036960",
+    "source": "LIVE"
+  }
+}

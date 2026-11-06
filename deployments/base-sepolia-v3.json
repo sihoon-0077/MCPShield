@@ -1,0 +1,38 @@
+{
+  "chainId": 84532,
+  "registryContract": "ReleaseRegistryV3",
+  "owner": "0x19f37547095EDdd2A056494438592d22714DCc6b",
+  "relayer": "0x19f37547095EDdd2A056494438592d22714DCc6b",
+  "validatorRegistry": {
+    "address": "0x53cb7B2bAdaAA689720869b7255189E2158d2cb2",
+    "txHash": "0xce45d19290c83ddd80aa05cc03da877d25ba34a1611c9d5d75977c7ae78b1a76",
+    "blockNumber": 50366070
+  },
+  "policyRegistry": {
+    "address": "0x3f7b94C6A6664E6ea03bf175F2337F2363445800",
+    "txHash": "0x4fc939e0ce6710af00d576a99bedafac5a8508911fdc645db1e6237d08dc0549",
+    "blockNumber": 50366092
+  },
+  "releaseRegistry": {
+    "address": "0xa3F067039A119a06E8ec924b429936a0C7cEF604",
+    "txHash": "0x893a8262f7d2839f355574004c00538c2142b5e11d935778195e661fb8510294",
+    "blockNumber": 50366147
+  },
+  "validatorAddresses": [
+    "0x1567c3Df4bd6FEa5Ef82A49c99e8465bF42A4486",
+    "0xF49bFe116E64d3535eB500D3fb453B1D899f696F",
+    "0x7c2a6f58F3481E28C30C4c0e23bA53256fa8Ef75"
+  ],
+  "governance": "SINGLE_INSTITUTION_DEMO",
+  "upgradeable": false,
+  "network": "base-sepolia",
+  "rpc": "https://sepolia.base.org",
+  "deployedAt": "2026-10-26",
+  "sourceCommit": "b97abc4",
+  "explorer": {
+    "validatorRegistry": "https://sepolia.basescan.org/address/0x53cb7B2bAdaAA689720869b7255189E2158d2cb2",
+    "policyRegistry": "https://sepolia.basescan.org/address/0x3f7b94C6A6664E6ea03bf175F2337F2363445800",
+    "releaseRegistry": "https://sepolia.basescan.org/address/0xa3F067039A119a06E8ec924b429936a0C7cEF604"
+  },
+  "note": "Testnet demo. Validator keys are team-operated (ADR-003); owner is a single demo key (ADR-007). No policy published yet."
+}

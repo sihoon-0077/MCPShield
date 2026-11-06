@@ -17,7 +17,7 @@ async function proxy(request: Request, context: Context) {
       cache: "no-store",
       signal: AbortSignal.timeout(20_000),
     });
-    return new Response(await response.arrayBuffer(), {
+    return new Response([204, 205, 304].includes(response.status) ? null : await response.arrayBuffer(), {
       status: response.status,
       headers: { "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "no-store" },
     });

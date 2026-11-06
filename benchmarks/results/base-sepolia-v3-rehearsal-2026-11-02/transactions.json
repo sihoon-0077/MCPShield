@@ -1,0 +1,206 @@
+{
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "purpose": "rehearsal on a throwaway deployment; the presented deployment stays deployments/base-sepolia-v3.json",
+  "registry": "0x2bB5e9c5527d7f7B679cBddedb3223AB34b510f0",
+  "policyRegistry": "0xc0ec06Cca3DeC3fBb01F848829B7A6c18f8675E9",
+  "validatorRegistry": "0xd2dD77B8C99A20e0a5001c54f2b11ce2153Fdb0B",
+  "validators": {
+    "A": "0x1567c3Df4bd6FEa5Ef82A49c99e8465bF42A4486",
+    "B": "0xF49bFe116E64d3535eB500D3fb453B1D899f696F",
+    "C": "0x7c2a6f58F3481E28C30C4c0e23bA53256fa8Ef75"
+  },
+  "relayer": "0x19f37547095EDdd2A056494438592d22714DCc6b",
+  "rpc": "https://sepolia.base.org",
+  "steps": [
+    {
+      "label": "deploy ValidatorRegistry",
+      "txHash": "0x288ab9f4d4ae6f00d05b20e210ebafb96535ad1d89c6e84c33ed8511f59007c1",
+      "block": 53158862,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0xd2dd77b8c99a20e0a5001c54f2b11ce2153fdb0b",
+      "status": "success",
+      "gasUsed": 556141,
+      "feeWei": "3336846001415",
+      "url": "https://sepolia.basescan.org/tx/0x288ab9f4d4ae6f00d05b20e210ebafb96535ad1d89c6e84c33ed8511f59007c1"
+    },
+    {
+      "label": "deploy PolicyRegistry",
+      "txHash": "0xd9c22519b8c2595ec632dda0ab62b327a7d865574732216cc650a4fc3a5b90ac",
+      "block": 53158895,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0xc0ec06cca3dec3fbb01f848829b7a6c18f8675e9",
+      "status": "success",
+      "gasUsed": 296532,
+      "feeWei": "1779192000769",
+      "url": "https://sepolia.basescan.org/tx/0xd9c22519b8c2595ec632dda0ab62b327a7d865574732216cc650a4fc3a5b90ac"
+    },
+    {
+      "label": "deploy ReleaseRegistryV3",
+      "txHash": "0x474b3add2d1a6d09a3bccfdab03227a761ceac106e15b5fe7e7992cfdd6bc775",
+      "block": 53158949,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0x2bb5e9c5527d7f7b679cbddedb3223ab34b510f0",
+      "status": "success",
+      "gasUsed": 2515991,
+      "feeWei": "15095946006131",
+      "url": "https://sepolia.basescan.org/tx/0x474b3add2d1a6d09a3bccfdab03227a761ceac106e15b5fe7e7992cfdd6bc775"
+    },
+    {
+      "label": "publish default policy",
+      "txHash": "0xb5b967c588f2644568ab7328684b2910a0f7fa34842a1691c71fe76de3564838",
+      "block": 53158987,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0xc0ec06cca3dec3fbb01f848829b7a6c18f8675e9",
+      "status": "success",
+      "gasUsed": 68663,
+      "feeWei": "411978000094",
+      "url": "https://sepolia.basescan.org/tx/0xb5b967c588f2644568ab7328684b2910a0f7fa34842a1691c71fe76de3564838"
+    },
+    {
+      "label": "register safe 1.0.0",
+      "txHash": "0x6777e81ecb703295ccc5603a0bef881a67747930e40a262912067acae58aee7b",
+      "block": 53159002,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0x2bb5e9c5527d7f7b679cbddedb3223ab34b510f0",
+      "status": "success",
+      "gasUsed": 140003,
+      "feeWei": "840018000158",
+      "url": "https://sepolia.basescan.org/tx/0x6777e81ecb703295ccc5603a0bef881a67747930e40a262912067acae58aee7b"
+    },
+    {
+      "label": "validator C PASS 1.0.0 (AI witness gemini-3.5-flash COMPLETED)",
+      "txHash": "0x4955e51042fa4cf15da094619d469d7746612bc0e7b46d942ee4fef91be3de97",
+      "block": 53159080,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0x2bb5e9c5527d7f7b679cbddedb3223ab34b510f0",
+      "status": "success",
+      "gasUsed": 213571,
+      "feeWei": "1281426000305",
+      "url": "https://sepolia.basescan.org/tx/0x4955e51042fa4cf15da094619d469d7746612bc0e7b46d942ee4fef91be3de97"
+    },
+    {
+      "label": "validator A PASS 1.0.0 (AI witness gpt-6.1-terra COMPLETED) -> VERIFIED",
+      "txHash": "0xe502e85eedc32e37bbd936be6f6768dbe2f81e697a022bb07709195ee9e85900",
+      "block": 53159138,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0x2bb5e9c5527d7f7b679cbddedb3223ab34b510f0",
+      "status": "success",
+      "gasUsed": 232945,
+      "feeWei": "1397670000305",
+      "url": "https://sepolia.basescan.org/tx/0xe502e85eedc32e37bbd936be6f6768dbe2f81e697a022bb07709195ee9e85900"
+    },
+    {
+      "label": "validator B PASS 1.0.0 (rules and sandbox only)",
+      "txHash": "0x12b7d120e84d301118175667ac5057ee88b243a62c860e751e136b4bd43deb74",
+      "block": 53159186,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0x2bb5e9c5527d7f7b679cbddedb3223ab34b510f0",
+      "status": "success",
+      "gasUsed": 146029,
+      "feeWei": "876174000305",
+      "url": "https://sepolia.basescan.org/tx/0x12b7d120e84d301118175667ac5057ee88b243a62c860e751e136b4bd43deb74"
+    },
+    {
+      "label": "register malicious 1.0.1",
+      "txHash": "0xf208e08607dce621e3377dbec1310e467780b786d989101abca56b9f94afc84a",
+      "block": 53159212,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0x2bb5e9c5527d7f7b679cbddedb3223ab34b510f0",
+      "status": "success",
+      "gasUsed": 139991,
+      "feeWei": "839946000158",
+      "url": "https://sepolia.basescan.org/tx/0xf208e08607dce621e3377dbec1310e467780b786d989101abca56b9f94afc84a"
+    },
+    {
+      "label": "validator C direct emergency quarantine 1.0.1 (sent from the validator wallet)",
+      "txHash": "0x8a815e1ba46ea0eb8b2a05e3d1834ea94500541c51b750e22cf7bc7e90e75af5",
+      "block": 53159452,
+      "from": "0x7c2a6f58f3481e28c30c4c0e23ba53256fa8ef75",
+      "to": "0x2bb5e9c5527d7f7b679cbddedb3223ab34b510f0",
+      "status": "success",
+      "gasUsed": 157332,
+      "feeWei": "943992000166",
+      "url": "https://sepolia.basescan.org/tx/0x8a815e1ba46ea0eb8b2a05e3d1834ea94500541c51b750e22cf7bc7e90e75af5"
+    },
+    {
+      "label": "validator C FAIL 1.0.1 (AI witness gemini-3.5-flash COMPLETED)",
+      "txHash": "0x733baf42f50bbe6d095af273c6b60c6c294df874a37773eb28c5b2c86e5735de",
+      "block": 53159480,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0x2bb5e9c5527d7f7b679cbddedb3223ab34b510f0",
+      "status": "success",
+      "gasUsed": 196581,
+      "feeWei": "1179486000312",
+      "url": "https://sepolia.basescan.org/tx/0x733baf42f50bbe6d095af273c6b60c6c294df874a37773eb28c5b2c86e5735de"
+    },
+    {
+      "label": "validator A FAIL 1.0.1 (AI witness gpt-6.1-terra COMPLETED) -> REVOKED",
+      "txHash": "0x46a8edcb341e4e6a2eef4794ace0f8ccd0327c99da1859ce9b126908c91e70ca",
+      "block": 53159605,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0x2bb5e9c5527d7f7b679cbddedb3223ab34b510f0",
+      "status": "success",
+      "gasUsed": 232636,
+      "feeWei": "1395816000312",
+      "url": "https://sepolia.basescan.org/tx/0x46a8edcb341e4e6a2eef4794ace0f8ccd0327c99da1859ce9b126908c91e70ca"
+    },
+    {
+      "label": "validator B FAIL 1.0.1 (rules and sandbox only)",
+      "txHash": "0xf4d9c78ea7111a389193658ff1aa8344267a1a184ce0b7c90b93398bd3b7e66c",
+      "block": 53159653,
+      "from": "0x19f37547095eddd2a056494438592d22714dcc6b",
+      "to": "0x2bb5e9c5527d7f7b679cbddedb3223ab34b510f0",
+      "status": "success",
+      "gasUsed": 126690,
+      "feeWei": "760140000312",
+      "url": "https://sepolia.basescan.org/tx/0xf4d9c78ea7111a389193658ff1aa8344267a1a184ce0b7c90b93398bd3b7e66c"
+    }
+  ],
+  "totals": {
+    "transactions": 13,
+    "gasUsed": "5023105",
+    "feeWei": "30138630010742",
+    "feeEth": "0.000030139"
+  },
+  "votesMatchEvidence": [
+    {
+      "validator": "C",
+      "evidenceHash": "0x2fd5111768387793c34ffd49a5aa3ca2a373a580fc4fc148375750b03cb8afd3",
+      "file": "bfab4d991ee2.7c2a6f58.2fd511176838.json"
+    },
+    {
+      "validator": "A",
+      "evidenceHash": "0x7e5e99013e725fda53819b940e2f3473d34183fb09f6ab07ffccfb849fef857c",
+      "file": "bfab4d991ee2.1567c3df.7e5e99013e72.json"
+    },
+    {
+      "validator": "B",
+      "evidenceHash": "0x394c952bdd38d9118d9d54b11149ff9caba98fdab491966b3f57de702ae4094a",
+      "file": "bfab4d991ee2.f49bfe11.394c952bdd38.json"
+    },
+    {
+      "validator": "C",
+      "evidenceHash": "0x726941b178a46728aa4487313513bf18676778112ec81bbc1954cad9b44c479d",
+      "file": "c50e9e884590.7c2a6f58.726941b178a4.json"
+    },
+    {
+      "validator": "A",
+      "evidenceHash": "0x141d703305627869f0861d1221085dd924e30f5b99c2cea79334c5abbb7331bc",
+      "file": "c50e9e884590.1567c3df.141d70330562.json"
+    },
+    {
+      "validator": "B",
+      "evidenceHash": "0xd91a3b5aa2e28628308e5247db0f6ad42917277dd642f2232706a7c06c0810d1",
+      "file": "c50e9e884590.f49bfe11.d91a3b5aa2e2.json"
+    }
+  ],
+  "evidenceFiles": {
+    "mail-mcp_1.0.0.validator-A.json": "0x7e5e99013e725fda53819b940e2f3473d34183fb09f6ab07ffccfb849fef857c",
+    "mail-mcp_1.0.1.validator-A.json": "0x141d703305627869f0861d1221085dd924e30f5b99c2cea79334c5abbb7331bc",
+    "mail-mcp_1.0.0.validator-B.json": "0x394c952bdd38d9118d9d54b11149ff9caba98fdab491966b3f57de702ae4094a",
+    "mail-mcp_1.0.1.validator-B.json": "0xd91a3b5aa2e28628308e5247db0f6ad42917277dd642f2232706a7c06c0810d1",
+    "mail-mcp_1.0.0.validator-C.json": "0x2fd5111768387793c34ffd49a5aa3ca2a373a580fc4fc148375750b03cb8afd3",
+    "mail-mcp_1.0.1.validator-C.json": "0x726941b178a46728aa4487313513bf18676778112ec81bbc1954cad9b44c479d"
+  }
+}

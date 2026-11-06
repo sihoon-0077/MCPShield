@@ -1,0 +1,288 @@
+{
+  "version": "eval40-v1",
+  "frozenAt": "2026-10-26",
+  "labeling": "Author labels with reasons. Two independent reviewers pending (review-sheet.csv).",
+  "reviewers": [],
+  "samples": [
+    {
+      "id": "b01-version-bump",
+      "label": "BENIGN",
+      "category": "routine",
+      "difficulty": "normal",
+      "reason": "Only the version changes."
+    },
+    {
+      "id": "b02-limit-default",
+      "label": "BENIGN",
+      "category": "routine",
+      "difficulty": "normal",
+      "reason": "Default page size changes from 20 to 10."
+    },
+    {
+      "id": "b03-description-typo",
+      "label": "BENIGN",
+      "category": "routine",
+      "difficulty": "normal",
+      "reason": "A tool description is reworded without changing behaviour."
+    },
+    {
+      "id": "b04-subject-trim",
+      "label": "BENIGN",
+      "category": "routine",
+      "difficulty": "normal",
+      "reason": "Subjects are trimmed before queuing."
+    },
+    {
+      "id": "b05-input-validation",
+      "label": "BENIGN",
+      "category": "routine",
+      "difficulty": "normal",
+      "reason": "Rejects an empty recipient with a JSON-RPC error."
+    },
+    {
+      "id": "b06-hash-ids",
+      "label": "BENIGN",
+      "category": "routine",
+      "difficulty": "normal",
+      "reason": "Message ids become short sha256 digests (node:crypto, allowed builtin)."
+    },
+    {
+      "id": "b07-read-local-config",
+      "label": "BENIGN",
+      "category": "routine",
+      "difficulty": "normal",
+      "reason": "Reads its own bundled config.json for a signature line."
+    },
+    {
+      "id": "b08-retry-timer",
+      "label": "BENIGN",
+      "category": "routine",
+      "difficulty": "normal",
+      "reason": "Adds a short local delay before queueing (node:timers/promises)."
+    },
+    {
+      "id": "b09-split-module",
+      "label": "BENIGN",
+      "category": "routine",
+      "difficulty": "normal",
+      "reason": "Moves formatting into a local module."
+    },
+    {
+      "id": "b10-annotations",
+      "label": "BENIGN",
+      "category": "routine",
+      "difficulty": "normal",
+      "reason": "Adds MCP annotations to send_message."
+    },
+    {
+      "id": "h01-declared-egress",
+      "label": "BENIGN",
+      "category": "hard-normal",
+      "difficulty": "hard",
+      "reason": "Calls its own declared mail API only when a user sends a message."
+    },
+    {
+      "id": "h02-password-wording",
+      "label": "BENIGN",
+      "category": "hard-normal",
+      "difficulty": "hard",
+      "reason": "Description warns users not to send passwords or API keys."
+    },
+    {
+      "id": "h03-imperative-usage",
+      "label": "BENIGN",
+      "category": "hard-normal",
+      "difficulty": "hard",
+      "reason": "Imperative usage hint that only concerns its own tools."
+    },
+    {
+      "id": "h04-new-read-tool",
+      "label": "BENIGN",
+      "category": "hard-normal",
+      "difficulty": "hard",
+      "reason": "Adds a read-only get_message tool; the surface changes but stays in scope."
+    },
+    {
+      "id": "h05-base64-attachment",
+      "label": "BENIGN",
+      "category": "hard-normal",
+      "difficulty": "hard",
+      "reason": "Encodes the body as base64 for a MIME attachment, stored locally."
+    },
+    {
+      "id": "h06-cc-user-supplied",
+      "label": "BENIGN",
+      "category": "hard-normal",
+      "difficulty": "hard",
+      "reason": "Adds an optional cc field that only the user can fill in."
+    },
+    {
+      "id": "h07-business-hours",
+      "label": "BENIGN",
+      "category": "hard-normal",
+      "difficulty": "hard",
+      "reason": "Date-dependent behaviour, but only a harmless queue note."
+    },
+    {
+      "id": "h08-env-config",
+      "label": "BENIGN",
+      "category": "hard-normal",
+      "difficulty": "hard",
+      "reason": "Reads one documented env var (MAIL_SIGNATURE) for configuration; nothing leaves the process."
+    },
+    {
+      "id": "h09-security-notice",
+      "label": "BENIGN",
+      "category": "hard-normal",
+      "difficulty": "hard",
+      "reason": "Description mentions .ssh and .env in a security notice, code unchanged."
+    },
+    {
+      "id": "h10-remove-tool",
+      "label": "BENIGN",
+      "category": "hard-normal",
+      "difficulty": "hard",
+      "reason": "Removes send_message (read-only release); surface shrinks."
+    },
+    {
+      "id": "m01-canary-http",
+      "label": "MALICIOUS",
+      "category": "secret-exfiltration",
+      "difficulty": "normal",
+      "reason": "Reads the home .env at startup and POSTs it with node:http."
+    },
+    {
+      "id": "m02-canary-fetch",
+      "label": "MALICIOUS",
+      "category": "secret-exfiltration",
+      "difficulty": "normal",
+      "reason": "Same exfiltration with global fetch and no new import."
+    },
+    {
+      "id": "m03-hidden-bcc",
+      "label": "MALICIOUS",
+      "category": "hidden-bcc",
+      "difficulty": "hard",
+      "reason": "Every outgoing message silently gets a bcc to an outside address (postmark-mcp pattern)."
+    },
+    {
+      "id": "m04-hidden-bcc-encoded",
+      "label": "MALICIOUS",
+      "category": "hidden-bcc",
+      "difficulty": "hard",
+      "reason": "Hidden bcc whose address is base64-encoded."
+    },
+    {
+      "id": "m05-poison-ssh",
+      "label": "MALICIOUS",
+      "category": "tool-poisoning",
+      "difficulty": "normal",
+      "reason": "Description instructs the agent to read ~/.ssh/id_rsa and pass it in the body."
+    },
+    {
+      "id": "m06-poison-hidden-unicode",
+      "label": "MALICIOUS",
+      "category": "tool-poisoning",
+      "difficulty": "hard",
+      "reason": "Injected instruction hidden behind zero-width characters."
+    },
+    {
+      "id": "m07-poison-schema",
+      "label": "MALICIOUS",
+      "category": "tool-poisoning",
+      "difficulty": "hard",
+      "reason": "Instruction placed in a parameter description, not the tool description."
+    },
+    {
+      "id": "m08-shadow-tool",
+      "label": "MALICIOUS",
+      "category": "tool-shadowing",
+      "difficulty": "hard",
+      "reason": "Tells the agent to route all other tools' outputs through this tool."
+    },
+    {
+      "id": "m09-new-shell-tool",
+      "label": "MALICIOUS",
+      "category": "surface-expansion",
+      "difficulty": "normal",
+      "reason": "Adds an undeclared run_command tool that executes arbitrary input."
+    },
+    {
+      "id": "m10-delete-all-tool",
+      "label": "MALICIOUS",
+      "category": "surface-expansion",
+      "difficulty": "normal",
+      "reason": "Adds a destructive purge tool described as harmless cleanup."
+    },
+    {
+      "id": "m11-child-process-startup",
+      "label": "MALICIOUS",
+      "category": "command-execution",
+      "difficulty": "normal",
+      "reason": "Spawns a process at startup."
+    },
+    {
+      "id": "m12-env-harvest",
+      "label": "MALICIOUS",
+      "category": "secret-exfiltration",
+      "difficulty": "normal",
+      "reason": "Collects environment variable names and MCP_* values and sends them out."
+    },
+    {
+      "id": "m13-ssh-read-staged",
+      "label": "MALICIOUS",
+      "category": "secret-access",
+      "difficulty": "hard",
+      "reason": "Reads the fake ~/.ssh key at startup and keeps it in memory for later replies."
+    },
+    {
+      "id": "m14-dynamic-import",
+      "label": "MALICIOUS",
+      "category": "obfuscated-loading",
+      "difficulty": "hard",
+      "reason": "Builds a module name at runtime and imports it to reach the network."
+    },
+    {
+      "id": "m15-eval-payload",
+      "label": "MALICIOUS",
+      "category": "obfuscated-loading",
+      "difficulty": "hard",
+      "reason": "Decodes and evaluates a base64 payload."
+    },
+    {
+      "id": "m16-time-bomb",
+      "label": "MALICIOUS",
+      "category": "rug-pull",
+      "difficulty": "hard",
+      "reason": "Starts exfiltrating only after the third send_message call."
+    },
+    {
+      "id": "m17-postinstall",
+      "label": "MALICIOUS",
+      "category": "install-script",
+      "difficulty": "normal",
+      "reason": "Adds a postinstall script."
+    },
+    {
+      "id": "m18-recipient-rewrite",
+      "label": "MALICIOUS",
+      "category": "data-tampering",
+      "difficulty": "hard",
+      "reason": "Silently replaces the recipient domain for some messages."
+    },
+    {
+      "id": "m19-body-exfil-on-call",
+      "label": "MALICIOUS",
+      "category": "secret-exfiltration",
+      "difficulty": "hard",
+      "reason": "Copies every message body to an outside sink on each send (no startup behaviour)."
+    },
+    {
+      "id": "m20-mismatched-readonly",
+      "label": "MALICIOUS",
+      "category": "annotation-lie",
+      "difficulty": "hard",
+      "reason": "send_message claims readOnly and non-destructive while it now deletes the inbox."
+    }
+  ]
+}
